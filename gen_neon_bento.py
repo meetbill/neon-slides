@@ -196,6 +196,43 @@ base("s-toc", [
 
 p += 1
 divider("s-div1", 1, "背景痛点", p)
+# ─────── Slide 1.5: The log is the database ───────
+p += 1
+std("s-log-is-db", "理论基石", "“The log is the database.” — Aurora, SIGMOD 2017", [
+    T("lid-quote", 96, 168, 1088, 60,
+      "&ldquo;<b>The log <i>is</i> the database.</b>&rdquo;<br>"
+      "<span style='font-size:12px'>— Verbitski et al., <i>Amazon Aurora: Design Considerations for High Throughput Cloud-Native Relational Databases</i>, SIGMOD 2017</span>",
+      fs=17, color=FG, lh=1.5, align="left"),
+    # Left: 关键观察
+    R("lid-obs-bg", 96, 244, 530, 180, fill=PANEL, stroke=EDGE, radius=12),
+    T("lid-obs-h", 116, 256, 500, 22, "关键观察", fs=14, fw=800, color=AC),
+    T("lid-obs-b", 116, 284, 490, 128,
+      "PostgreSQL/MySQL 的<b>崩溃恢复</b>就是「从检查点开始重放 WAL」——<br>"
+      "说明 WAL 本身<b>已足够重建任意页面</b>。<br><br>"
+      "既然如此：<b>页面物化</b>这件事可以从 compute 剥离，交给存储层自己完成。",
+      fs=13, color=DIM, lh=1.7),
+    # Right: Aurora 的做法
+    R("lid-aur-bg", 656, 244, 530, 180, fill=PANEL, stroke=EDGE, radius=12),
+    T("lid-aur-h", 676, 256, 500, 22, "Aurora 的落地", fs=14, fw=800, color=AC2),
+    T("lid-aur-b", 676, 284, 500, 128,
+      "• Compute <b>只发 redo 日志</b>，不再写脏页 / 刷 checkpoint<br>"
+      "• WAL → 跨 3 AZ 共 6 副本存储层<br>"
+      "• 各副本<b>独立重放 WAL 物化页面</b>；读时按 (Page, LSN) 版本请求<br>"
+      "• 网络流量降到约 <b>1/7.7</b>（只传 redo 而非整页）",
+      fs=12.5, color=DIM, lh=1.7),
+    # Bottom: Neon 的再进一步
+    R("lid-neon-bg", 96, 444, 1088, 176, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("lid-neon-h", 116, 456, 1000, 22, "Neon = 这个思想的开源重实现，再往前一步", fs=14, fw=800, color=AC),
+    T("lid-neon-b", 116, 484, 1048, 128,
+      "把 Aurora 合在一起的存储层<b>再拆两半</b>：<br>"
+      "&nbsp;&nbsp;• <b>Safekeeper</b> — Paxos-like 共识，只负责 WAL 的持久化与仲裁<br>"
+      "&nbsp;&nbsp;• <b>Pageserver</b> — 消费 WAL，用 delta / image layer 类 LSM 结构物化页面，冷数据下沉对象存储（S3）<br>"
+      "&nbsp;&nbsp;• <b>Compute</b> — 替换 smgr、去掉 checkpoint、启动不扫 data directory 的<b>无状态 Postgres</b><br>"
+      "代价：多一跳网络　　收益：两层可分别针对<b>低延迟写</b>和<b>高吞吐读</b>优化，页面物化可建在廉价对象存储上。",
+      fs=13, color=DIM, lh=1.7),
+], p, notes="Aurora SIGMOD 2017 论文提出的核心观察『The log is the database.』：WAL 已足够重建任意页面（因为崩溃恢复就是重放 WAL），所以页面物化可以从计算节点剥离到存储层。Aurora 做法：compute 只发 redo 日志、不写脏页 / 不做 checkpoint；WAL 跨 3 AZ 共 6 副本；副本各自独立重放物化；按 (Page, LSN) 版本请求；网络流量降到约 1/7.7。这是存算分离和 Serverless 数据库的理论基石。Neon 是这一思想的开源重实现，并把 Aurora 合在一起的存储层进一步拆成 Safekeeper（WAL 共识层）+ Pageserver（页面物化 + 类 LSM 分层 + 对象存储）；compute 替换 smgr、去掉 checkpoint、启动不扫 data dir。仓库中虽不直接使用『log is the database』这个句子，但 docs/rfcs/004-durability.md:64 明确对比过 Aurora 的差异。参考文献：Verbitski et al., Amazon Aurora: Design Considerations for High Throughput Cloud-Native Relational Databases, SIGMOD 2017。")
+
+
 # ─────── Slide 2: 核心定位 ───────
 p += 1
 std("s-position", "定位", "Neon vs 传统 PostgreSQL：核心区别", [
@@ -509,31 +546,61 @@ std("s-conn-route", "PROXY", "连上 Neon：Proxy 怎么知道你要连哪个库
 
 # ─────── Slide 5: Compute 层概述 ───────
 p += 1
-std("s-comp1", "COMPUTE", "Compute Node — 无状态 Postgres", [
-    T("comp-desc", 96, 180, 1088, 60,
-      "Compute = <b>无状态的 patched PostgreSQL</b>：数据目录每次启动重建，"
-      "relation pages 通过 smgr hook 网络请求 Pageserver，WAL 通过 walproposer 推 Safekeeper。",
-      fs=16, color=DIM, lh=1.7),
-    *card("cm1", 96, 280, 520, 200,
-          "compute_ctl 启动流程", [
-              "1. 接收 JSON compute spec",
-              "2. 清理并重建 PGDATA",
-              "3. 写入 postgresql.conf（neon GUC）",
-              "4. sync_safekeepers → 获取 commit LSN",
-              "5. basebackup from Pageserver（tarball）",
-              "6. 启动 postgres + apply spec（角色/库/扩展）",
-              "7. Bootstrap 模板执行（如有）",
-          ], fs=14, headfs=16),
-    *card("cm2", 656, 280, 530, 200,
-          "无状态特性", [
-              "• 关闭无需 fsync 用户数据",
-              "• Scale-to-Zero：闲置 → 销毁 pod",
-              "• 重启 → basebackup + on-demand GetPage",
-              "• LFC (Local File Cache) 加速热读",
-              "• vm_monitor：cgroup 动态内存 autoscale",
-              "• Prewarm：恢复时快速回填缓存",
-          ], hc=AC2, fs=14, headfs=16),
-], p, notes="Compute node 核心：无状态 patched PG，compute_ctl 负责启动编排，支持 scale-to-zero 和 autoscaling")
+std("s-comp1", "COMPUTE", "Compute Node — patched PostgreSQL 的四点关键改动", [
+    T("comp-desc", 96, 166, 1088, 40,
+      "Compute 是<b>打了补丁的 PostgreSQL</b>。每张卡片正文都分成两段："
+      "<span style='color:" + AC + ";font-weight:800'>■ 插件 pgxn/neon</span>（`shared_preload_libraries` 加载，改造主体）与 "
+      "<span style='color:#FF9E8A;font-weight:800'>■ 内核 patch</span>（改 PG 源码，只在插件够不到时才动）。",
+      fs=13, color=DIM, lh=1.6),
+    *card("cm1", 96, 212, 530, 218,
+          "① 替换 smgr <span style='font-size:11px;font-weight:700;color:#C89EFF;background:rgba(200,158,255,0.15);padding:2px 6px;border-radius:4px'>EXT + PATCH</span>", [
+              "<span style='color:" + AC + ";font-weight:800'>■ 插件（主体）</span>",
+              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>libpagestore.c:1649</span> 装 <b>smgr_hook = smgr_neon</b>",
+              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>neon_read</span> → LFC miss 则 GetPage@LSN（:1367）",
+              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>neon_write</span> → 写 LFC + 补 WAL-log，<b>不落 md</b>（:1596）",
+              "",
+              "<span style='color:#FF9E8A;font-weight:800'>■ 内核 patch（3 条，凿出 hook 点）</span>",
+              "&nbsp;&nbsp;· smgr 接口对扩展开放（core_changes.md:179）",
+              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>smgropen()</span> 加 relpersistence 区分 unlogged（:193）",
+              "&nbsp;&nbsp;· dbsize 改用 <span style='font-family:" + MONO + "'>dbsize_hook</span>，不扫 data dir（:221）",
+          ], hc=AC, fs=11.5, headfs=15),
+    *card("cm2", 656, 212, 530, 218,
+          "② WAL → SK 走 bgworker <span style='font-size:11px;font-weight:700;color:#C89EFF;background:rgba(200,158,255,0.15);padding:2px 6px;border-radius:4px'>EXT + PATCH</span>", [
+              "<span style='color:" + AC + ";font-weight:800'>■ 插件（主体）</span>",
+              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>walproposer_pg.c:689</span> 注册 <b>walproposer bgworker</b>",
+              "&nbsp;&nbsp;· :1566 读 <span style='font-family:" + MONO + "'>GetFlushRecPtr()</span> 广播 3 台 SK",
+              "&nbsp;&nbsp;· 等 <b>quorum=2</b> 达成即 commit ACK；与 smgr <b>两条独立路径</b>",
+              "",
+              "<span style='color:#FF9E8A;font-weight:800'>■ 内核 patch（2 条，辅助）</span>",
+              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>ProcessInterrupts</span> 加 callback 做背压（:325）",
+              "&nbsp;&nbsp;· walproposer 在 checkpointer <b>之后</b>关停（:388）",
+              "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#888'>——保证最后一条 CheckPoint WAL 能推到 SK</span>",
+          ], hc=AC2, fs=11.5, headfs=15),
+    *card("cm3", 96, 442, 530, 218,
+          "③ checkpoint 掏空 <span style='font-size:11px;font-weight:700;color:#00E599;background:rgba(0,229,153,0.15);padding:2px 6px;border-radius:4px'>纯 EXT</span>", [
+              "<span style='color:" + AC + ";font-weight:800'>■ 插件（全部）</span>",
+              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>neon_writeback / immedsync / registersync</span> 全 <b>no-op</b>",
+              "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#888'>pagestore_smgr.c:1230, 1888, 1922</span>",
+              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>BufferSync()</span> 刷脏页 → 底层 fsync <b>被架空</b>",
+              "",
+              "<span style='color:#FF9E8A;font-weight:800'>■ 内核 patch：无</span>",
+              "&nbsp;&nbsp;· checkpointer 进程 &amp; CheckPoint WAL record 都是 PG <b>原生、照常跑</b>",
+              "&nbsp;&nbsp;· 能纯插件做到，正是因为 ① 已把整张 smgr 表换掉",
+              "&nbsp;&nbsp;· 持久化靠 <span style='font-family:" + MONO + "'>XLogInsert</span> → 本地 fsync → walproposer",
+          ], hc="#C89EFF", fs=11.5, headfs=15),
+    *card("cm4", 656, 442, 530, 218,
+          "④ 启动跳过 replay <span style='font-size:11px;font-weight:700;color:#FF9E8A;background:rgba(255,158,138,0.15);padding:2px 6px;border-radius:4px'>纯 PATCH</span>", [
+              "<span style='color:" + AC + ";font-weight:800'>■ 插件：无</span>",
+              "&nbsp;&nbsp;· 启动流程 / <span style='font-family:" + MONO + "'>pg_control</span> 语义，插件<b>拦不到</b>",
+              "&nbsp;&nbsp;· 外围逻辑在 Rust 侧：compute_ctl 清空 pgdata + 拉 basebackup",
+              "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#888'>compute.rs:1201, 1601 · basebackup.rs:1-11</span>",
+              "",
+              "<span style='color:#FF9E8A;font-weight:800'>■ 内核 patch（改 xlog.c）</span>",
+              "&nbsp;&nbsp;· 读 <span style='font-family:" + MONO + "'>neon.signal</span> 的 LSN <b>直接进 running</b>（:119-135）",
+              "&nbsp;&nbsp;· <b>不读 checkpoint record、不做 WAL replay</b>",
+              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>pg_control</span> 伪装 DB_SHUTDOWNED（xlog_utils.rs:159）",
+          ], hc="#7CB3F4", fs=11.5, headfs=15),
+], p, notes="讲这页时先立设计原则：docs/core_changes.md:14-17 明确 'Most of the Neon-specific code is in the extensions, and for any new features, that is preferred over modifying core PostgreSQL code' —— 绝大多数改造在 pgxn/neon 扩展（shared_preload_libraries 加载），内核 patch 只在扩展够不到的地方动刀，且 core_changes.md 每条 patch 都带一节 'How to get rid of the patch'，长期目标是全部推上游、让未修改的 PG 也能跑 Neon 存储（:4-7）。徽章含义：[EXT]=纯扩展；[PATCH]=纯内核 patch；[EXT + PATCH]=扩展是主体但依赖内核 patch 凿出 hook 点。① 替换 smgr [EXT + PATCH]：主体是扩展——pagestore_smgr.c:2220 定义 neon_smgr 结构体（smgr_read=neon_read/smgr_write=neon_write），libpagestore.c:1649-1651 装 smgr_hook=smgr_neon / smgr_init_hook / dbsize_hook；permanent 关系 read 走 LFC→GetPage@LSN（:1367-1471），write 走 LFC+补 WAL-log（:1596-1675），临时/unlogged 表 fallback md。依赖三个内核 patch：core_changes.md:179-191 'Make smgr interface available to extensions'（改 smgr.c/smgr.h 共 275 行，凿出 smgr_hook，已提上游 commitfest 47/4428 但推进极慢）、:193-211 'Added relpersistence argument to smgropen()'（让 smgr 实现能区分 permanent/unlogged/temp，否则无法差异化处理 unlogged 表）、:221-232 'Use smgr and dbsize_hook for size calculations'（原生 dbsize.c 直接扫 data directory 算大小，在 Neon 下不成立）。② WAL→SK [EXT + PATCH]：主体是扩展——walproposer_pg.c:689 walprop_register_bgworker 注册 bgworker（bgw_library_name='neon', BgWorkerStart_RecoveryFinished），:180 WalProposerMain，:1566 XLogBroadcastWalProposer 读 GetFlushRecPtr()（本地已 fsync 的 pg_wal）广播给 3 台 SK，quorum=2 达成即 commit。依赖两个辅助 patch：core_changes.md:325-354 'Backpressure if pageserver doesn't ingest WAL fast enough'（在 ProcessInterrupts 里加 ProcessInterruptsCallback + retry label，让 PS 消费 WAL 落后时能在 compute 侧反压）、:388-395 'Shut down walproposer after checkpointer'（调整关停顺序，确保 checkpointer 最后一条 CheckPoint WAL record 也能推给 SK）。③ checkpoint 掏空 [EXT]：没有独立 patch，checkpointer 进程和 CheckPoint WAL record 都是 PG 原生行为、照常跑；扩展只是把 smgr 的刷盘方法做成 no-op——neon_writeback (pagestore_smgr.c:1230)/neon_immedsync (1888)/neon_registersync (1922) 对 permanent 关系全空转（日志打 'writeback noop'/'immedsync noop'），BufferSync 遍历脏页调下来时底层 fsync 被架空。这条能纯扩展实现，正是因为 ① 已经把整个 smgr 表换掉了。持久化真正靠 AM 层 XLogInsert → 本地 pg_wal fsync → walproposer → SK quorum。④ 启动跳过 crash recovery [PATCH]：这是真·内核 patch，启动流程和 pg_control 语义扩展拦不到——core_changes.md:119-135 'Allow startup without reading checkpoint record' 改 xlog.c，读 neon.signal（也兼容 zenith.signal）里的 LSN 作为起点、直接认定该 LSN 一致，不读最后的 checkpoint record、不做 WAL redo；'How to get rid of the patch' 一栏写的是 '???'，说明连 Neon 自己都还没想好怎么消掉。配套的不是插件也不是 patch，而是 Rust 侧：libs/postgres_ffi/src/xlog_utils.rs:159-176 generate_pg_control 造出 checkPoint=0 / state=DB_SHUTDOWNED 的假 pg_control 塞进 basebackup tarball；compute_tools/src/compute.rs:1201 create_pgdata 清空目录、:1601-1650 prepare_pgdata 拉 tarball 解压（pageserver/src/basebackup.rs:1-11：只含 non-relational data——pg_control/SLRU/filenodemap/twophase/neon.signal/dummy WAL segment，关系文件是占位空文件）。注意 core_changes.md:145-146 记了备选方案是往 tarball 里塞假 checkpoint record，但被否了——怕假 WAL 意外流到 safekeeper 覆盖真 WAL。")
 
 # ─────── Slide 6: Compute 状态机 ───────
 p += 1
@@ -877,7 +944,8 @@ std("s-ps-model", "PAGESERVER", "多租户模型：Tenant / Timeline", [
 p += 1
 std("s-ps-layer", "PAGESERVER", "Layer 文件：不可变的两级 LSM", [
     T("ly-desc", 96, 172, 1088, 44,
-      "所有数据存为<b>不可变</b> Layer 文件。两种类型，二维划分：Key 范围 × LSN 范围。",
+      "所有<b>落盘</b>数据存为<b>不可变</b> Layer 文件。两种类型，二维划分：Key 范围 × LSN 范围。"
+      "<span style='font-size:12.5px;color:" + FAINT + "'>（落盘之前还有一层内存写缓冲 InMemoryLayer，见下一页）</span>",
       fs=16, color=DIM, lh=1.6),
     *card("ly1", 96, 232, 530, 150,
           "Image Layer（快照）", [
@@ -919,7 +987,65 @@ std("s-ps-layer", "PAGESERVER", "Layer 文件：不可变的两级 LSM", [
       fs=11, color=DIM, lh=1.6),
 ], p, notes="Layer 文件：Image（快照）+ Delta（增量），L0（全 key 空间）→ L1（按 key 切分），只有两级 LSM。补充：L1 内同一 key range 上 delta 可纵向叠 3~10 层（count_deltas 注释 layer_map.rs:843-845 'in practice between 3 and 10'），达 image_creation_threshold（默认 3）就物化 image 压平下面的 delta 栈，但层级标签仍只有 L0/L1 两个值，不存在 L2/L3。is_l0 判定见 layer_map.rs:793 is_delta_layer && key_range==Key::MIN..Key::MAX。compact_level0（compaction.rs:1839）doc 明确 'compact and reshuffle them as Level 1 files'，L0 进 L1 出一跳到底。数据变多的消化方式：L1 delta 按 key 切分变多（横向变宽 128MB 一份 compaction_target_size），以及 image 物化压平 delta 栈，都不是加深层数。")
 
-# ─────── Slide 10a: 从文件名区分 L0 / L1（S3 视角）───────
+# ─────── Slide 10a: InMemoryLayer = pageserver 的 MemTable ───────
+p += 1
+std("s-ps-inmem", "PAGESERVER", "写入缓冲 InMemoryLayer：pageserver 的 MemTable", [
+    T("im-desc", 96, 166, 1088, 44,
+      "上一页两级 LSM 都在磁盘 / S3 上。它们<b>之前</b>，ingest 的 WAL 先进一层内存写缓冲 "
+      "<span style='font-family:" + MONO + "'>InMemoryLayer</span> —— 等价 LSM 的 <b>MemTable</b>。"
+      "所以 pageserver 严格说是<b>三级</b>：内存写缓冲 → L0 → L1。",
+      fs=13, color=DIM, lh=1.6),
+    # ── pipeline diagram ──
+    R("im-bandA", 86, 228, 529, 120, fill="rgba(255,158,138,0.06)", stroke="rgba(255,158,138,0.28)", radius=10),
+    T("im-bandA-l", 96, 234, 509, 20, "① InMemoryLayer（内存写缓冲 = MemTable 等价物）", fs=12, fw=800, color=AC2),
+    R("im-bandB", 664, 228, 520, 120, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.28)", radius=10),
+    T("im-bandB-l", 674, 234, 500, 20, "② 两级 LSM（不可变，磁盘 → S3）", fs=12, fw=800, color=AC),
+    R("im-b1", 96, 266, 220, 72, fill="rgba(255,158,138,0.16)", stroke="rgba(255,158,138,0.45)", radius=8),
+    T("im-b1t", 96, 278, 220, 22, "open_layer", fs=15, fw=800, color=AC2, align="center", ff=MONO),
+    T("im-b1s", 96, 304, 220, 18, "可写 · MemTable", fs=11, color=DIM, align="center"),
+    R("im-b2", 385, 266, 220, 72, fill="rgba(200,158,255,0.14)", stroke="rgba(200,158,255,0.45)", radius=8),
+    T("im-b2t", 385, 278, 220, 22, "frozen_layers", fs=15, fw=800, color="#C89EFF", align="center", ff=MONO),
+    T("im-b2s", 385, 304, 220, 18, "不可变队列 · 待 flush", fs=11, color=DIM, align="center"),
+    R("im-b3", 674, 266, 220, 72, fill="rgba(255,158,138,0.10)", stroke="rgba(255,158,138,0.35)", radius=8),
+    T("im-b3t", 674, 278, 220, 22, "L0 delta", fs=15, fw=800, color=AC2, align="center", ff=MONO),
+    T("im-b3s", 674, 304, 220, 18, "磁盘 · 不可变", fs=11, color=DIM, align="center"),
+    R("im-b4", 963, 266, 220, 72, fill="rgba(0,229,153,0.14)", stroke="rgba(0,229,153,0.45)", radius=8),
+    T("im-b4t", 963, 278, 220, 22, "L1 delta/image", fs=15, fw=800, color=AC, align="center", ff=MONO),
+    T("im-b4s", 963, 304, 220, 18, "S3 · 按 key 切分", fs=11, color=DIM, align="center"),
+    LN("im-a1", 316, 302, 69, 0, stroke=A_NEU, sw=2),
+    T("im-a1l", 305, 244, 90, 18, "freeze", fs=11, fw=700, color=FAINT, align="center"),
+    LN("im-a2", 605, 302, 69, 0, stroke=A_GRN, sw=2),
+    T("im-a2l", 594, 244, 90, 18, "flush 写盘", fs=11, fw=700, color=AC, align="center"),
+    LN("im-a3", 894, 302, 69, 0, stroke=A_GRN, sw=2),
+    T("im-a3l", 883, 244, 90, 18, "compaction", fs=11, fw=700, color=FAINT, align="center"),
+    # ── two cards ──
+    *card("im-c1", 96, 366, 530, 294,
+          "“in-memory” 其实名不副实", [
+              "结构注释直言：<b>页面数据不在内存</b>，而在一个",
+              "<b>ephemeral file</b>（本地临时文件，走 page_cache 缓冲）",
+              "",
+              "内存里只放<b>索引</b>：",
+              "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>BTreeMap&lt;Key, VecMap&lt;Lsn, IndexEntry&gt;&gt;</span>",
+              "&nbsp;&nbsp;（IndexEntry = 该页版本在文件里的偏移）",
+              "",
+              "文件 <b>append-only</b>：读时先查内存索引，再按偏移读文件",
+              "<span style='color:#888'>inmemory_layer.rs:1-5（注释）· :70（index）</span>",
+          ], hc=AC2, fs=12, headfs=15),
+    *card("im-c2", 656, 366, 530, 294,
+          "三级流水线 & 落盘触发", [
+              "<b>创建</b>：首条 WAL 到达时 <span style='font-family:" + MONO + "'>get_layer_for_write</span>",
+              "&nbsp;&nbsp;新建 open_layer（layer_manager.rs:395-429）",
+              "<b>freeze</b>：<span style='font-family:" + MONO + "'>checkpoint_distance</span> 累计字节 / 定时 tick",
+              "&nbsp;&nbsp;到阈值 → 挪进 frozen_layers，换开新 open_layer（:451-464）",
+              "<b>flush</b>：后台取 <span style='font-family:" + MONO + "'>frozen_layers.front()</span>",
+              "&nbsp;&nbsp;→ create_delta_layer 写成不可变 L0（timeline.rs:5000,5158）",
+              "",
+              "<b>读路径</b>：open + frozen <b>优先于</b>磁盘 layer map",
+              "&nbsp;&nbsp;（跟 LSM 先查 memtable 再查 SST 一致，timeline.rs:658-697）",
+          ], hc=AC, fs=12, headfs=15),
+], p, notes="pageserver 有 MemTable 等价物，就叫 InMemoryLayer（pageserver/src/tenant/storage_layer/inmemory_layer.rs）。层级对应：LSM active memtable ↔ LayerMap.open_layer:Option<Arc<InMemoryLayer>>（layer_manager.rs:395-429 get_layer_for_write，首条 WAL 到达时创建）；LSM immutable memtable ↔ LayerMap.frozen_layers:VecDeque<Arc<InMemoryLayer>>（layer_manager.rs:451-464 try_freeze_in_memory_layer：open_layer.freeze(end_lsn) 后 push_back 到 frozen_layers、清空 open_layer、next_open_layer_at=end_lsn）；memtable flush→SSTable ↔ flush_frozen_layer→create_delta_layer 生成 L0 delta（timeline.rs:5000 取 frozen_layers.front()，5158-5255 flush_frozen_layer）。关键差异：inmemory_layer.rs:1-5 注释明说 'The in-memory part of the name is a bit misleading: the actual page versions are held in an ephemeral file, not in memory. The metadata for each page version, i.e. its position in the file, is kept in memory'——真正在内存的只是 index:RwLock<BTreeMap<CompactKey,VecMap<Lsn,IndexEntry>>>（inmemory_layer.rs:70），IndexEntry 是 ephemeral file 内偏移；文件 append-only（EphemeralFile，走 page_cache）。freeze 触发：open_layer.tick()/checkpoint_distance（timeline.rs:2128-2164）。读路径优先级：ReadPathLayerId::InMemoryLayer 先查 open_layer+frozen_layers 再查磁盘（timeline.rs:658-697,2603-2608），与 LSM 先 memtable 后 SST 一致。所以严格说 pageserver 是三级：open_layer(可写,非纯内存)→frozen_layers(不可变待flush)→磁盘 L0/L1（真正的两级 LSM）。")
+
+# ─────── Slide 10b: 从文件名区分 L0 / L1（S3 视角）───────
 p += 1
 std("s-ps-layer-name", "PAGESERVER", "S3 上怎么区分 L0 / L1：光看文件名就够了", [
     T("lyn-desc", 96, 172, 1088, 40,
@@ -1139,6 +1265,65 @@ std("s-bc", "协调层", "Storage Broker & Storage Controller", [
               "compute hook: notify-attach / notify-safekeepers",
           ], hc=AC, fs=13, headfs=18),
 ], p, notes="Storage Broker 无状态服务发现，SK publish / PS subscribe（+discovery pub）；Storage Controller 统一管理 PS 和 SK，reconciliation-loop 模式")
+
+# ─────── Storage Controller 的 PG 表结构 ───────
+p += 1
+std("s-storcon-schema", "协调层", "Storage Controller 的元数据表（依赖一套独立 PG）", [
+    T("scs-desc", 96, 166, 1088, 40,
+      "storcon 用 <b>diesel</b> 把\"谁在哪、谁归谁管、谁该干啥\"落到独立 PG。"
+      "<span style='color:" + DIM + "'>只存必须持久的少量对象（generation、policy、成员集合），业务读通常走内存。见 "
+      "<code>persistence.rs:49-77</code>。<span style='color:" + AC2 + "'>hadron_*</span> 两表由上游 PR #12649 引入（非本 fork），目前仅有 schema。</span>",
+      fs=13, color=DIM, lh=1.6),
+    *card("scs1", 96, 212, 530, 218,
+          "集群拓扑（节点注册表）", [
+              "<b style='color:" + FG + "'>nodes</b> — pageserver 注册：id、http/pg/grpc 地址、AZ、",
+              "&nbsp;scheduling_policy、lifecycle（drain/fill 等）",
+              "",
+              "<b style='color:" + FG + "'>safekeepers</b> — SK 注册（cplane 同步而来）：",
+              "&nbsp;region、version、host/http_port、AZ、scheduling_policy",
+              "",
+              "<b style='color:" + FG + "'>hadron_safekeepers</b> — SK 自注册简表：",
+              "&nbsp;sk_node_id + listen_http/pg 地址",
+              "&nbsp;<span style='color:" + AC2 + "'>⚠ schema-only：仅建表，无业务代码读写</span>",
+          ], hc="#7CB3F4", fs=11.5, headfs=15),
+    *card("scs2", 656, 212, 530, 218,
+          "租户 & 分片状态", [
+              "<b style='color:" + FG + "'>tenant_shards</b> — 每个 shard 一行，核心之一：",
+              "&nbsp;<b>generation</b>（单调递增防脑裂）、generation_pageserver（",
+              "&nbsp;当前 attach 到哪台 PS）、placement_policy、splitting、",
+              "&nbsp;shard_stripe_size、config(JSON)、preferred_az_id",
+              "",
+              "<b style='color:" + FG + "'>metadata_health</b> — 每个 shard 的元数据健康位：",
+              "&nbsp;scrubber 巡检结果 (healthy, last_scrubbed_at)，",
+              "&nbsp;FK ON DELETE CASCADE → tenant_shards",
+          ], hc=AC, fs=11.5, headfs=15),
+    *card("scs3", 96, 442, 530, 218,
+          "Timeline ↔ SK 成员编排", [
+              "<b style='color:" + FG + "'>timelines</b> — timeline 到 SK 成员集合：",
+              "&nbsp;start_lsn(pg_lsn)、<b>generation</b>、sk_set / new_sk_set、",
+              "&nbsp;cplane_notified_generation、sk_set_notified_generation",
+              "",
+              "<b style='color:" + FG + "'>safekeeper_timeline_pending_ops</b> — 待下发操作队列：",
+              "&nbsp;op_kind ∈ {<b>pull</b>, <b>exclude</b>, <b>delete</b>}（reconciler 消费）",
+              "",
+              "<b style='color:" + FG + "'>hadron_timeline_safekeepers</b> — timeline",
+              "&nbsp;→ sk_node_id 映射，legacy_endpoint_id(UUID) 兼容老数据",
+              "&nbsp;<span style='color:" + AC2 + "'>⚠ schema-only：仅建表，无业务代码读写</span>",
+          ], hc=AC2, fs=11.5, headfs=15),
+    *card("scs4", 656, 442, 530, 218,
+          "运维 & Schema 版本", [
+              "<b style='color:" + FG + "'>controllers</b> — storcon 副本活性表：",
+              "&nbsp;(address, started_at) 双主键，用于 <b>leader 选举</b>、",
+              "&nbsp;防止多副本同时决策；get_leader / update_leader",
+              "&nbsp;（persistence.rs:1252-1277）",
+              "",
+              "<b style='color:" + FG + "'>timeline_imports</b> — 外部 timeline 导入进度：",
+              "&nbsp;shard_statuses(JSONB) 记录每个 shard 的导入状态",
+              "",
+              "<b style='color:" + FG + "'>__diesel_schema_migrations</b> — diesel embed_migrations",
+              "&nbsp;版本表；启动时自动执行 ./migrations/*.sql",
+          ], hc="#C89EFF", fs=11.5, headfs=15),
+], p, notes="11 张表按 4 组归类。注意 hadron_safekeepers / hadron_timeline_safekeepers 来自上游 neondatabase/neon PR #12649（commit 8f627ea0a，2025-07-17），不是本 fork 新增；这两张表只有 schema.rs 声明和 migration 建表，没有任何 insert/select 代码，所以线上是空表。")
 
 # ─────── 防脑裂 ───────
 
