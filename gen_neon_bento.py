@@ -602,39 +602,293 @@ std("s-comp1", "COMPUTE", "Compute Node — patched PostgreSQL 的四点关键�
           ], hc="#7CB3F4", fs=11.5, headfs=15),
 ], p, notes="讲这页时先立设计原则：docs/core_changes.md:14-17 明确 'Most of the Neon-specific code is in the extensions, and for any new features, that is preferred over modifying core PostgreSQL code' —— 绝大多数改造在 pgxn/neon 扩展（shared_preload_libraries 加载），内核 patch 只在扩展够不到的地方动刀，且 core_changes.md 每条 patch 都带一节 'How to get rid of the patch'，长期目标是全部推上游、让未修改的 PG 也能跑 Neon 存储（:4-7）。徽章含义：[EXT]=纯扩展；[PATCH]=纯内核 patch；[EXT + PATCH]=扩展是主体但依赖内核 patch 凿出 hook 点。① 替换 smgr [EXT + PATCH]：主体是扩展——pagestore_smgr.c:2220 定义 neon_smgr 结构体（smgr_read=neon_read/smgr_write=neon_write），libpagestore.c:1649-1651 装 smgr_hook=smgr_neon / smgr_init_hook / dbsize_hook；permanent 关系 read 走 LFC→GetPage@LSN（:1367-1471），write 走 LFC+补 WAL-log（:1596-1675），临时/unlogged 表 fallback md。依赖三个内核 patch：core_changes.md:179-191 'Make smgr interface available to extensions'（改 smgr.c/smgr.h 共 275 行，凿出 smgr_hook，已提上游 commitfest 47/4428 但推进极慢）、:193-211 'Added relpersistence argument to smgropen()'（让 smgr 实现能区分 permanent/unlogged/temp，否则无法差异化处理 unlogged 表）、:221-232 'Use smgr and dbsize_hook for size calculations'（原生 dbsize.c 直接扫 data directory 算大小，在 Neon 下不成立）。② WAL→SK [EXT + PATCH]：主体是扩展——walproposer_pg.c:689 walprop_register_bgworker 注册 bgworker（bgw_library_name='neon', BgWorkerStart_RecoveryFinished），:180 WalProposerMain，:1566 XLogBroadcastWalProposer 读 GetFlushRecPtr()（本地已 fsync 的 pg_wal）广播给 3 台 SK，quorum=2 达成即 commit。依赖两个辅助 patch：core_changes.md:325-354 'Backpressure if pageserver doesn't ingest WAL fast enough'（在 ProcessInterrupts 里加 ProcessInterruptsCallback + retry label，让 PS 消费 WAL 落后时能在 compute 侧反压）、:388-395 'Shut down walproposer after checkpointer'（调整关停顺序，确保 checkpointer 最后一条 CheckPoint WAL record 也能推给 SK）。③ checkpoint 掏空 [EXT]：没有独立 patch，checkpointer 进程和 CheckPoint WAL record 都是 PG 原生行为、照常跑；扩展只是把 smgr 的刷盘方法做成 no-op——neon_writeback (pagestore_smgr.c:1230)/neon_immedsync (1888)/neon_registersync (1922) 对 permanent 关系全空转（日志打 'writeback noop'/'immedsync noop'），BufferSync 遍历脏页调下来时底层 fsync 被架空。这条能纯扩展实现，正是因为 ① 已经把整个 smgr 表换掉了。持久化真正靠 AM 层 XLogInsert → 本地 pg_wal fsync → walproposer → SK quorum。④ 启动跳过 crash recovery [PATCH]：这是真·内核 patch，启动流程和 pg_control 语义扩展拦不到——core_changes.md:119-135 'Allow startup without reading checkpoint record' 改 xlog.c，读 neon.signal（也兼容 zenith.signal）里的 LSN 作为起点、直接认定该 LSN 一致，不读最后的 checkpoint record、不做 WAL redo；'How to get rid of the patch' 一栏写的是 '???'，说明连 Neon 自己都还没想好怎么消掉。配套的不是插件也不是 patch，而是 Rust 侧：libs/postgres_ffi/src/xlog_utils.rs:159-176 generate_pg_control 造出 checkPoint=0 / state=DB_SHUTDOWNED 的假 pg_control 塞进 basebackup tarball；compute_tools/src/compute.rs:1201 create_pgdata 清空目录、:1601-1650 prepare_pgdata 拉 tarball 解压（pageserver/src/basebackup.rs:1-11：只含 non-relational data——pg_control/SLRU/filenodemap/twophase/neon.signal/dummy WAL segment，关系文件是占位空文件）。注意 core_changes.md:145-146 记了备选方案是往 tarball 里塞假 checkpoint record，但被否了——怕假 WAL 意外流到 safekeeper 覆盖真 WAL。")
 
+# ─────── compute_ctl 总览 ───────
+p += 1
+std("s-computectl", "COMPUTE", "compute_ctl —— compute 容器里的 PostgreSQL 监护进程", [
+    T("cc-desc", 96, 162, 1088, 36,
+      "compute_ctl 是 compute 容器的 <b>entrypoint / 1 号进程</b>，postgres 是它 fork 出来的子进程。"
+      "它把「控制面给的 <span style='font-family:" + MONO + "'>ComputeSpec</span>」翻译成「一个连好存储、建好库和角色的可用 PG」。"
+      "<span style='color:" + DIM + "'>compute_tools/src/bin/compute_ctl.rs:1-35 · README.md</span>",
+      fs=12, color=DIM, lh=1.55),
+    # Left: lifecycle
+    R("cc-l-bg", 96, 204, 636, 344, fill=PANEL, stroke=EDGE, radius=12),
+    T("cc-l-h", 116, 216, 600, 22, "启动流程  ComputeNode::run()  compute.rs:627", fs=14, fw=800, color=AC),
+    T("cc-l-b", 116, 246, 600, 294,
+      "<b>①</b> 拉起两个 HTTP server：<b>3080</b> 对控制面 / <b>3081</b> 对本机组件<br>"
+      "<b>②</b> <span style='font-family:" + MONO + "'>wait_spec()</span>(:752) —— spec 来自 CLI 参数，或阻塞等 "
+      "<span style='font-family:" + MONO + "'>POST /configure</span><br>"
+      "<b>③</b> <span style='font-family:" + MONO + "'>start_compute()</span>(:793) 冷启动，顺序做四件事：<br>"
+      "&nbsp;&nbsp;· 下载 remote extensions<br>"
+      "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>prepare_pgdata()</span>(:1601)：清空 pgdata、写 postgresql.conf、<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;sync safekeepers 定起点、拉 <b>basebackup</b> 解压、写 pg_hba<br>"
+      "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>start_postgres()</span>(:1789) fork 出 postgres<br>"
+      "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>configure_as_primary()</span>(:2179) → <span style='font-family:" + MONO + "'>apply_config()</span>(:1972)<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;按 <b>ApplySpecPhase</b> 建 role/db/extension，最后跑 bootstrap template<br>"
+      "<b>④</b> 状态置 <b style='color:" + AC + "'>Running</b>(:1039)，起 vm-monitor<br>"
+      "<b>⑤</b> 等 postgres 退出 → 清理（失败时多等 30s 便于抓日志）<br><br>"
+      "<b style='color:" + AC2 + "'>热变更</b>：configurator 线程(configurator.rs:13)常驻，监听到<br>"
+      "&nbsp;&nbsp;ConfigurationPending → <span style='font-family:" + MONO + "'>reconfigure()</span>(:2089)：改 conf + "
+      "<span style='font-family:" + MONO + "'>pg_reload_conf</span> + 重放 spec SQL，<b>不重启 PG</b>",
+      fs=11.5, color=DIM, lh=1.62),
+    # Right: HTTP API
+    R("cc-r-bg", 752, 204, 432, 344, fill=PANEL, stroke=EDGE, radius=12),
+    T("cc-r-h", 772, 216, 400, 22, "HTTP 双端口  http/server.rs:38", fs=13, fw=800, color=AC2),
+    T("cc-r-b", 772, 244, 396, 296,
+      "<b style='color:" + FG + "'>3080 外部</b> —— 控制面 + 监控抓取<br>"
+      "&nbsp;<span style='font-family:" + MONO + "'>/status</span> 状态机状态 · <span style='font-family:" + MONO + "'>/configure</span> 下发 spec<br>"
+      "&nbsp;<span style='font-family:" + MONO + "'>/terminate</span> 停机 · <span style='font-family:" + MONO + "'>/promote</span> 副本升主<br>"
+      "&nbsp;<span style='font-family:" + MONO + "'>/check_writability</span> 可写探活<br>"
+      "&nbsp;<span style='font-family:" + MONO + "'>/dbs_and_roles</span> <span style='font-family:" + MONO + "'>/database_schema</span><br>"
+      "&nbsp;<span style='font-family:" + MONO + "'>/lfc/prewarm</span> <span style='font-family:" + MONO + "'>/lfc/offload</span><br>"
+      "&nbsp;<span style='font-family:" + MONO + "'>/metrics</span> <span style='font-family:" + MONO + "'>/autoscaling_metrics</span>"
+      "<span style='color:" + FAINT + "'>（免鉴权）</span><br><br>"
+      "<b style='color:" + FG + "'>3081 内部</b> —— neon 扩展 / local_proxy<br>"
+      "&nbsp;<span style='font-family:" + MONO + "'>/extensions</span> 装扩展 · <span style='font-family:" + MONO + "'>/grants</span> 补授权<br>"
+      "&nbsp;<span style='font-family:" + MONO + "'>/extension_server/{file}</span> 拉扩展文件<br>"
+      "&nbsp;<span style='font-family:" + MONO + "'>/refresh_configuration</span> 自触发重配<br>"
+      "<span style='color:" + AC2 + ";font-size:10px'>⚠ 实测绑 <span style='font-family:" + MONO + "'>::</span>(0.0.0.0) 且免鉴权，"
+      "注释里 TODO 想改回 loopback 未落地（server.rs:194-197）</span>",
+      fs=11, color=DIM, lh=1.5),
+    # Bottom band
+    R("cc-b-bg", 96, 560, 1088, 96, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)", radius=10),
+    T("cc-b-h", 116, 572, 900, 20, "核心数据结构", fs=13, fw=800, color="#7CB3F4"),
+    T("cc-b-b", 116, 598, 1048, 50,
+      "• <span style='font-family:" + MONO + "'>ComputeNodeParams</span>(compute.rs:85) 命令行来的静态参数 ｜ "
+      "<span style='font-family:" + MONO + "'>ComputeNode</span>(:139) 全局单例，内含 <span style='font-family:" + MONO + "'>Mutex&lt;ComputeState&gt;</span>(:173) ｜ "
+      "<span style='font-family:" + MONO + "'>ParsedSpec</span>(:254) 校验并解出 tenant/timeline 后的 spec<br>"
+      "• 顺带管的周边：<span style='font-family:" + MONO + "'>pgbouncer</span> 参数下发、local_proxy 配置、swap/磁盘扩容、LFC prewarm/offload",
+      fs=12, color=DIM, lh=1.62),
+], p, notes="compute_ctl 是 compute 容器的 entrypoint（Docker entrypoint 或 systemd ExecStart），是 Pod 里的 1 号/监护进程，postgres 是它 fork 的子进程。源码 compute_tools crate，入口 bin/compute_ctl.rs（main 在 :213），核心逻辑 compute_tools/src/compute.rs。职责一句话：把控制面给的 ComputeSpec 翻译成一个连好存储、建好库和角色的可用 PG。启动流程 ComputeNode::run() compute.rs:627：① 起两个 HTTP server，external 3080（compute_ctl.rs:78）给控制面和监控，internal 3081（:83）给 neon 扩展和 local_proxy；② wait_spec()(:752)，spec 可以启动时用 CLI 参数带进来，也可以阻塞等控制面 POST /configure 推过来；③ start_compute()(:793) 冷启动：下载 remote extensions → prepare_pgdata()(:1601) 清空 pgdata、写 postgresql.conf、sync safekeepers 确定起点 LSN、拉 basebackup tarball 解压、写 pg_hba → 调整 swap/磁盘 → 起 monitor 和 configurator 线程 → start_postgres()(:1789) fork postgres → configure_as_primary()(:2179) 调 apply_config()(:1972) 按 ApplySpecPhase 各阶段建 role/database/extension，最后（在 extension phase 之后）跑 bootstrap template（spec_apply.rs:358）；④ 状态置 Running(:1039)，起 vm-monitor；⑤ 等 postgres 退出后清理，失败时多等 30s 方便抓日志。热变更走 configurator 线程（configurator.rs:13 configurator_main_loop）常驻循环，等到 ConfigurationPending 或 RefreshConfigurationPending 就调 reconfigure()(compute.rs:2089)，重写 postgresql.conf + pg_reload_conf + 重放 spec SQL，不重启 PG。HTTP 路由定义在 http/server.rs:38-49，外部路由 :94-127，内部路由 :66-84；/metrics 和 /autoscaling_metrics 免鉴权，其余外部路由要鉴权；内部还有 /failpoints 仅测试构建开放。⚠ 3081 端口实际绑定 Ipv6Addr::UNSPECIFIED（http/server.rs:196，等价于双栈 :: / 0.0.0.0），并非注释所说的 loopback；:194-195 有 TODO 说明是因为 GitHub Actions runner 不允许绑 localhost 才临时放开，一直未改回。内部 router（:64-87）也没挂 AsyncRequireAuthorizationLayer，所以 /extensions /grants /refresh_configuration /extension_server/* 事实上暴露给整个 Pod 网络且免鉴权，安全靠部署侧 NetworkPolicy 兜底。pgxn/neon 里 curl 目标虽然写的 http://localhost:{neon.extension_server_port}/...（extension_server.c:49、libpagestore.c:1078），但那只是客户端选择走 loopback，服务端并没做绑定收敛。核心结构体：ComputeNodeParams(compute.rs:85) 静态 CLI 参数、ComputeNode(:139) 全局单例内含 Mutex<ComputeState>(:173) 存 status/pspec/metrics、ParsedSpec(:254) 是校验并解出 tenant_id/timeline_id 后的 spec。本页只讲总览，具体细节分散在相邻各页：状态机（11 个状态，responses.rs:174）在下一页，ComputeSpec 字段在 s-compute-spec，basebackup 在 s-basebackup，bootstrap template 在 s-boot，DDL 反向同步在 s-ddl-fwd。")
+
+# ─────── Slide 5.6: 3081 内部端口的两类调用方 ───────
+p += 1
+std("s-cc-internal", "COMPUTE", "内部端口 3081 —— 4 个路由，两类调用方", [
+    T("ci-desc", 96, 162, 1088, 34,
+      "PG 后端（backend / bgworker）靠 GUC <span style='font-family:" + MONO + "'>neon.extension_server_port</span> 找到 3081，"
+      "该 GUC 由 compute_ctl 启动时写进 postgresql.conf（<span style='color:" + DIM + "'>compute_tools/src/config.rs:345</span>），"
+      "然后用 <b>libcurl</b> 回调。<b style='color:" + AC2 + "'>4 个路由里 Postgres 只用其中 2 个。</b>",
+      fs=12, color=DIM, lh=1.5),
+    # Left: the two routes Postgres itself calls
+    R("ci-l-bg", 96, 204, 700, 348, fill="rgba(0,229,153,0.055)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("ci-l-h", 116, 216, 660, 22, "① Postgres（pgxn/neon 扩展）主动调 —— 只有这两个", fs=13.5, fw=800, color=AC),
+    T("ci-l-b", 116, 246, 660, 294,
+      "<b style='color:" + FG + "'>POST /extension_server/{filename}</b>"
+      "<span style='color:" + FAINT + "'>　pgxn/neon/extension_server.c:33</span><br>"
+      "&nbsp;· <span style='font-family:" + MONO + "'>neon_download_extension_file_http</span>，挂在 "
+      "<span style='font-family:" + MONO + "'>download_extension_file_hook</span> 上（:110-111）<br>"
+      "&nbsp;· <b>时机</b>：执行 <span style='font-family:" + MONO + "'>CREATE EXTENSION xxx</span>（或 PG 加载扩展库）时，本地 "
+      "<span style='font-family:" + MONO + "'>$PGSHAREDIR/extension/xxx--*.sql</span> / "
+      "<span style='font-family:" + MONO + "'>$PKGLIBDIR/xxx.so</span> 不存在 → PG 走 hook → "
+      "compute_ctl 从对象存储把扩展文件拉下来塞进容器 FS，PG 再重试 open<br>"
+      "&nbsp;· 每个 SQL / so 文件一次请求，<span style='font-family:" + MONO + "'>?is_library=true</span> 区分二进制<br><br>"
+      "<b style='color:" + FG + "'>POST /refresh_configuration</b>"
+      "<span style='color:" + FAINT + "'>　pgxn/neon/libpagestore.c:1058</span><br>"
+      "&nbsp;· <span style='font-family:" + MONO + "'>hadron_request_configuration_refresh</span>，"
+      "<b>仅在 lakebase_mode</b>（Hadron fork 的 GUC）下启用（:1065）<br>"
+      "&nbsp;· <b>时机</b>：backend 跟 pageserver 掉线或读到异常，怀疑自己被路由到了<b>错误的 PS</b>"
+      "（比如那台是 secondary）→ 主动「戳」一下 compute_ctl，让它去问控制面拉新 spec<br>"
+      "&nbsp;· 4 处触发：<span style='font-family:" + MONO + "'>:1367</span> EOF · "
+      "<span style='font-family:" + MONO + "'>:1374</span> 读 COPY 失败 · "
+      "<span style='font-family:" + MONO + "'>:1381</span> 意外返回码 · "
+      "<span style='font-family:" + MONO + "'>:1390</span> 上层收尾<br>"
+      "&nbsp;· <b style='color:" + AC2 + "'>best-effort</b>：3s 超时，失败只记 WARNING，"
+      "连续失败超过阈值才 cancel 当前 query",
+      fs=11, color=DIM, lh=1.52),
+    # Right: local_proxy's two routes
+    R("ci-r-bg", 812, 204, 372, 348, fill="rgba(200,158,255,0.06)", stroke="rgba(200,158,255,0.3)", radius=12),
+    T("ci-r-h", 832, 216, 332, 22, "② 不是 Postgres 调的 —— local_proxy", fs=13, fw=800, color="#C89EFF"),
+    T("ci-r-b", 832, 246, 332, 294,
+      "<b style='color:" + FG + "'>POST /extensions</b><br>"
+      "&nbsp;装 <span style='font-family:" + MONO + "'>pg_session_jwt</span> 0.3.1 到 schema "
+      "<span style='font-family:" + MONO + "'>auth</span><br><br>"
+      "<b style='color:" + FG + "'>POST /grants</b><br>"
+      "&nbsp;给 JWKS 里声明的 role 补 schema 授权<br><br>"
+      "<b>调用方</b>：local_proxy —— Neon Auth / serverless driver 在 Pod 内的边车<br>"
+      "<b>时机</b>：<span style='font-family:" + MONO + "'>connect_to_local_postgres</span> 对某个库<b>首次</b>建连接池时，"
+      "各 db 一次，走信号量串行<br>"
+      "<span style='color:" + FAINT + "'>proxy/src/serverless/backend.rs:311-341</span><br><br>"
+      "要求 compute 已在 <b style='color:" + AC + "'>Running</b>，否则 <span style='font-family:" + MONO + "'>/extensions</span> 直接拒<br>"
+      "<span style='color:" + FAINT + "'>compute_tools/…/routes/extensions.rs:19</span>",
+      fs=11, color=DIM, lh=1.52),
+    # Bottom band
+    R("ci-b-bg", 96, 564, 1088, 92, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.32)", radius=10),
+    T("ci-b-h", 116, 576, 900, 20, "⚠ 「内部」只是命名，不是隔离", fs=13, fw=800, color=AC2),
+    T("ci-b-b", 116, 602, 1048, 46,
+      "• 客户端侧确实打 <span style='font-family:" + MONO + "'>http://localhost:{neon.extension_server_port}/…</span>"
+      "（extension_server.c:49、libpagestore.c:1078），但那只是<b>调用方选择</b>走 loopback<br>"
+      "• 服务端实测绑 <span style='font-family:" + MONO + "'>Ipv6Addr::UNSPECIFIED</span>（<span style='font-family:" + MONO + "'>::</span> / 0.0.0.0，server.rs:196-197），"
+      "内部 router（:64-87）<b>也没挂鉴权层</b> → 4 个路由对整个 Pod 网络可达且免鉴权，只能靠部署侧 <b>NetworkPolicy</b> 兜底",
+      fs=11.5, color=DIM, lh=1.6),
+], p, notes="本页把 3081 内部端口的 4 个路由按调用方分成两类，要点：3081 不等于「Postgres 专用端口」，Postgres 只用其中 2 个。端口发现机制：compute_ctl 启动时把 internal http port 写成 GUC neon.extension_server_port 进 postgresql.conf（compute_tools/src/config.rs:345），PG 后端（普通 backend 或 bgworker）读这个 GUC 拿到端口，用 libcurl 发 HTTP。第一类，Postgres 自己调的两个：（1）POST /extension_server/{filename}，实现在 pgxn/neon/extension_server.c:33 neon_download_extension_file_http，通过 :110-111 挂在 PG 的 download_extension_file_hook 上。触发时机是用户执行 CREATE EXTENSION xxx，或者 PG 需要加载某个扩展的动态库时，发现本地 $PGSHAREDIR/extension/xxx--*.sql 或 $PKGLIBDIR/xxx.so 不存在，于是走 hook，hook 请求 compute_ctl 从对象存储（remote extension storage）把文件下载下来写进容器文件系统，PG 再重试 open。粒度是每个 SQL 文件或 so 文件一次请求，查询参数 ?is_library=true 用来区分二进制库和 SQL 脚本，60s 超时。（2）POST /refresh_configuration，实现在 pgxn/neon/libpagestore.c:1058 hadron_request_configuration_refresh，只在 lakebase_mode 这个 Hadron fork 引入的 GUC 打开时才启用（:1065 判断）。触发时机是 Postgres backend 跟 pageserver 的连接掉线或者读到异常响应，backend 怀疑自己被路由到了错误的 pageserver（典型是那台 PS 现在只是 secondary，或者分片映射已经变了），于是主动「戳」一下 compute_ctl，让 compute_ctl 去问控制面重新拉一份 spec。libpagestore.c 里有 4 处调用它：:1367 读到 EOF、:1374 读 COPY 数据失败、:1381 收到意外返回码、:1390 上层收尾时兜底。这条路径是 best-effort 的：3s 超时，失败只打 WARNING 不报错，只有连续失败超过阈值才会 cancel 当前 query。第二类，不是 Postgres 调的：/extensions 和 /grants 是 local_proxy 调的。local_proxy 是 Neon Auth / serverless driver 在 Pod 内的边车进程，在 proxy/src/serverless/backend.rs:311-341 的 connect_to_local_postgres 里，对某个 database 第一次建连接池时调这两个接口：/extensions 安装 pg_session_jwt 扩展（版本 0.3.1，装到 schema auth，常量在 local_conn_pool.rs:44-46），/grants 给 JWKS 配置里声明的 role 补 schema 授权。每个 db 只做一次，并且用信号量限并发。/extensions 的 handler 要求 compute 状态必须是 Running（routes/extensions.rs:19），否则直接拒。最后一个要点，「内部」只是命名不是隔离：pgxn 里 curl 的目标 URL 确实写的是 http://localhost:{port}（extension_server.c:49、libpagestore.c:1078），但那只是客户端选择走 loopback；服务端 ip() 函数对 external 和 internal 两个 server 都返回 Ipv6Addr::UNSPECIFIED（http/server.rs:196-197，等价于 :: / 0.0.0.0），:194-195 的 TODO 注释说明是因为 GitHub Actions runner 不允许绑 localhost 才临时放开、一直没改回；而且内部 router（:64-87）没有挂 AsyncRequireAuthorizationLayer。两者叠加的结果是这 4 个路由对整个 Pod 网络可达且免鉴权，安全性只能靠部署侧 NetworkPolicy 兜底。")
+
+# ─────── Slide 5.7: Compute VM 进程清单 ───────
+p += 1
+std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
+    T("cp-desc", 96, 162, 1088, 36,
+      "以 <span style='font-family:" + MONO + "'>compute_ctl</span> 为 <b>PID 1</b>，postgres 是它 fork 的子进程；其余守护进程由 "
+      "<span style='font-family:" + MONO + "'>sysvInitAction: respawn</span> 拉起，源码见 "
+      "<span style='color:" + DIM + "'>compute/vm-image-spec-bookworm.yaml</span>。",
+      fs=12, color=DIM, lh=1.5),
+    # Group A: 主线 (compute_ctl + postgres)
+    R("cp-a-bg", 96, 204, 348, 180, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("cp-a-h", 116, 216, 308, 22, "主线（PID 1 → child）", fs=13, fw=800, color=AC),
+    T("cp-a-b", 116, 244, 308, 130,
+      "<b style='color:" + FG + "'>compute_ctl</b>（PID 1，Pod entrypoint）<br>"
+      "&nbsp;· 监护、状态机、HTTP 3080/3081<br>"
+      "&nbsp;· 源码 <span style='font-family:" + MONO + "'>compute_tools/</span>，入口 "
+      "<span style='font-family:" + MONO + "'>bin/compute_ctl.rs</span><br><br>"
+      "<b style='color:" + FG + "'>postgres</b>（postmaster + backends）<br>"
+      "&nbsp;· 5432，compute_ctl fork 的孙进程<br>"
+      "&nbsp;· pgxn/neon 扩展在这里加载",
+      fs=11, color=DIM, lh=1.55),
+    # Group B: 连接接入层
+    R("cp-b-bg", 456, 204, 344, 180, fill="rgba(200,158,255,0.06)", stroke="rgba(200,158,255,0.3)", radius=12),
+    T("cp-b-h", 476, 216, 304, 22, "连接接入层", fs=13, fw=800, color="#C89EFF"),
+    T("cp-b-b", 476, 244, 304, 130,
+      "<b style='color:" + FG + "'>pgbouncer</b>　<span style='color:" + FAINT + "'>0.0.0.0:6432</span><br>"
+      "&nbsp;· transaction pooling，max_client_conn=10000<br>"
+      "&nbsp;· 配置 <span style='font-family:" + MONO + "'>compute/etc/pgbouncer.ini</span><br><br>"
+      "<b style='color:" + FG + "'>local_proxy</b>　<span style='color:" + FAINT + "'>0.0.0.0:10432</span><br>"
+      "&nbsp;· Neon Authorize：验 JWT + 管 "
+      "<span style='font-family:" + MONO + "'>pg_session_jwt</span><br>"
+      "&nbsp;· 只对开了 Auth 的项目起作用",
+      fs=11, color=DIM, lh=1.55),
+    # Group C: 指标 exporter
+    R("cp-c-bg", 812, 204, 372, 180, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)", radius=12),
+    T("cp-c-h", 832, 216, 332, 22, "指标导出（Prometheus）", fs=13, fw=800, color="#7CB3F4"),
+    T("cp-c-b", 832, 244, 332, 130,
+      "<b style='color:" + FG + "'>postgres-exporter</b>　<span style='color:" + FAINT + "'>PG → Prom</span><br>"
+      "&nbsp;· <span style='font-family:" + MONO + "'>--no-collector.database</span> 关库大小采集<br>"
+      "<b style='color:" + FG + "'>pgbouncer-exporter</b>　<span style='color:" + FAINT + "'>pgbouncer → Prom</span><br>"
+      "<b style='color:" + FG + "'>sql-exporter</b>　<span style='color:" + FAINT + "'>:9399</span> 通用 SQL 指标<br>"
+      "<b style='color:" + FG + "'>sql-exporter-autoscaling</b>　"
+      "<span style='color:" + FAINT + "'>:9499</span> 给 autoscaler 用",
+      fs=11, color=DIM, lh=1.55),
+    # Group D: sysinit (一次性)
+    R("cp-d-bg", 96, 400, 348, 168, fill="rgba(255,158,138,0.06)", stroke="rgba(255,158,138,0.3)", radius=12),
+    T("cp-d-h", 116, 412, 308, 22, "启动一次性（sysinit）", fs=13, fw=800, color=AC2),
+    T("cp-d-b", 116, 440, 308, 118,
+      "<b style='color:" + FG + "'>cgconfigparser</b> 建 cgroup <span style='font-family:" + MONO + "'>neon-postgres</span><br>"
+      "<b style='color:" + FG + "'>chmod-resize-swap</b> 收紧 <span style='font-family:" + MONO + "'>/neonvm/bin/resize-swap</span><br>"
+      "<b style='color:" + FG + "'>chmod-set-disk-quota</b> 同上（磁盘配额脚本）<br>"
+      "<b style='color:" + FG + "'>rsyslogd-socket-symlink</b> "
+      "<span style='font-family:" + MONO + "'>/dev/log →</span> pg 侧管道",
+      fs=11, color=DIM, lh=1.55),
+    # Group E: compute_ctl 内嵌任务
+    R("cp-e-bg", 456, 400, 344, 168, fill="rgba(255,255,255,0.045)", stroke=EDGE, radius=12),
+    T("cp-e-h", 476, 412, 304, 22, "compute_ctl 内嵌线程 / task", fs=13, fw=800, color=FG),
+    T("cp-e-b", 476, 440, 304, 118,
+      "<b>HTTP servers</b> 3080 / 3081（http/server.rs）<br>"
+      "<b>configurator</b> 热变更循环（configurator.rs:13）<br>"
+      "<b>compute-monitor</b> 追踪最近活跃时间戳<br>"
+      "<b>vm-monitor</b> <span style='color:" + FAINT + "'>libs/vm_monitor</span>，仅当 "
+      "<span style='font-family:" + MONO + "'>AUTOSCALING</span> 环境变量置位时起<br>"
+      "&nbsp;· 跟 autoscaler 协商扩缩容",
+      fs=11, color=DIM, lh=1.55),
+    # Group F: 日志
+    R("cp-f-bg", 812, 400, 372, 168, fill="rgba(154,169,191,0.06)", stroke=EDGE, radius=12),
+    T("cp-f-h", 832, 412, 332, 22, "日志", fs=13, fw=800, color=FG),
+    T("cp-f-b", 832, 440, 332, 118,
+      "<b style='color:" + FG + "'>rsyslogd</b> —— PG/组件日志汇聚<br>"
+      "&nbsp;· PG 通过 <span style='font-family:" + MONO + "'>/dev/log</span>（软链到 "
+      "<span style='font-family:" + MONO + "'>rsyslogpipe</span>）写入<br>"
+      "&nbsp;· 其它守护把 <span style='font-family:" + MONO + "'>stderr</span> 直接重定向到<br>"
+      "&nbsp;&nbsp;&nbsp;<span style='font-family:" + MONO + "'>/dev/virtio-ports/tech.neon.log.0</span><br>"
+      "&nbsp;&nbsp;&nbsp;（VM host 侧收）",
+      fs=11, color=DIM, lh=1.55),
+    # Bottom band
+    R("cp-b2-bg", 96, 584, 1088, 72, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.28)", radius=10),
+    T("cp-b2-h", 116, 596, 900, 20, "小结", fs=13, fw=800, color=AC),
+    T("cp-b2-b", 116, 620, 1048, 30,
+      "客户端流量 <b>入口链</b>：<span style='font-family:" + MONO + "'>proxy →</span>（可选 <span style='font-family:" + MONO + "'>local_proxy →</span>）<span style='font-family:" + MONO + "'>pgbouncer → postgres</span>&nbsp;&nbsp;｜&nbsp;&nbsp;"
+      "<b>控制面链</b>：<span style='font-family:" + MONO + "'>compute_ctl :3080/:3081</span>&nbsp;&nbsp;｜&nbsp;&nbsp;"
+      "<b>观测</b> 4 个 exporter + rsyslog",
+      fs=11.5, color=DIM, lh=1.4),
+], p, notes="本页把 compute VM 内所有常驻和一次性进程列全，来源是 compute/vm-image-spec-bookworm.yaml（vm-image-spec-bullseye.yaml 内容对齐）。9 个常驻守护进程（sysvInitAction: respawn）：（1）compute_ctl 是 Pod entrypoint / PID 1，由 VM entrypoint 直接拉起，不在 vm-image-spec 的 commands 列表里；负责监护、状态机、HTTP 3080/3081，源码在 compute_tools/ crate，入口 bin/compute_ctl.rs。（2）postgres 是 compute_ctl fork 出来的子进程，跑 postmaster + backends + bgworkers，pgxn/neon 扩展在这里加载，监听 5432。（3）pgbouncer 监听 0.0.0.0:6432，transaction pooling，配置见 compute/etc/pgbouncer.ini，max_client_conn=10000、default_pool_size=64、auth_type=scram-sha-256，通过 unix_socket_dir=/tmp/ 也暴露 socket。（4）local_proxy 监听 0.0.0.0:10432，Neon Authorize 组件，校验客户端 JWT、维护 pg_session_jwt 扩展和 JWKS 授权，reload 通过 SIGHUP（compute_tools/src/local_proxy.rs）；只有开了 Neon Auth 的项目才实际用到，但进程本身对所有 compute 常驻。（5）postgres-exporter Prometheus PG 指标；启动参数 --no-collector.database 关掉 pg_database_size_bytes 采集（会因为坏 db 打爆日志），DATA_SOURCE_NAME 走 cloud_admin@postgres 本地 socket。（6）pgbouncer-exporter Prometheus pgbouncer 指标，通过 unix socket 连 pgbouncer。（7）sql-exporter 监听 :9399，跑通用 SQL-based 指标采集（Neon 定义的 collector 集合）。（8）sql-exporter-autoscaling 监听 :9499，给 autoscaler 拉的一份专用指标（LFC hit/miss、working set size 等）。（9）rsyslogd 用 postgres 用户跑（这样能写自己的 pid 文件），配置 /etc/compute_rsyslog.conf，Postgres 通过 /dev/log 软链到 /var/db/postgres/rsyslogpipe 写日志。4 个 sysinit（只在启动阶段跑一次，不常驻）：cgconfigparser 建 cgroup neon-postgres（vm-monitor 靠这个做资源限制），chmod-resize-swap 和 chmod-set-disk-quota 把这两个特权脚本改成 0711（compute_ctl 通过 sudoers 白名单以 root 跑它们，其他人只能执行不能读），rsyslogd-socket-symlink 建 /dev/log → rsyslogpipe 软链。compute_ctl 进程内还嵌着几个 tokio task / 后台线程，它们不是独立进程但常驻：两个 HTTP server（external 3080、internal 3081，http/server.rs），configurator 热变更循环（configurator.rs:13 configurator_main_loop 等 ConfigurationPending / RefreshConfigurationPending），compute-monitor（源码注释里叫 compute-monitor，跟踪 PG 最近活跃时间戳），vm-monitor（libs/vm_monitor，仅当 AUTOSCALING 环境变量置位时才起，只 linux 上跑，需要 cgroup v2，跟 VM autoscaling 协议协商 downscale / 请求 upscale）。数据面调用链：客户端 → proxy → 可选 local_proxy → pgbouncer → postgres（5432）；控制面：cplane → compute_ctl 3080（JWT），Pod 内 neon 扩展 / local_proxy → compute_ctl 3081（无鉴权）；观测：4 个 exporter + rsyslog；日志 stderr 走 virtio-port /dev/virtio-ports/tech.neon.log.0，PG 走 syslog 管道。")
+
 # ─────── Slide 6: Compute 状态机 ───────
 p += 1
-std("s-comp-sm", "COMPUTE", "Compute Node 状态机", [
-    # State boxes in a horizontal flow
-    R("sm-e", 96, 260, 120, 48, fill="rgba(255,255,255,0.06)", stroke=EDGE),
-    T("sm-et", 96, 270, 120, 32, "Empty", fs=14, fw=700, color=FG, align="center"),
-    LN("sm-l1", 216, 284, 60, 0, stroke=A_NEU, sw=2),
-    R("sm-cp", 280, 260, 180, 48, fill="rgba(255,158,138,0.1)", stroke="rgba(255,158,138,0.4)"),
-    T("sm-cpt", 280, 270, 180, 32, "ConfigPending", fs=13, fw=700, color=AC2, align="center"),
-    LN("sm-l2", 460, 284, 60, 0, stroke=A_NEU, sw=2),
-    R("sm-cf", 524, 260, 180, 48, fill="rgba(255,158,138,0.1)", stroke="rgba(255,158,138,0.4)"),
-    T("sm-cft", 524, 270, 180, 32, "Configuration", fs=13, fw=700, color=AC2, align="center"),
-    LN("sm-l3", 704, 284, 60, 0, stroke=A_NEU, sw=2),
-    R("sm-ru", 768, 260, 140, 48, fill="rgba(0,229,153,0.12)", stroke="rgba(0,229,153,0.5)"),
-    T("sm-rut", 768, 270, 140, 32, "Running", fs=14, fw=800, color=AC, align="center"),
-    # Running <-> RefreshConfiguration loop (both arrows connect Running's bottom edge)
-    LN("sm-l-rf-down", 806, 308, 0, 52, stroke=A_NEU, sw=2),
-    LN("sm-l-rf-up", 870, 360, 0, -52, stroke=A_NEU, sw=2),
-    R("sm-rf1", 768, 360, 280, 48, fill="rgba(124,179,244,0.08)", stroke="rgba(124,179,244,0.3)"),
-    T("sm-rf1t", 768, 370, 280, 32, "RefreshConfigPending → RefreshConfig", fs=11, fw=600, color="#7CB3F4", align="center"),
-    T("sm-rf-note", 768, 416, 280, 20, "热重载 spec，不重启 Postgres", fs=11, fw=500, color=FAINT, align="center"),
-    T("sm-rf-side", 916, 316, 268, 40, "spec 更新 ⇅ 重载完成后回到 Running", fs=11, fw=500, color=FAINT, lh=1.5),
-    # Termination: Running -> Terminated (also reachable from any state)
-    R("sm-tm", 430, 440, 260, 48, fill="rgba(255,80,80,0.1)", stroke="rgba(255,80,80,0.4)"),
-    T("sm-tmt", 430, 450, 260, 32, "Terminated (Fast/Immediate)", fs=12, fw=700, color="#FF5050", align="center"),
-    T("sm-tm-note", 430, 498, 260, 20, "30s 优雅 vs 立即终止", fs=11, fw=500, color=FAINT, align="center"),
-    LN("sm-l-term", 780, 308, -120, 132, stroke=A_RED, sw=2),
-    T("sm-l-term-lbl", 430, 402, 250, 20, "Running → Terminated", fs=11, fw=700, color="#FF8080", align="right"),
-    T("sm-any", 96, 560, 1088, 60,
-      "任意状态都可进入 <b>TerminationPendingFast / TerminationPendingImmediate</b> 再到 Terminated；"
-      "图中只画了最常见的 Running → Terminated 边。",
-      fs=13, color=DIM, lh=1.7),
-], p, morph=True, notes="Compute 状态机：Empty→ConfigPending→Configuration→Running，支持热重载和优雅终止")
+std("s-comp-sm", "COMPUTE", "compute_ctl 状态机 —— ComputeStatus 全 11 态", [
+    T("sm-desc", 96, 150, 1088, 34,
+      "这是 <b>compute_ctl 进程内部</b>的状态（<span style='font-family:" + MONO + "'>ComputeStatus</span>，"
+      "<span style='color:" + DIM + "'>libs/compute_api/src/responses.rs:174</span>），"
+      "不是控制面侧 endpoint 的 init/active/suspended 状态。",
+      fs=12, color=DIM, lh=1.5),
+    # start pseudo-state
+    CIRC("sm-start", 154, 190, 16, 16, fill="rgba(232,237,244,0.9)", stroke="rgba(232,237,244,0.4)", sw=2),
+    T("sm-start-l", 176, 190, 120, 16, "compute spawned", fs=9.5, fw=600, color=FAINT),
+    LN("sm-a0", 162, 206, 0, 60, sw=2),
+    # Empty
+    R("sm-empty", 112, 272, 104, 42, fill="rgba(255,255,255,0.07)", stroke=EDGE, radius=10),
+    T("sm-empty-t", 112, 272, 104, 42, "Empty", fs=13, fw=700, color=FG, align="center", valign="middle"),
+    LN("sm-a1", 216, 282, 36, -52, sw=2),
+    LN("sm-a2", 216, 304, 36, 52, sw=2),
+    # ConfigurationPending / Configuration (spec 后到)
+    R("sm-cp", 256, 196, 190, 42, fill="rgba(255,158,138,0.11)", stroke="rgba(255,158,138,0.42)", radius=10),
+    T("sm-cp-t", 256, 196, 190, 42, "ConfigurationPending", fs=12, fw=700, color=AC2, align="center", valign="middle"),
+    LN("sm-a3", 446, 217, 36, 0, sw=2),
+    R("sm-cf", 486, 196, 160, 42, fill="rgba(255,158,138,0.11)", stroke="rgba(255,158,138,0.42)", radius=10),
+    T("sm-cf-t", 486, 196, 160, 42, "Configuration", fs=12, fw=700, color=AC2, align="center", valign="middle"),
+    LN("sm-a4", 646, 217, 46, 51, sw=2),
+    # Init (spec 已就绪)
+    R("sm-init", 256, 352, 190, 42, fill="rgba(124,179,244,0.1)", stroke="rgba(124,179,244,0.4)", radius=10),
+    T("sm-init-t", 256, 352, 190, 42, "Init", fs=13, fw=700, color="#7CB3F4", align="center", valign="middle"),
+    LN("sm-a5", 446, 373, 36, 0, sw=2),
+    LN("sm-a6", 446, 358, 244, -62, sw=2),
+    # Failed
+    LN("sm-a7", 566, 238, 0, 110, sw=2),
+    T("sm-a7-l", 574, 274, 100, 16, "配置失败", fs=10, fw=600, color="#FF8080"),
+    R("sm-fail", 486, 352, 160, 42, fill="rgba(255,80,80,0.1)", stroke="rgba(255,80,80,0.42)", radius=10),
+    T("sm-fail-t", 486, 352, 160, 42, "Failed", fs=13, fw=700, color="#FF7070", align="center", valign="middle"),
+    # Running
+    R("sm-run", 696, 272, 124, 44, fill="rgba(0,229,153,0.14)", stroke="rgba(0,229,153,0.55)", radius=10),
+    T("sm-run-t", 696, 272, 124, 44, "Running", fs=14, fw=800, color=AC, align="center", valign="middle"),
+    # Running -> ConfigurationPending (/configure 带 spec)
+    LN("sm-a8", 698, 276, -246, -36, sw=2, dashed=True),
+    # Termination group
+    R("sm-tg", 866, 186, 306, 112, fill="rgba(255,80,80,0.055)", stroke="rgba(255,80,80,0.26)", radius=12),
+    R("sm-tf", 876, 196, 286, 40, fill="rgba(255,80,80,0.1)", stroke="rgba(255,80,80,0.4)", radius=9),
+    T("sm-tf-t", 876, 196, 286, 40, "TerminationPendingFast", fs=11.5, fw=700, color="#FF8080", align="center", valign="middle"),
+    R("sm-ti", 876, 246, 286, 40, fill="rgba(255,80,80,0.1)", stroke="rgba(255,80,80,0.4)", radius=9),
+    T("sm-ti-t", 876, 246, 286, 40, "TerminationPendingImmediate", fs=11.5, fw=700, color="#FF8080", align="center", valign="middle"),
+    LN("sm-a9", 820, 282, 52, -66, sw=2),
+    LN("sm-a10", 820, 290, 52, -24, sw=2),
+    LN("sm-a11", 1056, 298, 0, 28, sw=2),
+    R("sm-term", 956, 330, 200, 42, fill="rgba(255,80,80,0.14)", stroke="rgba(255,80,80,0.5)", radius=10),
+    T("sm-term-t", 956, 330, 200, 42, "Terminated", fs=13, fw=800, color="#FF8080", align="center", valign="middle"),
+    T("sm-term-n", 876, 378, 300, 34,
+      "Fast 停 PG 后<b>再等 30s</b> 给控制面看状态<br>Immediate 立即返回",
+      fs=10, color=FAINT, align="center", lh=1.5),
+    # Refresh 子环
+    LN("sm-a12", 710, 316, -30, 150, sw=2),
+    LN("sm-a13", 546, 394, -20, 72, sw=2),
+    R("sm-rcp", 430, 470, 256, 44, fill="rgba(124,179,244,0.1)", stroke="rgba(124,179,244,0.42)", radius=10),
+    T("sm-rcp-t", 430, 470, 256, 44, "RefreshConfigurationPending", fs=11.5, fw=700, color="#7CB3F4", align="center", valign="middle"),
+    LN("sm-a14", 686, 486, 46, 0, sw=2),
+    LN("sm-a15", 736, 504, -48, 0, sw=2, dashed=True),
+    R("sm-rc", 736, 470, 230, 44, fill="rgba(124,179,244,0.1)", stroke="rgba(124,179,244,0.42)", radius=10),
+    T("sm-rc-t", 736, 470, 230, 44, "RefreshConfiguration", fs=12, fw=700, color="#7CB3F4", align="center", valign="middle"),
+    LN("sm-a16", 890, 470, -80, -152, sw=2),
+    T("sm-rc-n", 976, 470, 208, 44,
+      "虚线 = 重配失败退回重试<br>成功则回到 Running",
+      fs=10, color=FAINT, lh=1.5),
+    # Bottom band
+    R("sm-b-bg", 96, 540, 1088, 116, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("sm-b-h", 116, 550, 900, 20, "两个 pending 入口：谁能调、谁在调", fs=12.5, fw=800, color=AC),
+    T("sm-b-b", 116, 574, 1048, 76,
+      "<b>启动分叉</b>：spec 启动时就有 → <span style='font-family:" + MONO + "'>Empty→Init→Running</span>；要等控制面推 → "
+      "<span style='font-family:" + MONO + "'>Empty→ConfigurationPending→Configuration→Running</span>。<br>"
+      "<b style='color:" + AC2 + "'>→ ConfigurationPending</b>　由 <span style='font-family:" + MONO + "'>:3080/configure</span>（带 spec、要 JWT、阻塞）触发，"
+      "前置状态只放行 <span style='font-family:" + MONO + "'>Empty | Running</span>（<span style='color:" + FAINT + "'>configure.rs:37</span>）。"
+      "控制面下发 spec、PS/SK 拓扑回调、PS 巡检补偿都走这条。<br>"
+      "<b style='color:#7CB3F4'>→ RefreshConfigurationPending</b>　由 <span style='font-family:" + MONO + "'>:3081/refresh_configuration</span>（不带 spec，compute 自己去拉）触发，"
+      "放行 <span style='font-family:" + MONO + "'>Running | Failed | RefreshConfigurationPending</span>（<span style='color:" + FAINT + "'>compute.rs:2048</span>）。"
+      "<b>目前只有 Postgres 自己在调</b>——控制面侧已全部切到 <span style='font-family:" + MONO + "'>/configure</span>。<br>"
+      "<b style='color:#FF8080'>⚠ Failed 实际救不回来</b>：<span style='font-family:" + MONO + "'>reconfigure()</span> 只重写 conf + reload + 跑 SQL，"
+      "<b>从不 start_postgres</b>；PG 没起来时必然失败并自旋，或因 <span style='font-family:" + MONO + "'>pageserver_conninfo</span> 未变被去重直接漂白成 Running。正道是 "
+      "<span style='font-family:" + MONO + "'>/terminate</span> 后重建。",
+      fs=10, color=DIM, lh=1.62),
+], p, morph=True, notes="这是 compute_ctl 的状态机，跟控制面侧 endpoint 的 init/active/suspended/stopped/released 是两套完全不同的东西。枚举定义在 libs/compute_api/src/responses.rs:174-202，实例状态存在 ComputeState.status（compute_tools/src/compute.rs:176），初值 Empty（:215），所有迁移统一走 set_status（:229 内层 / :1178 外层封装），每次迁移都 notify_all 唤醒等在 state_changed 条件变量上的线程，外部通过 GET :3080/status 观测。官方图见 compute_tools/README.md:40-64，一共 11 个状态。11 个状态逐个说：Empty —— 启动时没带 spec，等控制面推；ConfigurationPending —— 收到了配置请求（有 spec），等 configurator 线程处理；Init —— spec 启动时就有，正在做首次启动和配置；Running —— 配好了在跑；Configuration —— 正在应用新 spec；Failed —— 启动或配置失败，compute 快要退出、或者等控制面来终止它；TerminationPendingFast —— 收到终止请求，停 PG 之后额外等 30s 再从 /terminate 返回，留窗口给控制面抓状态和日志；TerminationPendingImmediate —— 同上但不等那 30s，立即返回；Terminated —— PG 已停；RefreshConfigurationPending —— 有人请求刷新 spec；RefreshConfiguration —— 正在应用刷新（互斥，此时再来 signal_refresh_configuration 会返 500）。关键边：Empty 有三条出边——有 spec 直接 Init、没 spec 走 ConfigurationPending、也可以直接被 /terminate 打到 TerminationPending*（本页图上只画了 Running 的终止边）。Init 失败 → Failed，成功 → Running。Configuration 失败 → Failed，成功 → Running。两个 pending 入口的触发者：（1）ConfigurationPending 由 POST :3080/configure 触发，门槛 Empty | Running（configure.rs:37），控制面下发 spec、PS/SK 拓扑回调（notify-attach/notify-safekeepers）、PS 巡检补偿 job 都走这条路。（2）RefreshConfigurationPending 由 POST :3081/refresh_configuration 触发，门槛 Running | Failed | RefreshConfigurationPending（compute.rs:2048-2058），Init 静默忽略，其余报错。目前唯一还在调这个接口的是 Postgres 自己（pgxn/neon/libpagestore.c hadron_request_configuration_refresh，仅 lakebase_mode 生效），backend 跟 pageserver 交互异常时自触发（6 个调用点：:1169 重连超阈值、:1286 EOF、:1293 读 COPY 失败、:1299 意外返回码、:1390 上层兜底）；控制面侧的所有调用方已全部切到 /configure。RefreshConfiguration 成功回 Running，失败退回 RefreshConfigurationPending 重试（configurator.rs:159/181）。Failed → RefreshConfigurationPending 这条边状态机上允许但实际无法真正恢复：reconfigure()（compute.rs:2089-2176）全程假设 Postgres 在跑——只做重写 conf + pg_reload_conf + apply_spec_sql，从不 start_postgres；PG 没起来时这些操作必然失败并自旋在 RefreshConfigurationPending，或者因为新拉到的 spec 的 pageserver_conninfo 跟当前相同被 configurator.rs:125-138 的去重逻辑直接跳过、漂白成 Running 但 PG 仍然没启动。所以 Failed 的正道恢复路径是控制面识别 Failed 后走 /terminate → 重建（走完整冷启动 start_compute）。TerminationPendingFast 的 30s 不是等 PG 停，是 PG 已停完之后额外的观察窗口（compute.rs:1146-1155 delay_exit），给控制面时间抓状态和日志。")
 
 # ─────── Slide 7: Bootstrap Template ───────
 p += 1
@@ -799,6 +1053,56 @@ std("s-lfc", "COMPUTE", "LFC：Local File Cache", [
       fs=12.5, color=DIM, lh=1.6),
 ], p, notes="LFC 是 compute 本地磁盘页缓存，读路径 shared_buffers→prefetch→LFC→Pageserver。单文件+共享hash map+LRU，chunk=128页=1MiB。启动O_TRUNC重建不保留状态，靠 prewarm/offload 机制跨 suspend 保温：导出chunk-key状态压缩上传到endpoint storage，下次启动autoprewarm回放。GUC: max_file_cache_size硬上限, file_cache_size_limit软上限可在线调, file_cache_path默认file.cache")
 
+# ─────── DDL Forwarding ───────
+p += 1
+std("s-ddl-fwd", "COMPUTE", "DDL Forwarding：库/角色变更实时联动控制面", [
+    T("ddl-desc", 96, 164, 1088, 34,
+      "用户直接跑 <span style='font-family:" + MONO + "'>CREATE DATABASE</span> / <span style='font-family:" + MONO + "'>DROP ROLE</span> 时，"
+      "pgxn/neon 插件在<b>事务提交前</b>把变更 PATCH 给控制面，让控制台实时反映 db/role 状态。"
+      "<span style='color:" + DIM + "'>pgxn/neon/neon_ddl_handler.c</span>",
+      fs=12, color=DIM, lh=1.55),
+    # Left card: capture mechanism
+    R("ddl-l-bg", 96, 208, 530, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("ddl-l-h", 116, 220, 490, 22, "① 捕获：ProcessUtility_hook + 子事务栈", fs=14, fw=800, color=AC),
+    T("ddl-l-b", 116, 250, 494, 250,
+      "<b>ProcessUtility_hook</b> 拦截 DDL（neon_ddl_handler.c:1377）<br>"
+      "&nbsp;&nbsp;→ 记录到 <b>DdlHashTable</b>（db_table + role_table）<br><br>"
+      "<b>子事务用哈希表栈</b>处理 SAVEPOINT（:99）：<br>"
+      "&nbsp;&nbsp;• START_SUB → PushTable（压栈）<br>"
+      "&nbsp;&nbsp;• COMMIT_SUB → MergeTable（并入下层）<br>"
+      "&nbsp;&nbsp;• ABORT_SUB → PopTable（丢弃）<br><br>"
+      "<b>提交时发送</b>：NeonXactCallback 在<br>"
+      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>XACT_EVENT_PRE_COMMIT</span> 调 SendDeltas（:533）<br>"
+      "<span style='color:" + AC2 + "'>⚠ 已知缺陷：转发后事务仍可能 abort，暂未处理（源码头注释）</span>",
+      fs=11.5, color=DIM, lh=1.6),
+    # Right card: HTTP protocol
+    R("ddl-r-bg", 656, 208, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("ddl-r-h", 676, 220, 490, 22, "② 转发：HTTP PATCH 到控制面", fs=14, fw=800, color=AC2),
+    T("ddl-r-b", 676, 250, 492, 250,
+      "<span style='font-family:" + MONO + "'>PATCH {neon.console_url}?endpoint_id=ep-xxx</span><br>"
+      "&nbsp;&nbsp;（curl，超时 3s，重试 5 次）<br>"
+      "Auth：<span style='font-family:" + MONO + "'>Bearer</span> per-compute JWT<br>"
+      "&nbsp;&nbsp;（env <span style='font-family:" + MONO + "'>NEON_CONTROL_PLANE_TOKEN</span>，:1444）<br><br>"
+      "Body：<span style='font-family:" + MONO + "'>{\"dbs\":[…], \"roles\":[…]}</span><br>"
+      "&nbsp;&nbsp;• <span style='font-family:" + MONO + "'>op=set</span>（create/alter upsert）/ <span style='font-family:" + MONO + "'>op=del</span>（drop）<br>"
+      "&nbsp;&nbsp;• name / old_name(rename) / owner<br>"
+      "&nbsp;&nbsp;• password + encrypted_password（角色）<br><br>"
+      "控制面更新 <b>neon_pg_databases / neon_pg_roles</b><br>"
+      "&nbsp;&nbsp;按 (branch_id, name) 唯一索引幂等 upsert",
+      fs=11.5, color=DIM, lh=1.6),
+    # Bottom: anti-loop
+    R("ddl-b-bg", 96, 520, 1088, 138, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("ddl-b-h", 116, 532, 900, 20, "防止「控制面 → compute → 控制面」双写循环", fs=13, fw=800, color=AC),
+    T("ddl-b-b", 116, 558, 1048, 92,
+      "• 控制面下发 <b>ComputeSpec</b> 让 compute_ctl 建库/建角色时，compute_ctl 先执行 "
+      "<span style='font-family:" + MONO + "'>SET neon.forward_ddl = false</span>，这样它执行 spec 里的 DDL 就不会再回调控制面<br>"
+      "• <b>token 与 writer 身份绑定</b>：控制面校验请求 token 的 compute_id 必须 = endpoint 当前 compute_id；"
+      "endpoint 换 writer 会递增 writer_generation，旧 compute 的 token 即便没过期也无法再回调<br>"
+      "• GUC：<span style='font-family:" + MONO + "'>neon.console_url</span>（回调地址，必配）、"
+      "<span style='font-family:" + MONO + "'>neon.forward_ddl</span>（默认 on）",
+      fs=12, color=DIM, lh=1.6),
+], p, notes="DDL Forwarding：用户直接执行 CREATE DATABASE/DROP ROLE 等，pgxn/neon 插件 ProcessUtility_hook 拦截记到 DdlHashTable，子事务用哈希表栈处理 SAVEPOINT（PushTable/MergeTable/PopTable），事务 PRE_COMMIT 时 NeonXactCallback 调 SendDeltasToControlPlane，curl PATCH 到 neon.console_url?endpoint_id=xxx，Bearer per-compute JWT（NEON_CONTROL_PLANE_TOKEN），body {dbs:[],roles:[]} op=set/del + name/old_name/owner/password。控制面 upsert neon_pg_databases/neon_pg_roles 按 (branch_id,name) 幂等。防双写循环：compute_ctl 执行 spec DDL 前 SET neon.forward_ddl=false。token 与 writer 身份绑定，换 writer 递增 writer_generation 使旧 token 失效。已知缺陷：转发后事务仍可能 abort 未处理。源码 pgxn/neon/neon_ddl_handler.c，控制面 handlers/compute_callback/hook_ddl_notify.py。")
+
 # ─────── Slide 16: Safekeeper ───────
 p += 1
 std("s-sk1", "SAFEKEEPER", "WAL 服务：Paxos-like 复制", [
@@ -846,21 +1150,130 @@ std("s-sk1", "SAFEKEEPER", "WAL 服务：Paxos-like 复制", [
 
 # ─────── Slide 17: LSN 概念 ───────
 p += 1
-std("s-lsn", "SAFEKEEPER", "关键 LSN（Log Sequence Number）术语", [
-    T("lsn-desc", 96, 170, 1088, 30, "所有 LSN 都是 64 位 WAL 偏移；理解它们是理解 Neon 的钥匙。", fs=15, color=DIM, lh=1.5),
+std("s-lsn", "SAFEKEEPER", "Safekeeper 三个核心 LSN", [
+    T("lsn-desc", 96, 170, 1088, 30,
+      "所有 LSN 都是 64 位 WAL 偏移。以下三个 LSN 描述 WAL 在 SK 集群中的确认进度（新→老）。"
+      "<span style='color:" + DIM + "'>源码：safekeeper/src/safekeeper.rs</span>",
+      fs=14, color=DIM, lh=1.5),
     # table
     *[e for i, (k, v, col) in enumerate([
         ("FlushLSN", "单个 SK 本地已 fsync 到磁盘的位置", "#7CB3F4"),
         ("CommitLSN", "多数派 SK 已确认的位置。<b>Compute ACK client commit 的依据</b>；恢复保证此前记录不丢", AC),
         ("RestartLSN", "全部 SK 都已确认的位置。SK 之前的 WAL 可截断", AC2),
-        ("last_written_lsn", "Compute 侧记录：本节点最近产生的 WAL 位置", "#F0EBE0"),
-        ("remote_consistent_lsn", "Pageserver 已经上传到 S3 的最新 LSN；用于计算 basebackup 起点", "#FFB080"),
     ]) for e in (
         R(f"lsn{i}bg", 96, 220 + i * 60, 1088, 52, fill="rgba(255,255,255,0.035)", stroke="none", sw=0, radius=10),
         T(f"lsn{i}k", 116, 234 + i * 60, 300, 26, k, fs=15, fw=800, color=col, ff=MONO),
         T(f"lsn{i}v", 424, 234 + i * 60, 750, 26, v, fs=14, fw=500, color=DIM, lh=1.4),
     )],
-], p, notes="LSN 术语表：FlushLSN、CommitLSN、RestartLSN、last_written_lsn、remote_consistent_lsn")
+], p, notes="LSN 术语表（纯 SK 三个）：FlushLSN、CommitLSN、RestartLSN。last_written_lsn 已挪到 s-read-lsn（Compute 侧 LwLSN cache），remote_consistent_lsn 已在 s-ps-lsn 覆盖，避免重复。")
+
+# ─────── Safekeeper 成员迁移流程 ───────
+p += 1
+std("s-sk-migrate", "SAFEKEEPER", "SK 成员迁移：generation 双阶段递增（RFC 035）", [
+    T("skm-desc", 96, 164, 1088, 34,
+      "SK 集合稳态时 <b>generation 不变</b>。只有 storcon 触发 SK 迁移（下线/扩缩容/换机）才会变——"
+      "一次迁移让 generation <b>跳两级</b>：n → n+1 (joint) → n+2 (final)。"
+      "<span style='color:" + DIM + "'>safekeeper_service.rs:1248/1364, RFC 035</span>",
+      fs=12, color=DIM, lh=1.55),
+    # Row 1: three state boxes with arrows
+    R("skm-s1-bg", 96, 210, 340, 90, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.5)", radius=12),
+    T("skm-s1-h", 116, 220, 300, 22, "gen = n（稳态）", fs=14, fw=800, color="#7CB3F4"),
+    T("skm-s1-b", 116, 246, 300, 46,
+      "sk_set = [<b>A, B, C</b>]<br>new_sk_set = None",
+      fs=12, color=DIM, lh=1.5, ff=MONO),
+    T("skm-a1", 436, 245, 40, 24, "→", fs=22, fw=800, color=DIM, align="center"),
+    R("skm-s2-bg", 476, 210, 328, 90, fill="rgba(255,158,138,0.10)", stroke="rgba(255,158,138,0.5)", radius=12),
+    T("skm-s2-h", 496, 220, 300, 22, "gen = n+1（joint）", fs=14, fw=800, color=AC2),
+    T("skm-s2-b", 496, 246, 290, 46,
+      "sk_set = [<b>A, B, C</b>]<br>new_sk_set = [<b>C, D, E</b>]",
+      fs=12, color=DIM, lh=1.5, ff=MONO),
+    T("skm-a2", 804, 245, 40, 24, "→", fs=22, fw=800, color=DIM, align="center"),
+    R("skm-s3-bg", 844, 210, 340, 90, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.5)", radius=12),
+    T("skm-s3-h", 864, 220, 300, 22, "gen = n+2（final）", fs=14, fw=800, color=AC),
+    T("skm-s3-b", 864, 246, 300, 46,
+      "sk_set = [<b>C, D, E</b>]<br>new_sk_set = None",
+      fs=12, color=DIM, lh=1.5, ff=MONO),
+    # Row 2: 3 columns of numbered steps aligned under the states above
+    R("skm-c1-bg", 96, 314, 340, 340, fill=PANEL, stroke=EDGE, radius=12),
+    T("skm-c1-h", 116, 326, 300, 22, "① 起 joint —— 递增 gen 一次", fs=13, fw=800, color="#7CB3F4"),
+    T("skm-c1-b", 116, 356, 300, 288,
+      "<b>1.</b> 读 timelines 表拿当前配置<br>"
+      "<b>2.</b> 已在 joint 且目标不同 → 拒绝；<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;目标相同 → 续跑（幂等）<br>"
+      "<b>3.</b> <span style='color:" + AC2 + "'>generation.next()</span>（n → n+1），<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;desired_set 写入 new_sk_set，<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;<b>CAS 到 storcon PG</b>（uniqueness + 线性化）<br><br>"
+      "<span style='color:" + FAINT + "'>失败 CAS 立刻中止；说明有另一次</span><br>"
+      "<span style='color:" + FAINT + "'>迁移抢跑（race）</span>",
+      fs=11.5, color=DIM, lh=1.7),
+    R("skm-c2-bg", 448, 314, 388, 340, fill=PANEL, stroke=EDGE, radius=12),
+    T("skm-c2-h", 468, 326, 340, 22, "② 传播 joint + 同步位点", fs=13, fw=800, color=AC2),
+    T("skm-c2-b", 468, 356, 348, 288,
+      "<b>4.</b> <span style='font-family:" + MONO + "'>PUT /membership</span> 到<b>旧集合</b>（quorum），<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;取 max ⟨last_log_term, flush_lsn⟩ 作为<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;<b>sync_position</b>；同时通知 cplane<br>"
+      "<b>5.</b> 对<b>新增</b> SK 做 <span style='font-family:" + MONO + "'>pull_timeline</span>（从旧集<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;合 quorum 拉 tar 包，非 S3）<br>"
+      "<b>6.</b> bump_term(sync_term) 到新集合<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:" + FAINT + "'>（当前代码 TODO，未实现）</span><br>"
+      "<b>7.</b> <span style='font-family:" + MONO + "'>PUT /membership</span> 到<b>新集合</b>，<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;<b>轮询到 quorum 追上 sync_position</b>",
+      fs=11.5, color=DIM, lh=1.7),
+    R("skm-c3-bg", 848, 314, 336, 340, fill=PANEL, stroke=EDGE, radius=12),
+    T("skm-c3-h", 868, 326, 296, 22, "③ 提交 final —— 再递增一次", fs=13, fw=800, color=AC),
+    T("skm-c3-b", 868, 356, 296, 288,
+      "<b>8.</b> <span style='color:" + AC2 + "'>generation.next()</span>（n+1 → n+2），<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;new_conf = {gen=n+2, sk_set=新,<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;new_sk_set=None}，写库；同时向<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;<b>safekeeper_timeline_pending_ops</b><br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;插入被剔除 SK 的 <span style='font-family:" + MONO + "'>exclude</span> 操作<br>"
+      "<b>9.</b> finish_migration：<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;• PUT /membership 到新集合（final）<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;• reconciler 消费 exclude ops<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;• cplane_notify（compute 停止对旧 SK<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;要 quorum）",
+      fs=11.5, color=DIM, lh=1.7),
+], p, notes="SK 成员迁移 9 步（RFC 035 + safekeeper_service.rs:migrate_to_new_sk_set）：generation 双阶段递增：① 起 joint（步骤 1-3，gen n→n+1，CAS 到 storcon PG 的 timelines 表）② 传播 joint（步骤 4-7：PUT membership 到旧集合拿 sync_position、pull_timeline 初始化新 SK、bump_term 当前未实现、PUT membership 到新集合并等 quorum 追齐 sync_position）③ 提交 final（步骤 8-9，gen n+1→n+2，写 new_conf + exclude ops 队列，finish 阶段 PUT final + reconciler 处理 exclude + 通知 cplane）。SK 侧被动规则：看到更高 gen 就切换并持久化 control file；收到更低 gen 消息一律拒绝（防脑裂核心）。步骤 8 之后迁移不可回滚。")
+
+# ─────── Pageserver LSN 术语表 ───────
+p += 1
+std("s-ps-lsn", "PAGESERVER", "Pageserver 侧关键 LSN（timeline.rs / models.rs）", [
+    T("pslsn-desc", 96, 166, 1088, 30,
+      "以下 LSN 从最\"新\"到最\"老\"排列，描述了 WAL 在 Pageserver 内的消化进度。"
+      "<span style='color:" + DIM + "'>源码：pageserver/src/tenant/timeline.rs:260-343、libs/pageserver_api/src/models.rs:1546-1579</span>",
+      fs=12, color=DIM, lh=1.5),
+    *[e for i, (k, v, col) in enumerate([
+        ("last_record_lsn",
+         "已在内存中处理完的最新 WAL 记录 LSN（timeline.rs:273）。<b>最靠前</b>",
+         AC),
+        ("prev_record_lsn",
+         "上一条记录的 LSN（设置 xl_prev 指针用）。≤ last_record_lsn",
+         "#7CB3F4"),
+        ("disk_consistent_lsn",
+         "已落盘到本地 layer 文件的 LSN（timeline.rs:282）。<b>崩溃重启从这里开始重放 WAL</b>",
+         "#7CB3F4"),
+        ("remote_consistent_lsn",
+         "已成功上传到 S3 的 LSN（当前 generation 视角，projected）。≤ disk_consistent_lsn",
+         "#FFB080"),
+        ("remote_consistent_lsn_visible",
+         "广播给 SK 的远程一致 LSN（经 deletion queue generation 校验不回退）。<b>SK 据此回收 WAL</b>",
+         "#FFB080"),
+        ("min_readable_lsn",
+         "= max(planned_gc_cutoff, applied_gc_cutoff)（routes.rs:482）。<b>对外暴露的可读历史最早点</b>；创建分支/临时 endpoint 用它",
+         AC2),
+        ("applied_gc_cutoff_lsn",
+         "GC 已<b>实际</b>清理到的 LSN（timeline.rs:327）。早于此的 layer 数据可能已不存在；≤ min_readable_lsn",
+         AC2),
+        ("initdb_lsn",
+         "根 timeline 的起点（timeline.rs:343）。<b>永不变</b>，历史最早",
+         "#C89EFF"),
+    ]) for e in (
+        R(f"pslsn{i}bg", 96, 202 + i * 58, 1088, 50,
+          fill="rgba(255,255,255,0.035)", stroke="none", sw=0, radius=10),
+        T(f"pslsn{i}k", 116, 214 + i * 58, 330, 24, k, fs=13, fw=800, color=col, ff=MONO),
+        T(f"pslsn{i}v", 460, 214 + i * 58, 710, 24, v, fs=12, fw=500, color=DIM, lh=1.4),
+    )],
+], p, notes="Pageserver LSN 术语表（从新到老）：last_record_lsn → prev_record_lsn → disk_consistent_lsn → remote_consistent_lsn(projected) → remote_consistent_lsn_visible（广播给 SK，SK 据此回收 WAL）→ min_readable_lsn = max(planned_gc_cutoff, applied_gc_cutoff)（创建分支/临时 endpoint 看这个）→ applied_gc_cutoff_lsn（GC 实际清理位置，≤ min_readable_lsn，因为 min_readable_lsn 是它和 planned 的 max）→ initdb_lsn（根 timeline 起点，永不变）。源码 timeline.rs:260-343、models.rs:1546-1579、routes.rs:470-501。")
 
 # ─────── Slide 9: Pageserver 概述 ───────
 p += 1
@@ -1190,7 +1603,7 @@ std("s-read-lsn", "读路径", "Page → LSN：Compute 怎么知道该用什么 
     T("rl-lw-h", 116, 230, 400, 22, "LwLSN Cache（共享内存 LRU Hash）", fs=15, fw=800, color=AC),
     T("rl-lw-b", 116, 260, 490, 150,
       "<span style='font-family:" + MONO + "'>key = BufferTag(spcOid, dbOid, relNode, forkNum, blkNum)</span><br>"
-      "<span style='font-family:" + MONO + "'>val = XLogRecPtr</span>（该 page 最后修改的 WAL LSN）<br><br>"
+      "<span style='font-family:" + MONO + "'>val = XLogRecPtr</span> = 该 page 的 <b>last_written_lsn</b>（最后修改的 WAL LSN）<br><br>"
       "• 每次产生 WAL record 时，经 <b>set_lwlsn_block_hook</b> 写入缓存<br>"
       "• 大小由 GUC <span style='font-family:" + MONO + "'>neon.last_written_lsn_cache_size</span> 控制，默认 <b>128K 条目</b><br>"
       "• LRU 淘汰后回退到全局 <b>maxLastWrittenLsn</b>（所有被淘汰页的 LSN 上界）",
