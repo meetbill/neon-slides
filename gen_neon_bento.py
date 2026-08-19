@@ -2,6 +2,7 @@
 """Generate the Neon architecture deck as bento/slides JSON."""
 import json
 import math
+import re
 
 W, H = 1280, 720
 BG = "#0A1120"
@@ -20,6 +21,7 @@ MONO = "'SF Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace"
 # Arrow / connector strokes — single bright colour so they pop on the
 # dark canvas and never blend into box borders or body text.
 ARROW = "#FFD54A"                  # bright amber/yellow — reads at the back
+HL = "#FFFF00"                     # pure yellow — inline sub-headings inside body text
 A_NEU = ARROW
 A_GRN = ARROW
 A_ORG = ARROW
@@ -133,15 +135,73 @@ def std(sid, kick, ttl, body_els, n, morph=False, notes="", tw=1088):
     base(sid, els, morph=morph, notes=notes)
 
 
+def TL(eid, x, y, w, h, lines, fs=17, fw=500, color=FG, lh=1.55, ff=SANS, **kw):
+    """A `<br>`-joined text block whose individual lines may carry a colour.
+
+    ``lines`` items are ``str``, ``(text, colour)`` or ``(text, colour, weight)``.
+    A coloured line is emitted as its own text element, because the runtime
+    sanitizer strips every attribute off inline tags — see ``COLOUR NOTE``.
+    Consecutive lines sharing colour+weight are merged into one element, and a
+    block with no coloured line at all emits a single element identical to the
+    plain ``T()`` it replaces.
+
+    Element ids are ``eid``, ``eid+"1"``, ``eid+"2"``, … so the first element
+    keeps the original id and existing morph/notes references stay valid.
+    """
+    norm = []                                  # [(text, colour, weight), ...]
+    for ln in lines:
+        if isinstance(ln, str):
+            norm.append((ln, None, None))
+        elif len(ln) == 2:
+            norm.append((ln[0], ln[1], None))
+        else:
+            norm.append((ln[0], ln[1], ln[2]))
+
+    if all(col is None for _, col, _ in norm):
+        return [T(eid, x, y, w, h, "<br>".join(t for t, _, _ in norm),
+                  fs=fs, fw=fw, color=color, lh=lh, ff=ff, **kw)]
+
+    step = fs * lh
+    runs = []                                  # [(colour, weight, [text], idx)]
+    for i, (txt, col, w_) in enumerate(norm):
+        if runs and runs[-1][0] == col and runs[-1][1] == w_:
+            runs[-1][2].append(txt)
+        else:
+            runs.append((col, w_, [txt], i))
+
+    els, n = [], 0
+    for col, w_, texts, first in runs:
+        if not any(t.strip() for t in texts):
+            continue                           # blank spacer lines need no box
+        els.append(T("{}{}".format(eid, n) if n else eid,
+                     x, y + first * step, w, len(texts) * step,
+                     "<br>".join(texts), fs=fs, fw=w_ or fw,
+                     color=col or color, lh=lh, ff=ff, **kw))
+        n += 1
+    return els
+
+
 def card(idp, x, y, w, h, head, lines, hc=AC, fs=15, headfs=17, gap=None):
-    """A panel card with heading + body html lines."""
+    """A panel card with heading + body html lines.
+
+    Body ``lines`` accept the same forms as :func:`TL`.
+    """
     els = [R(idp + "bg", x, y, w, h)]
     els.append(T(idp + "h", x + 20, y + 16, w - 40, 26, head, fs=headfs,
                  fw=800, color=hc, lh=1.1))
-    body = "<br>".join(lines)
-    els.append(T(idp + "b", x + 20, y + 50, w - 40, h - 62, body, fs=fs,
-                 fw=500, color=DIM, lh=1.5))
+    els.extend(TL(idp + "b", x + 20, y + 50, w - 40, h - 62, lines,
+                  fs=fs, fw=500, color=DIM, lh=1.5))
     return els
+
+
+# ═══════════════════════════ COLOUR NOTE ═══════════════════════════
+# The bento runtime sanitises every text element's `html` (runtime fn `Ii`):
+# tags outside {B I U BR SPAN DIV P STRONG EM S CODE} are unwrapped, and for
+# the ones it keeps it calls removeAttribute() on *every* attribute.  So an
+# inline `<span style="color:#RRGGBB">` renders with no colour at all — only
+# the element-level `color` field is honoured (`i.style.color=n.color`).
+# Anything that must be coloured therefore has to be its own text element.
+
 
 
 # ═══════════════════════════ SLIDES ═══════════════════════════
@@ -485,36 +545,36 @@ p += 1
 std("s-conn-route", "PROXY", "连上 Neon：Proxy 怎么知道你要连哪个库", [
     T("cr-desc", 96, 166, 1088, 40,
       "Postgres 协议里<b>没有「我要连哪个集群」这个字段</b>。Proxy 必须从三个地方之一挖出 endpoint_id，"
-      "统一在 <span style='font-family:" + MONO + "'>ComputeUserInfoMaybeEndpoint::parse</span>（<span style='font-family:" + MONO + "'>credentials.rs:74</span>）。",
+      "统一在 <span style=\"font-family:" + MONO + "\">ComputeUserInfoMaybeEndpoint::parse</span>（<span style=\"font-family:" + MONO + "\">credentials.rs:74</span>）。",
       fs=13.5, color=DIM, lh=1.5),
     # three columns
     R("cr1-bg", 96, 212, 350, 268, fill=PANEL, stroke=EDGE, radius=12),
     T("cr1-n", 114, 224, 200, 18, "① 优先级最高", fs=11, fw=800, color=AC, ff=MONO),
     T("cr1-h", 114, 246, 320, 22, "options 启动参数", fs=15, fw=800, color=AC),
     T("cr1-b", 114, 274, 320, 196,
-      "启动包 <span style='font-family:" + MONO + "'>options</span> 串里塞 <span style='font-family:" + MONO + "'>-c</span> 风格 token：<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>?options=endpoint%3Dep-xxx</span><br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>project=</span> 是<b>旧写法</b>，仍兼容<br><br>"
-      "解析：<span style='font-family:" + MONO + "'>options_raw()</span> 拆词后<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>parse_endpoint_param</span> 取前缀<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>.at_most_one()</span> —— 出现<b>两个</b><br>"
+      "启动包 <span style=\"font-family:" + MONO + "\">options</span> 串里塞 <span style=\"font-family:" + MONO + "\">-c</span> 风格 token：<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">?options=endpoint%3Dep-xxx</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">project=</span> 是<b>旧写法</b>，仍兼容<br><br>"
+      "解析：<span style=\"font-family:" + MONO + "\">options_raw()</span> 拆词后<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">parse_endpoint_param</span> 取前缀<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">.at_most_one()</span> —— 出现<b>两个</b><br>"
       "&nbsp;&nbsp;endpoint/project token 就<b>判为歧义</b>，<br>"
       "&nbsp;&nbsp;直接当没有（None）<br><br>"
-      "示例：<span style='font-family:" + MONO + "'>-ckey=1 endpoint=bar -c geqo=off</span>",
+      "示例：<span style=\"font-family:" + MONO + "\">-ckey=1 endpoint=bar -c geqo=off</span>",
       fs=11.5, color=DIM, lh=1.7),
     R("cr2-bg", 465, 212, 350, 268, fill=PANEL, stroke=EDGE, radius=12),
     T("cr2-n", 483, 224, 200, 18, "② 常规路径", fs=11, fw=800, color=AC2, ff=MONO),
     T("cr2-h", 483, 246, 320, 22, "TLS SNI 主机名", fs=15, fw=800, color=AC2),
     T("cr2-b", 483, 274, 320, 196,
-      "TLS 握手时的 SNI = <span style='font-family:" + MONO + "'>&lt;endpoint&gt;.&lt;common-name&gt;</span><br>"
+      "TLS 握手时的 SNI = <span style=\"font-family:" + MONO + "\">&lt;endpoint&gt;.&lt;common-name&gt;</span><br>"
       "&nbsp;&nbsp;第一个 <b>.</b> 前的 label 就是 endpoint_id<br>"
       "&nbsp;&nbsp;后半段必须命中 Proxy 证书里的 CN 集合<br><br>"
-      "<span style='font-family:" + MONO + "'>endpoint_sni()</span>（<span style='font-family:" + MONO + "'>credentials.rs:63</span>）<br><br>"
+      "<span style=\"font-family:" + MONO + "\">endpoint_sni()</span>（<span style=\"font-family:" + MONO + "\">credentials.rs:63</span>）<br><br>"
       "<b>两个保留子域不走 SNI 路由</b>：<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>api</span>（serverless driver）<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>apiauth</span>（auth broker）<br><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">api</span>（serverless driver）<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">apiauth</span>（auth broker）<br><br>"
       "WebSocket 客户端没有 SNI →<br>"
-      "&nbsp;&nbsp;用 HTTP <b>Host 头</b>顶上（<span style='font-family:" + MONO + "'>pglb/mod.rs:190</span>）",
+      "&nbsp;&nbsp;用 HTTP <b>Host 头</b>顶上（<span style=\"font-family:" + MONO + "\">pglb/mod.rs:190</span>）",
       fs=11.5, color=DIM, lh=1.7),
     R("cr3-bg", 834, 212, 350, 268, fill=PANEL, stroke=EDGE, radius=12),
     T("cr3-n", 852, 224, 200, 18, "③ 兜底 HACK", fs=11, fw=800, color="#C89EFF", ff=MONO),
@@ -522,12 +582,12 @@ std("s-conn-route", "PROXY", "连上 Neon：Proxy 怎么知道你要连哪个库
     T("cr3-b", 852, 274, 320, 196,
       "给<b>老 libpq / 不支持 SNI</b> 的客户端留的后门：<br>"
       "<b>把 endpoint 名塞进密码字段</b><br><br>"
-      "格式（<span style='font-family:" + MONO + "'>password_hack.rs:16</span>）：<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>endpoint=&lt;name&gt;;&lt;password&gt;</span><br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>endpoint=&lt;name&gt;$&lt;password&gt;</span><br>"
+      "格式（<span style=\"font-family:" + MONO + "\">password_hack.rs:16</span>）：<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">endpoint=&lt;name&gt;;&lt;password&gt;</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">endpoint=&lt;name&gt;$&lt;password&gt;</span><br>"
       "&nbsp;&nbsp;<b>;</b> 和 <b>$</b> 谁先出现按谁切<br><br>"
       "触发条件：①② <b>都拿不到</b> endpoint 时<br>"
-      "&nbsp;&nbsp;（<span style='font-family:" + MONO + "'>auth_quirks</span>，<span style='font-family:" + MONO + "'>backend/mod.rs:211</span>）<br>"
+      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">auth_quirks</span>，<span style=\"font-family:" + MONO + "\">backend/mod.rs:211</span>）<br>"
       "&nbsp;&nbsp;Proxy 先发 <b>CleartextPassword</b> 请求<br>"
       "&nbsp;&nbsp;密码本身<b>不在 Proxy 校验</b>，透传给 compute",
       fs=11.5, color=DIM, lh=1.7),
@@ -535,12 +595,12 @@ std("s-conn-route", "PROXY", "连上 Neon：Proxy 怎么知道你要连哪个库
     R("cr4-bg", 96, 494, 1088, 168, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
     T("cr4-h", 116, 506, 900, 20, "优先级与冲突规则", fs=13, fw=800, color=AC),
     T("cr4-b", 116, 532, 1048, 124,
-      "<span style='font-family:" + MONO + "'>match (endpoint_option, endpoint_from_domain)</span>　（<span style='font-family:" + MONO + "'>credentials.rs:106</span>）<br>"
-      "• 两者都有且<b>不一致</b> → 直接报错 <span style='font-family:" + MONO + "'>InconsistentProjectNames</span>，<b>拒绝连接</b>（不猜、不偏向任何一方）<br>"
-      "• 两者一致 / 只有一个 → <span style='font-family:" + MONO + "'>a.or(b)</span>，即 <b>options 优先于 SNI</b><br>"
-      "• 都没有 → endpoint_id = None → 落到 <b>Password Hack</b>；payload 也解不出就返回 <span style='font-family:" + MONO + "'>MissingEndpointName</span>，<br>"
-      "&nbsp;&nbsp;错误文案直接教用户「升级 libpq 支持 SNI，或加 <span style='font-family:" + MONO + "'>?options=endpoint%3D&lt;id&gt;</span>」（<span style='font-family:" + MONO + "'>auth/mod.rs:50</span>）<br>"
-      "• 埋点：<span style='font-family:" + MONO + "'>SniKind</span> 指标区分 <span style='font-family:" + MONO + "'>Sni</span> / <span style='font-family:" + MONO + "'>NoSni</span> / <span style='font-family:" + MONO + "'>PasswordHack</span>，可观测各路径占比",
+      "<span style=\"font-family:" + MONO + "\">match (endpoint_option, endpoint_from_domain)</span>　（<span style=\"font-family:" + MONO + "\">credentials.rs:106</span>）<br>"
+      "• 两者都有且<b>不一致</b> → 直接报错 <span style=\"font-family:" + MONO + "\">InconsistentProjectNames</span>，<b>拒绝连接</b>（不猜、不偏向任何一方）<br>"
+      "• 两者一致 / 只有一个 → <span style=\"font-family:" + MONO + "\">a.or(b)</span>，即 <b>options 优先于 SNI</b><br>"
+      "• 都没有 → endpoint_id = None → 落到 <b>Password Hack</b>；payload 也解不出就返回 <span style=\"font-family:" + MONO + "\">MissingEndpointName</span>，<br>"
+      "&nbsp;&nbsp;错误文案直接教用户「升级 libpq 支持 SNI，或加 <span style=\"font-family:" + MONO + "\">?options=endpoint%3D&lt;id&gt;</span>」（<span style=\"font-family:" + MONO + "\">auth/mod.rs:50</span>）<br>"
+      "• 埋点：<span style=\"font-family:" + MONO + "\">SniKind</span> 指标区分 <span style=\"font-family:" + MONO + "\">Sni</span> / <span style=\"font-family:" + MONO + "\">NoSni</span> / <span style=\"font-family:" + MONO + "\">PasswordHack</span>，可观测各路径占比",
       fs=12, color=DIM, lh=1.7),
 ], p, notes="连接 Neon 的 endpoint 路由三法，统一入口 ComputeUserInfoMaybeEndpoint::parse（proxy/src/auth/credentials.rs:74-156），由 proxy/src/proxy/mod.rs:53 每连接调一次。① options 启动参数：?options=endpoint%3Dep-xxx，project= 是旧写法仍兼容；解析 options_raw()（pqproto.rs:398）拆词 + parse_endpoint_param（password_hack.rs:33）取前缀 + .at_most_one() 保证唯一，出现两个 token 或同时有 endpoint= 和 project= 都判歧义返回 None（测试 credentials.rs:317,336）。② TLS SNI：<endpoint>.<common-name>，第一个点前 label 是 endpoint_id，后半段必须在证书 CN 集合内，endpoint_sni() credentials.rs:63；保留子域 api（SERVERLESS_DRIVER_SNI）和 apiauth（AUTH_BROKER_SNI）不走 SNI 路由，见 serverless/mod.rs:60；SNI 从 stream.rs:266 sni_hostname() 取，WebSocket 客户端无 SNI 用 HTTP Host 头代替（pglb/mod.rs:190）。③ Password Hack：给不支持 SNI 的老客户端，格式 endpoint=<name>;<password> 或 endpoint=<name>$<password>，分号和美元符谁先出现按谁切（password_hack.rs:16-30）；只在①②都失败时触发，在 auth_quirks（backend/mod.rs:211）里 TryFrom 失败分支调 hacks::password_hack_no_authentication（hacks.rs:63），Proxy 先发 AuthenticationCleartextPassword（flow.rs:77），密码不在 Proxy 校验直接透传 compute。优先级：match (endpoint_option, endpoint_from_domain) credentials.rs:106，两者不一致直接 InconsistentProjectNames 拒连；一致或只有一个用 a.or(b) 即 options 优先；都没有则 None 落 Password Hack，解不出返回 MissingEndpointName 并提示升级 libpq 或加 ?options=endpoint%3D<id>（auth/mod.rs:50）。SniKind 指标区分 Sni/NoSni/PasswordHack。")
 
@@ -554,51 +614,51 @@ std("s-comp1", "COMPUTE", "Compute Node — patched PostgreSQL 的四点关键�
       fs=13, color=DIM, lh=1.6),
     *card("cm1", 96, 212, 530, 218,
           "① 替换 smgr <span style='font-size:11px;font-weight:700;color:#C89EFF;background:rgba(200,158,255,0.15);padding:2px 6px;border-radius:4px'>EXT + PATCH</span>", [
-              "<span style='color:" + AC + ";font-weight:800'>■ 插件（主体）</span>",
-              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>libpagestore.c:1649</span> 装 <b>smgr_hook = smgr_neon</b>",
-              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>neon_read</span> → LFC miss 则 GetPage@LSN（:1367）",
-              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>neon_write</span> → 写 LFC + 补 WAL-log，<b>不落 md</b>（:1596）",
+              ("■ 插件（主体）", AC, 800),
+              "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">libpagestore.c:1649</span> 装 <b>smgr_hook = smgr_neon</b>",
+              "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">neon_read</span> → LFC miss 则 GetPage@LSN（:1367）",
+              "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">neon_write</span> → 写 LFC + 补 WAL-log，<b>不落 md</b>（:1596）",
               "",
-              "<span style='color:#FF9E8A;font-weight:800'>■ 内核 patch（3 条，凿出 hook 点）</span>",
+              ("■ 内核 patch（3 条，凿出 hook 点）", AC2, 800),
               "&nbsp;&nbsp;· smgr 接口对扩展开放（core_changes.md:179）",
-              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>smgropen()</span> 加 relpersistence 区分 unlogged（:193）",
-              "&nbsp;&nbsp;· dbsize 改用 <span style='font-family:" + MONO + "'>dbsize_hook</span>，不扫 data dir（:221）",
+              "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">smgropen()</span> 加 relpersistence 区分 unlogged（:193）",
+              "&nbsp;&nbsp;· dbsize 改用 <span style=\"font-family:" + MONO + "\">dbsize_hook</span>，不扫 data dir（:221）",
           ], hc=AC, fs=11.5, headfs=15),
     *card("cm2", 656, 212, 530, 218,
           "② WAL → SK 走 bgworker <span style='font-size:11px;font-weight:700;color:#C89EFF;background:rgba(200,158,255,0.15);padding:2px 6px;border-radius:4px'>EXT + PATCH</span>", [
-              "<span style='color:" + AC + ";font-weight:800'>■ 插件（主体）</span>",
-              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>walproposer_pg.c:689</span> 注册 <b>walproposer bgworker</b>",
-              "&nbsp;&nbsp;· :1566 读 <span style='font-family:" + MONO + "'>GetFlushRecPtr()</span> 广播 3 台 SK",
+              ("■ 插件（主体）", AC, 800),
+              "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">walproposer_pg.c:689</span> 注册 <b>walproposer bgworker</b>",
+              "&nbsp;&nbsp;· :1566 读 <span style=\"font-family:" + MONO + "\">GetFlushRecPtr()</span> 广播 3 台 SK",
               "&nbsp;&nbsp;· 等 <b>quorum=2</b> 达成即 commit ACK；与 smgr <b>两条独立路径</b>",
               "",
-              "<span style='color:#FF9E8A;font-weight:800'>■ 内核 patch（2 条，辅助）</span>",
-              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>ProcessInterrupts</span> 加 callback 做背压（:325）",
+              ("■ 内核 patch（2 条，辅助）", AC2, 800),
+              "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">ProcessInterrupts</span> 加 callback 做背压（:325）",
               "&nbsp;&nbsp;· walproposer 在 checkpointer <b>之后</b>关停（:388）",
-              "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#888'>——保证最后一条 CheckPoint WAL 能推到 SK</span>",
+              ("&nbsp;&nbsp;&nbsp;&nbsp;——保证最后一条 CheckPoint WAL 能推到 SK", "#888"),
           ], hc=AC2, fs=11.5, headfs=15),
     *card("cm3", 96, 442, 530, 218,
           "③ checkpoint 掏空 <span style='font-size:11px;font-weight:700;color:#00E599;background:rgba(0,229,153,0.15);padding:2px 6px;border-radius:4px'>纯 EXT</span>", [
-              "<span style='color:" + AC + ";font-weight:800'>■ 插件（全部）</span>",
-              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>neon_writeback / immedsync / registersync</span> 全 <b>no-op</b>",
-              "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#888'>pagestore_smgr.c:1230, 1888, 1922</span>",
-              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>BufferSync()</span> 刷脏页 → 底层 fsync <b>被架空</b>",
+              ("■ 插件（全部）", AC, 800),
+              "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">neon_writeback / immedsync / registersync</span> 全 <b>no-op</b>",
+              ("&nbsp;&nbsp;&nbsp;&nbsp;pagestore_smgr.c:1230, 1888, 1922", "#888"),
+              "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">BufferSync()</span> 刷脏页 → 底层 fsync <b>被架空</b>",
               "",
-              "<span style='color:#FF9E8A;font-weight:800'>■ 内核 patch：无</span>",
+              ("■ 内核 patch：无", AC2, 800),
               "&nbsp;&nbsp;· checkpointer 进程 &amp; CheckPoint WAL record 都是 PG <b>原生、照常跑</b>",
               "&nbsp;&nbsp;· 能纯插件做到，正是因为 ① 已把整张 smgr 表换掉",
-              "&nbsp;&nbsp;· 持久化靠 <span style='font-family:" + MONO + "'>XLogInsert</span> → 本地 fsync → walproposer",
+              "&nbsp;&nbsp;· 持久化靠 <span style=\"font-family:" + MONO + "\">XLogInsert</span> → 本地 fsync → walproposer",
           ], hc="#C89EFF", fs=11.5, headfs=15),
     *card("cm4", 656, 442, 530, 218,
           "④ 启动跳过 replay <span style='font-size:11px;font-weight:700;color:#FF9E8A;background:rgba(255,158,138,0.15);padding:2px 6px;border-radius:4px'>纯 PATCH</span>", [
-              "<span style='color:" + AC + ";font-weight:800'>■ 插件：无</span>",
-              "&nbsp;&nbsp;· 启动流程 / <span style='font-family:" + MONO + "'>pg_control</span> 语义，插件<b>拦不到</b>",
+              ("■ 插件：无", AC, 800),
+              "&nbsp;&nbsp;· 启动流程 / <span style=\"font-family:" + MONO + "\">pg_control</span> 语义，插件<b>拦不到</b>",
               "&nbsp;&nbsp;· 外围逻辑在 Rust 侧：compute_ctl 清空 pgdata + 拉 basebackup",
-              "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#888'>compute.rs:1201, 1601 · basebackup.rs:1-11</span>",
+              ("&nbsp;&nbsp;&nbsp;&nbsp;compute.rs:1201, 1601 · basebackup.rs:1-11", "#888"),
               "",
-              "<span style='color:#FF9E8A;font-weight:800'>■ 内核 patch（改 xlog.c）</span>",
-              "&nbsp;&nbsp;· 读 <span style='font-family:" + MONO + "'>neon.signal</span> 的 LSN <b>直接进 running</b>（:119-135）",
+              ("■ 内核 patch（改 xlog.c）", AC2, 800),
+              "&nbsp;&nbsp;· 读 <span style=\"font-family:" + MONO + "\">neon.signal</span> 的 LSN <b>直接进 running</b>（:119-135）",
               "&nbsp;&nbsp;· <b>不读 checkpoint record、不做 WAL replay</b>",
-              "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>pg_control</span> 伪装 DB_SHUTDOWNED（xlog_utils.rs:159）",
+              "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">pg_control</span> 伪装 DB_SHUTDOWNED（xlog_utils.rs:159）",
           ], hc="#7CB3F4", fs=11.5, headfs=15),
 ], p, notes="讲这页时先立设计原则：docs/core_changes.md:14-17 明确 'Most of the Neon-specific code is in the extensions, and for any new features, that is preferred over modifying core PostgreSQL code' —— 绝大多数改造在 pgxn/neon 扩展（shared_preload_libraries 加载），内核 patch 只在扩展够不到的地方动刀，且 core_changes.md 每条 patch 都带一节 'How to get rid of the patch'，长期目标是全部推上游、让未修改的 PG 也能跑 Neon 存储（:4-7）。徽章含义：[EXT]=纯扩展；[PATCH]=纯内核 patch；[EXT + PATCH]=扩展是主体但依赖内核 patch 凿出 hook 点。① 替换 smgr [EXT + PATCH]：主体是扩展——pagestore_smgr.c:2220 定义 neon_smgr 结构体（smgr_read=neon_read/smgr_write=neon_write），libpagestore.c:1649-1651 装 smgr_hook=smgr_neon / smgr_init_hook / dbsize_hook；permanent 关系 read 走 LFC→GetPage@LSN（:1367-1471），write 走 LFC+补 WAL-log（:1596-1675），临时/unlogged 表 fallback md。依赖三个内核 patch：core_changes.md:179-191 'Make smgr interface available to extensions'（改 smgr.c/smgr.h 共 275 行，凿出 smgr_hook，已提上游 commitfest 47/4428 但推进极慢）、:193-211 'Added relpersistence argument to smgropen()'（让 smgr 实现能区分 permanent/unlogged/temp，否则无法差异化处理 unlogged 表）、:221-232 'Use smgr and dbsize_hook for size calculations'（原生 dbsize.c 直接扫 data directory 算大小，在 Neon 下不成立）。② WAL→SK [EXT + PATCH]：主体是扩展——walproposer_pg.c:689 walprop_register_bgworker 注册 bgworker（bgw_library_name='neon', BgWorkerStart_RecoveryFinished），:180 WalProposerMain，:1566 XLogBroadcastWalProposer 读 GetFlushRecPtr()（本地已 fsync 的 pg_wal）广播给 3 台 SK，quorum=2 达成即 commit。依赖两个辅助 patch：core_changes.md:325-354 'Backpressure if pageserver doesn't ingest WAL fast enough'（在 ProcessInterrupts 里加 ProcessInterruptsCallback + retry label，让 PS 消费 WAL 落后时能在 compute 侧反压）、:388-395 'Shut down walproposer after checkpointer'（调整关停顺序，确保 checkpointer 最后一条 CheckPoint WAL record 也能推给 SK）。③ checkpoint 掏空 [EXT]：没有独立 patch，checkpointer 进程和 CheckPoint WAL record 都是 PG 原生行为、照常跑；扩展只是把 smgr 的刷盘方法做成 no-op——neon_writeback (pagestore_smgr.c:1230)/neon_immedsync (1888)/neon_registersync (1922) 对 permanent 关系全空转（日志打 'writeback noop'/'immedsync noop'），BufferSync 遍历脏页调下来时底层 fsync 被架空。这条能纯扩展实现，正是因为 ① 已经把整个 smgr 表换掉了。持久化真正靠 AM 层 XLogInsert → 本地 pg_wal fsync → walproposer → SK quorum。④ 启动跳过 crash recovery [PATCH]：这是真·内核 patch，启动流程和 pg_control 语义扩展拦不到——core_changes.md:119-135 'Allow startup without reading checkpoint record' 改 xlog.c，读 neon.signal（也兼容 zenith.signal）里的 LSN 作为起点、直接认定该 LSN 一致，不读最后的 checkpoint record、不做 WAL redo；'How to get rid of the patch' 一栏写的是 '???'，说明连 Neon 自己都还没想好怎么消掉。配套的不是插件也不是 patch，而是 Rust 侧：libs/postgres_ffi/src/xlog_utils.rs:159-176 generate_pg_control 造出 checkPoint=0 / state=DB_SHUTDOWNED 的假 pg_control 塞进 basebackup tarball；compute_tools/src/compute.rs:1201 create_pgdata 清空目录、:1601-1650 prepare_pgdata 拉 tarball 解压（pageserver/src/basebackup.rs:1-11：只含 non-relational data——pg_control/SLRU/filenodemap/twophase/neon.signal/dummy WAL segment，关系文件是占位空文件）。注意 core_changes.md:145-146 记了备选方案是往 tarball 里塞假 checkpoint record，但被否了——怕假 WAL 意外流到 safekeeper 覆盖真 WAL。")
 
@@ -607,7 +667,7 @@ p += 1
 std("s-computectl", "COMPUTE", "compute_ctl —— compute 容器里的 PostgreSQL 监护进程", [
     T("cc-desc", 96, 162, 1088, 36,
       "compute_ctl 是 compute 容器的 <b>entrypoint / 1 号进程</b>，postgres 是它 fork 出来的子进程。"
-      "它把「控制面给的 <span style='font-family:" + MONO + "'>ComputeSpec</span>」翻译成「一个连好存储、建好库和角色的可用 PG」。"
+      "它把「控制面给的 <span style=\"font-family:" + MONO + "\">ComputeSpec</span>」翻译成「一个连好存储、建好库和角色的可用 PG」。"
       "<span style='color:" + DIM + "'>compute_tools/src/bin/compute_ctl.rs:1-35 · README.md</span>",
       fs=12, color=DIM, lh=1.55),
     # Left: lifecycle
@@ -615,48 +675,48 @@ std("s-computectl", "COMPUTE", "compute_ctl —— compute 容器里的 PostgreS
     T("cc-l-h", 116, 216, 600, 22, "启动流程  ComputeNode::run()  compute.rs:627", fs=14, fw=800, color=AC),
     T("cc-l-b", 116, 246, 600, 294,
       "<b>①</b> 拉起两个 HTTP server：<b>3080</b> 对控制面 / <b>3081</b> 对本机组件<br>"
-      "<b>②</b> <span style='font-family:" + MONO + "'>wait_spec()</span>(:752) —— spec 来自 CLI 参数，或阻塞等 "
-      "<span style='font-family:" + MONO + "'>POST /configure</span><br>"
-      "<b>③</b> <span style='font-family:" + MONO + "'>start_compute()</span>(:793) 冷启动，顺序做四件事：<br>"
+      "<b>②</b> <span style=\"font-family:" + MONO + "\">wait_spec()</span>(:752) —— spec 来自 CLI 参数，或阻塞等 "
+      "<span style=\"font-family:" + MONO + "\">POST /configure</span><br>"
+      "<b>③</b> <span style=\"font-family:" + MONO + "\">start_compute()</span>(:793) 冷启动，顺序做四件事：<br>"
       "&nbsp;&nbsp;· 下载 remote extensions<br>"
-      "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>prepare_pgdata()</span>(:1601)：清空 pgdata、写 postgresql.conf、<br>"
+      "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">prepare_pgdata()</span>(:1601)：清空 pgdata、写 postgresql.conf、<br>"
       "&nbsp;&nbsp;&nbsp;&nbsp;sync safekeepers 定起点、拉 <b>basebackup</b> 解压、写 pg_hba<br>"
-      "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>start_postgres()</span>(:1789) fork 出 postgres<br>"
-      "&nbsp;&nbsp;· <span style='font-family:" + MONO + "'>configure_as_primary()</span>(:2179) → <span style='font-family:" + MONO + "'>apply_config()</span>(:1972)<br>"
+      "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">start_postgres()</span>(:1789) fork 出 postgres<br>"
+      "&nbsp;&nbsp;· <span style=\"font-family:" + MONO + "\">configure_as_primary()</span>(:2179) → <span style=\"font-family:" + MONO + "\">apply_config()</span>(:1972)<br>"
       "&nbsp;&nbsp;&nbsp;&nbsp;按 <b>ApplySpecPhase</b> 建 role/db/extension，最后跑 bootstrap template<br>"
       "<b>④</b> 状态置 <b style='color:" + AC + "'>Running</b>(:1039)，起 vm-monitor<br>"
       "<b>⑤</b> 等 postgres 退出 → 清理（失败时多等 30s 便于抓日志）<br><br>"
       "<b style='color:" + AC2 + "'>热变更</b>：configurator 线程(configurator.rs:13)常驻，监听到<br>"
-      "&nbsp;&nbsp;ConfigurationPending → <span style='font-family:" + MONO + "'>reconfigure()</span>(:2089)：改 conf + "
-      "<span style='font-family:" + MONO + "'>pg_reload_conf</span> + 重放 spec SQL，<b>不重启 PG</b>",
+      "&nbsp;&nbsp;ConfigurationPending → <span style=\"font-family:" + MONO + "\">reconfigure()</span>(:2089)：改 conf + "
+      "<span style=\"font-family:" + MONO + "\">pg_reload_conf</span> + 重放 spec SQL，<b>不重启 PG</b>",
       fs=11.5, color=DIM, lh=1.62),
     # Right: HTTP API
     R("cc-r-bg", 752, 204, 432, 344, fill=PANEL, stroke=EDGE, radius=12),
     T("cc-r-h", 772, 216, 400, 22, "HTTP 双端口  http/server.rs:38", fs=13, fw=800, color=AC2),
     T("cc-r-b", 772, 244, 396, 296,
       "<b style='color:" + FG + "'>3080 外部</b> —— 控制面 + 监控抓取<br>"
-      "&nbsp;<span style='font-family:" + MONO + "'>/status</span> 状态机状态 · <span style='font-family:" + MONO + "'>/configure</span> 下发 spec<br>"
-      "&nbsp;<span style='font-family:" + MONO + "'>/terminate</span> 停机 · <span style='font-family:" + MONO + "'>/promote</span> 副本升主<br>"
-      "&nbsp;<span style='font-family:" + MONO + "'>/check_writability</span> 可写探活<br>"
-      "&nbsp;<span style='font-family:" + MONO + "'>/dbs_and_roles</span> <span style='font-family:" + MONO + "'>/database_schema</span><br>"
-      "&nbsp;<span style='font-family:" + MONO + "'>/lfc/prewarm</span> <span style='font-family:" + MONO + "'>/lfc/offload</span><br>"
-      "&nbsp;<span style='font-family:" + MONO + "'>/metrics</span> <span style='font-family:" + MONO + "'>/autoscaling_metrics</span>"
+      "&nbsp;<span style=\"font-family:" + MONO + "\">/status</span> 状态机状态 · <span style=\"font-family:" + MONO + "\">/configure</span> 下发 spec<br>"
+      "&nbsp;<span style=\"font-family:" + MONO + "\">/terminate</span> 停机 · <span style=\"font-family:" + MONO + "\">/promote</span> 副本升主<br>"
+      "&nbsp;<span style=\"font-family:" + MONO + "\">/check_writability</span> 可写探活<br>"
+      "&nbsp;<span style=\"font-family:" + MONO + "\">/dbs_and_roles</span> <span style=\"font-family:" + MONO + "\">/database_schema</span><br>"
+      "&nbsp;<span style=\"font-family:" + MONO + "\">/lfc/prewarm</span> <span style=\"font-family:" + MONO + "\">/lfc/offload</span><br>"
+      "&nbsp;<span style=\"font-family:" + MONO + "\">/metrics</span> <span style=\"font-family:" + MONO + "\">/autoscaling_metrics</span>"
       "<span style='color:" + FAINT + "'>（免鉴权）</span><br><br>"
       "<b style='color:" + FG + "'>3081 内部</b> —— neon 扩展 / local_proxy<br>"
-      "&nbsp;<span style='font-family:" + MONO + "'>/extensions</span> 装扩展 · <span style='font-family:" + MONO + "'>/grants</span> 补授权<br>"
-      "&nbsp;<span style='font-family:" + MONO + "'>/extension_server/{file}</span> 拉扩展文件<br>"
-      "&nbsp;<span style='font-family:" + MONO + "'>/refresh_configuration</span> 自触发重配<br>"
-      "<span style='color:" + AC2 + ";font-size:10px'>⚠ 实测绑 <span style='font-family:" + MONO + "'>::</span>(0.0.0.0) 且免鉴权，"
+      "&nbsp;<span style=\"font-family:" + MONO + "\">/extensions</span> 装扩展 · <span style=\"font-family:" + MONO + "\">/grants</span> 补授权<br>"
+      "&nbsp;<span style=\"font-family:" + MONO + "\">/extension_server/{file}</span> 拉扩展文件<br>"
+      "&nbsp;<span style=\"font-family:" + MONO + "\">/refresh_configuration</span> 自触发重配<br>"
+      "<span style='color:" + AC2 + ";font-size:10px'>⚠ 实测绑 <span style=\"font-family:" + MONO + "\">::</span>(0.0.0.0) 且免鉴权，"
       "注释里 TODO 想改回 loopback 未落地（server.rs:194-197）</span>",
       fs=11, color=DIM, lh=1.5),
     # Bottom band
     R("cc-b-bg", 96, 560, 1088, 96, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)", radius=10),
     T("cc-b-h", 116, 572, 900, 20, "核心数据结构", fs=13, fw=800, color="#7CB3F4"),
     T("cc-b-b", 116, 598, 1048, 50,
-      "• <span style='font-family:" + MONO + "'>ComputeNodeParams</span>(compute.rs:85) 命令行来的静态参数 ｜ "
-      "<span style='font-family:" + MONO + "'>ComputeNode</span>(:139) 全局单例，内含 <span style='font-family:" + MONO + "'>Mutex&lt;ComputeState&gt;</span>(:173) ｜ "
-      "<span style='font-family:" + MONO + "'>ParsedSpec</span>(:254) 校验并解出 tenant/timeline 后的 spec<br>"
-      "• 顺带管的周边：<span style='font-family:" + MONO + "'>pgbouncer</span> 参数下发、local_proxy 配置、swap/磁盘扩容、LFC prewarm/offload",
+      "• <span style=\"font-family:" + MONO + "\">ComputeNodeParams</span>(compute.rs:85) 命令行来的静态参数 ｜ "
+      "<span style=\"font-family:" + MONO + "\">ComputeNode</span>(:139) 全局单例，内含 <span style=\"font-family:" + MONO + "\">Mutex&lt;ComputeState&gt;</span>(:173) ｜ "
+      "<span style=\"font-family:" + MONO + "\">ParsedSpec</span>(:254) 校验并解出 tenant/timeline 后的 spec<br>"
+      "• 顺带管的周边：<span style=\"font-family:" + MONO + "\">pgbouncer</span> 参数下发、local_proxy 配置、swap/磁盘扩容、LFC prewarm/offload",
       fs=12, color=DIM, lh=1.62),
 ], p, notes="compute_ctl 是 compute 容器的 entrypoint（Docker entrypoint 或 systemd ExecStart），是 Pod 里的 1 号/监护进程，postgres 是它 fork 的子进程。源码 compute_tools crate，入口 bin/compute_ctl.rs（main 在 :213），核心逻辑 compute_tools/src/compute.rs。职责一句话：把控制面给的 ComputeSpec 翻译成一个连好存储、建好库和角色的可用 PG。启动流程 ComputeNode::run() compute.rs:627：① 起两个 HTTP server，external 3080（compute_ctl.rs:78）给控制面和监控，internal 3081（:83）给 neon 扩展和 local_proxy；② wait_spec()(:752)，spec 可以启动时用 CLI 参数带进来，也可以阻塞等控制面 POST /configure 推过来；③ start_compute()(:793) 冷启动：下载 remote extensions → prepare_pgdata()(:1601) 清空 pgdata、写 postgresql.conf、sync safekeepers 确定起点 LSN、拉 basebackup tarball 解压、写 pg_hba → 调整 swap/磁盘 → 起 monitor 和 configurator 线程 → start_postgres()(:1789) fork postgres → configure_as_primary()(:2179) 调 apply_config()(:1972) 按 ApplySpecPhase 各阶段建 role/database/extension，最后（在 extension phase 之后）跑 bootstrap template（spec_apply.rs:358）；④ 状态置 Running(:1039)，起 vm-monitor；⑤ 等 postgres 退出后清理，失败时多等 30s 方便抓日志。热变更走 configurator 线程（configurator.rs:13 configurator_main_loop）常驻循环，等到 ConfigurationPending 或 RefreshConfigurationPending 就调 reconfigure()(compute.rs:2089)，重写 postgresql.conf + pg_reload_conf + 重放 spec SQL，不重启 PG。HTTP 路由定义在 http/server.rs:38-49，外部路由 :94-127，内部路由 :66-84；/metrics 和 /autoscaling_metrics 免鉴权，其余外部路由要鉴权；内部还有 /failpoints 仅测试构建开放。⚠ 3081 端口实际绑定 Ipv6Addr::UNSPECIFIED（http/server.rs:196，等价于双栈 :: / 0.0.0.0），并非注释所说的 loopback；:194-195 有 TODO 说明是因为 GitHub Actions runner 不允许绑 localhost 才临时放开，一直未改回。内部 router（:64-87）也没挂 AsyncRequireAuthorizationLayer，所以 /extensions /grants /refresh_configuration /extension_server/* 事实上暴露给整个 Pod 网络且免鉴权，安全靠部署侧 NetworkPolicy 兜底。pgxn/neon 里 curl 目标虽然写的 http://localhost:{neon.extension_server_port}/...（extension_server.c:49、libpagestore.c:1078），但那只是客户端选择走 loopback，服务端并没做绑定收敛。核心结构体：ComputeNodeParams(compute.rs:85) 静态 CLI 参数、ComputeNode(:139) 全局单例内含 Mutex<ComputeState>(:173) 存 status/pspec/metrics、ParsedSpec(:254) 是校验并解出 tenant_id/timeline_id 后的 spec。本页只讲总览，具体细节分散在相邻各页：状态机（11 个状态，responses.rs:174）在下一页，ComputeSpec 字段在 s-compute-spec，basebackup 在 s-basebackup，bootstrap template 在 s-boot，DDL 反向同步在 s-ddl-fwd。")
 
@@ -664,7 +724,7 @@ std("s-computectl", "COMPUTE", "compute_ctl —— compute 容器里的 PostgreS
 p += 1
 std("s-cc-internal", "COMPUTE", "内部端口 3081 —— 4 个路由，两类调用方", [
     T("ci-desc", 96, 162, 1088, 34,
-      "PG 后端（backend / bgworker）靠 GUC <span style='font-family:" + MONO + "'>neon.extension_server_port</span> 找到 3081，"
+      "PG 后端（backend / bgworker）靠 GUC <span style=\"font-family:" + MONO + "\">neon.extension_server_port</span> 找到 3081，"
       "该 GUC 由 compute_ctl 启动时写进 postgresql.conf（<span style='color:" + DIM + "'>compute_tools/src/config.rs:345</span>），"
       "然后用 <b>libcurl</b> 回调。<b style='color:" + AC2 + "'>4 个路由里 Postgres 只用其中 2 个。</b>",
       fs=12, color=DIM, lh=1.5),
@@ -674,59 +734,68 @@ std("s-cc-internal", "COMPUTE", "内部端口 3081 —— 4 个路由，两类�
     T("ci-l-b", 116, 246, 660, 294,
       "<b style='color:" + FG + "'>POST /extension_server/{filename}</b>"
       "<span style='color:" + FAINT + "'>　pgxn/neon/extension_server.c:33</span><br>"
-      "&nbsp;· <span style='font-family:" + MONO + "'>neon_download_extension_file_http</span>，挂在 "
-      "<span style='font-family:" + MONO + "'>download_extension_file_hook</span> 上（:110-111）<br>"
-      "&nbsp;· <b>时机</b>：执行 <span style='font-family:" + MONO + "'>CREATE EXTENSION xxx</span>（或 PG 加载扩展库）时，本地 "
-      "<span style='font-family:" + MONO + "'>$PGSHAREDIR/extension/xxx--*.sql</span> / "
-      "<span style='font-family:" + MONO + "'>$PKGLIBDIR/xxx.so</span> 不存在 → PG 走 hook → "
+      "&nbsp;· <span style=\"font-family:" + MONO + "\">neon_download_extension_file_http</span>，挂在 "
+      "<span style=\"font-family:" + MONO + "\">download_extension_file_hook</span> 上（:110-111）<br>"
+      "&nbsp;· <b>时机</b>：执行 <span style=\"font-family:" + MONO + "\">CREATE EXTENSION xxx</span>（或 PG 加载扩展库）时，本地 "
+      "<span style=\"font-family:" + MONO + "\">$PGSHAREDIR/extension/xxx--*.sql</span> / "
+      "<span style=\"font-family:" + MONO + "\">$PKGLIBDIR/xxx.so</span> 不存在 → PG 走 hook → "
       "compute_ctl 从对象存储把扩展文件拉下来塞进容器 FS，PG 再重试 open<br>"
-      "&nbsp;· 每个 SQL / so 文件一次请求，<span style='font-family:" + MONO + "'>?is_library=true</span> 区分二进制<br><br>"
+      "&nbsp;· 每个 SQL / so 文件一次请求，<span style=\"font-family:" + MONO + "\">?is_library=true</span> 区分二进制<br><br>"
       "<b style='color:" + FG + "'>POST /refresh_configuration</b>"
       "<span style='color:" + FAINT + "'>　pgxn/neon/libpagestore.c:1058</span><br>"
-      "&nbsp;· <span style='font-family:" + MONO + "'>hadron_request_configuration_refresh</span>，"
+      "&nbsp;· <span style=\"font-family:" + MONO + "\">hadron_request_configuration_refresh</span>，"
       "<b>仅在 lakebase_mode</b>（Hadron fork 的 GUC）下启用（:1065）<br>"
       "&nbsp;· <b>时机</b>：backend 跟 pageserver 掉线或读到异常，怀疑自己被路由到了<b>错误的 PS</b>"
       "（比如那台是 secondary）→ 主动「戳」一下 compute_ctl，让它去问控制面拉新 spec<br>"
-      "&nbsp;· 4 处触发：<span style='font-family:" + MONO + "'>:1367</span> EOF · "
-      "<span style='font-family:" + MONO + "'>:1374</span> 读 COPY 失败 · "
-      "<span style='font-family:" + MONO + "'>:1381</span> 意外返回码 · "
-      "<span style='font-family:" + MONO + "'>:1390</span> 上层收尾<br>"
+      "&nbsp;· 同步 <span style=\"font-family:" + MONO + "\">pageserver_receive</span> / 异步 "
+      "<span style=\"font-family:" + MONO + "\">pageserver_try_receive</span> 里，"
+      "<span style=\"font-family:" + MONO + "\">PQgetCopyData</span> 返回 -1(EOF)/-2(读失败)/其它意外值都戳一下，"
+      "末尾还有失败超阈值升级 cancel query 的兜底<br>"
       "&nbsp;· <b style='color:" + AC2 + "'>best-effort</b>：3s 超时，失败只记 WARNING，"
       "连续失败超过阈值才 cancel 当前 query",
       fs=11, color=DIM, lh=1.52),
     # Right: local_proxy's two routes
     R("ci-r-bg", 812, 204, 372, 348, fill="rgba(200,158,255,0.06)", stroke="rgba(200,158,255,0.3)", radius=12),
     T("ci-r-h", 832, 216, 332, 22, "② 不是 Postgres 调的 —— local_proxy", fs=13, fw=800, color="#C89EFF"),
-    T("ci-r-b", 832, 246, 332, 294,
-      "<b style='color:" + FG + "'>POST /extensions</b><br>"
-      "&nbsp;装 <span style='font-family:" + MONO + "'>pg_session_jwt</span> 0.3.1 到 schema "
-      "<span style='font-family:" + MONO + "'>auth</span><br><br>"
-      "<b style='color:" + FG + "'>POST /grants</b><br>"
-      "&nbsp;给 JWKS 里声明的 role 补 schema 授权<br><br>"
+    # ci-r-b split into stacked elements so the two POST labels + two citation
+    # lines get real colours (inline <span style> never renders — see COLOUR NOTE).
+    T("ci-r-b", 832, 246, 332, 18, "POST /extensions", fs=11, fw=800, color=FG, lh=1.3),
+    T("ci-r-b1", 832, 264, 332, 22,
+      "&nbsp;装 <span style=\"font-family:" + MONO + "\">pg_session_jwt</span> 0.3.1 到 schema "
+      "<span style=\"font-family:" + MONO + "\">auth</span>", fs=11, color=DIM, lh=1.52),
+    T("ci-r-b2", 832, 292, 332, 18, "POST /grants", fs=11, fw=800, color=FG, lh=1.3),
+    T("ci-r-b3", 832, 310, 332, 22,
+      "&nbsp;给 JWKS 里声明的 role 补 schema 授权", fs=11, color=DIM, lh=1.52),
+    T("ci-r-b4", 832, 336, 332, 40,
       "<b>调用方</b>：local_proxy —— Neon Auth / serverless driver 在 Pod 内的边车<br>"
-      "<b>时机</b>：<span style='font-family:" + MONO + "'>connect_to_local_postgres</span> 对某个库<b>首次</b>建连接池时，"
-      "各 db 一次，走信号量串行<br>"
-      "<span style='color:" + FAINT + "'>proxy/src/serverless/backend.rs:311-341</span><br><br>"
-      "要求 compute 已在 <b style='color:" + AC + "'>Running</b>，否则 <span style='font-family:" + MONO + "'>/extensions</span> 直接拒<br>"
-      "<span style='color:" + FAINT + "'>compute_tools/…/routes/extensions.rs:19</span>",
+      "<b>时机</b>：<span style=\"font-family:" + MONO + "\">connect_to_local_postgres</span> 对某个库<b>首次</b>建连接池时，",
       fs=11, color=DIM, lh=1.52),
+    T("ci-r-b5", 832, 376, 332, 22, "&nbsp;各 db 一次，走信号量串行", fs=11, color=DIM, lh=1.52),
+    T("ci-r-b6", 832, 400, 332, 18,
+      "proxy/src/serverless/backend.rs:311-341", fs=11, color=FAINT, lh=1.3),
+    T("ci-r-b7", 832, 428, 332, 40,
+      "要求 compute 已在 <b style='color:" + AC + "'>Running</b>，否则 "
+      "<span style=\"font-family:" + MONO + "\">/extensions</span> 直接拒",
+      fs=11, color=DIM, lh=1.52),
+    T("ci-r-b8", 832, 468, 332, 18,
+      "compute_tools/…/routes/extensions.rs:19", fs=11, color=FAINT, lh=1.3),
     # Bottom band
     R("ci-b-bg", 96, 564, 1088, 92, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.32)", radius=10),
     T("ci-b-h", 116, 576, 900, 20, "⚠ 「内部」只是命名，不是隔离", fs=13, fw=800, color=AC2),
     T("ci-b-b", 116, 602, 1048, 46,
-      "• 客户端侧确实打 <span style='font-family:" + MONO + "'>http://localhost:{neon.extension_server_port}/…</span>"
+      "• 客户端侧确实打 <span style=\"font-family:" + MONO + "\">http://localhost:{neon.extension_server_port}/…</span>"
       "（extension_server.c:49、libpagestore.c:1078），但那只是<b>调用方选择</b>走 loopback<br>"
-      "• 服务端实测绑 <span style='font-family:" + MONO + "'>Ipv6Addr::UNSPECIFIED</span>（<span style='font-family:" + MONO + "'>::</span> / 0.0.0.0，server.rs:196-197），"
+      "• 服务端实测绑 <span style=\"font-family:" + MONO + "\">Ipv6Addr::UNSPECIFIED</span>（<span style=\"font-family:" + MONO + "\">::</span> / 0.0.0.0，server.rs:196-197），"
       "内部 router（:64-87）<b>也没挂鉴权层</b> → 4 个路由对整个 Pod 网络可达且免鉴权，只能靠部署侧 <b>NetworkPolicy</b> 兜底",
       fs=11.5, color=DIM, lh=1.6),
-], p, notes="本页把 3081 内部端口的 4 个路由按调用方分成两类，要点：3081 不等于「Postgres 专用端口」，Postgres 只用其中 2 个。端口发现机制：compute_ctl 启动时把 internal http port 写成 GUC neon.extension_server_port 进 postgresql.conf（compute_tools/src/config.rs:345），PG 后端（普通 backend 或 bgworker）读这个 GUC 拿到端口，用 libcurl 发 HTTP。第一类，Postgres 自己调的两个：（1）POST /extension_server/{filename}，实现在 pgxn/neon/extension_server.c:33 neon_download_extension_file_http，通过 :110-111 挂在 PG 的 download_extension_file_hook 上。触发时机是用户执行 CREATE EXTENSION xxx，或者 PG 需要加载某个扩展的动态库时，发现本地 $PGSHAREDIR/extension/xxx--*.sql 或 $PKGLIBDIR/xxx.so 不存在，于是走 hook，hook 请求 compute_ctl 从对象存储（remote extension storage）把文件下载下来写进容器文件系统，PG 再重试 open。粒度是每个 SQL 文件或 so 文件一次请求，查询参数 ?is_library=true 用来区分二进制库和 SQL 脚本，60s 超时。（2）POST /refresh_configuration，实现在 pgxn/neon/libpagestore.c:1058 hadron_request_configuration_refresh，只在 lakebase_mode 这个 Hadron fork 引入的 GUC 打开时才启用（:1065 判断）。触发时机是 Postgres backend 跟 pageserver 的连接掉线或者读到异常响应，backend 怀疑自己被路由到了错误的 pageserver（典型是那台 PS 现在只是 secondary，或者分片映射已经变了），于是主动「戳」一下 compute_ctl，让 compute_ctl 去问控制面重新拉一份 spec。libpagestore.c 里有 4 处调用它：:1367 读到 EOF、:1374 读 COPY 数据失败、:1381 收到意外返回码、:1390 上层收尾时兜底。这条路径是 best-effort 的：3s 超时，失败只打 WARNING 不报错，只有连续失败超过阈值才会 cancel 当前 query。第二类，不是 Postgres 调的：/extensions 和 /grants 是 local_proxy 调的。local_proxy 是 Neon Auth / serverless driver 在 Pod 内的边车进程，在 proxy/src/serverless/backend.rs:311-341 的 connect_to_local_postgres 里，对某个 database 第一次建连接池时调这两个接口：/extensions 安装 pg_session_jwt 扩展（版本 0.3.1，装到 schema auth，常量在 local_conn_pool.rs:44-46），/grants 给 JWKS 配置里声明的 role 补 schema 授权。每个 db 只做一次，并且用信号量限并发。/extensions 的 handler 要求 compute 状态必须是 Running（routes/extensions.rs:19），否则直接拒。最后一个要点，「内部」只是命名不是隔离：pgxn 里 curl 的目标 URL 确实写的是 http://localhost:{port}（extension_server.c:49、libpagestore.c:1078），但那只是客户端选择走 loopback；服务端 ip() 函数对 external 和 internal 两个 server 都返回 Ipv6Addr::UNSPECIFIED（http/server.rs:196-197，等价于 :: / 0.0.0.0），:194-195 的 TODO 注释说明是因为 GitHub Actions runner 不允许绑 localhost 才临时放开、一直没改回；而且内部 router（:64-87）没有挂 AsyncRequireAuthorizationLayer。两者叠加的结果是这 4 个路由对整个 Pod 网络可达且免鉴权，安全性只能靠部署侧 NetworkPolicy 兜底。")
+], p, notes="本页把 3081 内部端口的 4 个路由按调用方分成两类，要点：3081 不等于「Postgres 专用端口」，Postgres 只用其中 2 个。端口发现机制：compute_ctl 启动时把 internal http port 写成 GUC neon.extension_server_port 进 postgresql.conf（compute_tools/src/config.rs:345），PG 后端（普通 backend 或 bgworker）读这个 GUC 拿到端口，用 libcurl 发 HTTP。第一类，Postgres 自己调的两个：（1）POST /extension_server/{filename}，实现在 pgxn/neon/extension_server.c:33 neon_download_extension_file_http，通过 :110-111 挂在 PG 的 download_extension_file_hook 上。触发时机是用户执行 CREATE EXTENSION xxx，或者 PG 需要加载某个扩展的动态库时，发现本地 $PGSHAREDIR/extension/xxx--*.sql 或 $PKGLIBDIR/xxx.so 不存在，于是走 hook，hook 请求 compute_ctl 从对象存储（remote extension storage）把文件下载下来写进容器文件系统，PG 再重试 open。粒度是每个 SQL 文件或 so 文件一次请求，查询参数 ?is_library=true 用来区分二进制库和 SQL 脚本，60s 超时。（2）POST /refresh_configuration，实现在 pgxn/neon/libpagestore.c:1058 hadron_request_configuration_refresh，只在 lakebase_mode 这个 Hadron fork 引入的 GUC 打开时才启用（:1065 判断）。触发时机是 Postgres backend 跟 pageserver 的连接掉线或者读到异常响应，backend 怀疑自己被路由到了错误的 pageserver（典型是那台 PS 现在只是 secondary，或者分片映射已经变了），于是主动「戳」一下 compute_ctl，让 compute_ctl 去问控制面重新拉一份 spec。libpagestore.c 里的调用点分两类：一类是重连路径，:1169 连续重连次数超过 conf_refresh_reconnect_attempt_threshold 时先戳 refresh，再抛 ERROR 取消当前 query；另一类是收包路径，同步收包函数 pageserver_receive（:1240-1305）和异步收包函数 pageserver_try_receive（:1307-1397）各有一组三个分支——PQgetCopyData 返回 -1 表示 COPY 流被对端正常关闭（EOF，对这条长连的 pagestream 来说意味着 PS 侧主动断了，从 compute 看是异常）、-2 表示读 COPY 数据失败、其它值表示意外返回码，三种情况都调 refresh（同步版 :1286/:1293/:1299，异步版 :1367/:1374/:1381）。异步版函数末尾 :1390 还有一处兜底：rc < 0 且 refresh 请求本身也失败时，直接 ERROR 'refresh_configuration request failed, cancelling query'（:1392）。这条路径整体是 best-effort 的：3s 超时，失败只打 WARNING 不报错。第二类，不是 Postgres 调的：/extensions 和 /grants 是 local_proxy 调的。local_proxy 是 Neon Auth / serverless driver 在 Pod 内的边车进程，在 proxy/src/serverless/backend.rs:311-341 的 connect_to_local_postgres 里，对某个 database 第一次建连接池时调这两个接口：/extensions 安装 pg_session_jwt 扩展（版本 0.3.1，装到 schema auth，常量在 local_conn_pool.rs:44-46），/grants 给 JWKS 配置里声明的 role 补 schema 授权。每个 db 只做一次，并且用信号量限并发。/extensions 的 handler 要求 compute 状态必须是 Running（routes/extensions.rs:19），否则直接拒。最后一个要点，「内部」只是命名不是隔离：pgxn 里 curl 的目标 URL 确实写的是 http://localhost:{port}（extension_server.c:49、libpagestore.c:1078），但那只是客户端选择走 loopback；服务端 ip() 函数对 external 和 internal 两个 server 都返回 Ipv6Addr::UNSPECIFIED（http/server.rs:196-197，等价于 :: / 0.0.0.0），:194-195 的 TODO 注释说明是因为 GitHub Actions runner 不允许绑 localhost 才临时放开、一直没改回；而且内部 router（:64-87）没有挂 AsyncRequireAuthorizationLayer。两者叠加的结果是这 4 个路由对整个 Pod 网络可达且免鉴权，安全性只能靠部署侧 NetworkPolicy 兜底。")
 
 # ─────── Slide 5.7: Compute VM 进程清单 ───────
 p += 1
 std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
     T("cp-desc", 96, 162, 1088, 36,
-      "以 <span style='font-family:" + MONO + "'>compute_ctl</span> 为 <b>PID 1</b>，postgres 是它 fork 的子进程；其余守护进程由 "
-      "<span style='font-family:" + MONO + "'>sysvInitAction: respawn</span> 拉起，源码见 "
+      "以 <span style=\"font-family:" + MONO + "\">compute_ctl</span> 为 <b>PID 1</b>，postgres 是它 fork 的子进程；其余守护进程由 "
+      "<span style=\"font-family:" + MONO + "\">sysvInitAction: respawn</span> 拉起，源码见 "
       "<span style='color:" + DIM + "'>compute/vm-image-spec-bookworm.yaml</span>。",
       fs=12, color=DIM, lh=1.5),
     # Group A: 主线 (compute_ctl + postgres)
@@ -735,8 +804,8 @@ std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
     T("cp-a-b", 116, 244, 308, 130,
       "<b style='color:" + FG + "'>compute_ctl</b>（PID 1，Pod entrypoint）<br>"
       "&nbsp;· 监护、状态机、HTTP 3080/3081<br>"
-      "&nbsp;· 源码 <span style='font-family:" + MONO + "'>compute_tools/</span>，入口 "
-      "<span style='font-family:" + MONO + "'>bin/compute_ctl.rs</span><br><br>"
+      "&nbsp;· 源码 <span style=\"font-family:" + MONO + "\">compute_tools/</span>，入口 "
+      "<span style=\"font-family:" + MONO + "\">bin/compute_ctl.rs</span><br><br>"
       "<b style='color:" + FG + "'>postgres</b>（postmaster + backends）<br>"
       "&nbsp;· 5432，compute_ctl fork 的孙进程<br>"
       "&nbsp;· pgxn/neon 扩展在这里加载",
@@ -747,10 +816,10 @@ std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
     T("cp-b-b", 476, 244, 304, 130,
       "<b style='color:" + FG + "'>pgbouncer</b>　<span style='color:" + FAINT + "'>0.0.0.0:6432</span><br>"
       "&nbsp;· transaction pooling，max_client_conn=10000<br>"
-      "&nbsp;· 配置 <span style='font-family:" + MONO + "'>compute/etc/pgbouncer.ini</span><br><br>"
+      "&nbsp;· 配置 <span style=\"font-family:" + MONO + "\">compute/etc/pgbouncer.ini</span><br><br>"
       "<b style='color:" + FG + "'>local_proxy</b>　<span style='color:" + FAINT + "'>0.0.0.0:10432</span><br>"
       "&nbsp;· Neon Authorize：验 JWT + 管 "
-      "<span style='font-family:" + MONO + "'>pg_session_jwt</span><br>"
+      "<span style=\"font-family:" + MONO + "\">pg_session_jwt</span><br>"
       "&nbsp;· 只对开了 Auth 的项目起作用",
       fs=11, color=DIM, lh=1.55),
     # Group C: 指标 exporter
@@ -758,7 +827,7 @@ std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
     T("cp-c-h", 832, 216, 332, 22, "指标导出（Prometheus）", fs=13, fw=800, color="#7CB3F4"),
     T("cp-c-b", 832, 244, 332, 130,
       "<b style='color:" + FG + "'>postgres-exporter</b>　<span style='color:" + FAINT + "'>PG → Prom</span><br>"
-      "&nbsp;· <span style='font-family:" + MONO + "'>--no-collector.database</span> 关库大小采集<br>"
+      "&nbsp;· <span style=\"font-family:" + MONO + "\">--no-collector.database</span> 关库大小采集<br>"
       "<b style='color:" + FG + "'>pgbouncer-exporter</b>　<span style='color:" + FAINT + "'>pgbouncer → Prom</span><br>"
       "<b style='color:" + FG + "'>sql-exporter</b>　<span style='color:" + FAINT + "'>:9399</span> 通用 SQL 指标<br>"
       "<b style='color:" + FG + "'>sql-exporter-autoscaling</b>　"
@@ -768,11 +837,11 @@ std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
     R("cp-d-bg", 96, 400, 348, 168, fill="rgba(255,158,138,0.06)", stroke="rgba(255,158,138,0.3)", radius=12),
     T("cp-d-h", 116, 412, 308, 22, "启动一次性（sysinit）", fs=13, fw=800, color=AC2),
     T("cp-d-b", 116, 440, 308, 118,
-      "<b style='color:" + FG + "'>cgconfigparser</b> 建 cgroup <span style='font-family:" + MONO + "'>neon-postgres</span><br>"
-      "<b style='color:" + FG + "'>chmod-resize-swap</b> 收紧 <span style='font-family:" + MONO + "'>/neonvm/bin/resize-swap</span><br>"
+      "<b style='color:" + FG + "'>cgconfigparser</b> 建 cgroup <span style=\"font-family:" + MONO + "\">neon-postgres</span><br>"
+      "<b style='color:" + FG + "'>chmod-resize-swap</b> 收紧 <span style=\"font-family:" + MONO + "\">/neonvm/bin/resize-swap</span><br>"
       "<b style='color:" + FG + "'>chmod-set-disk-quota</b> 同上（磁盘配额脚本）<br>"
       "<b style='color:" + FG + "'>rsyslogd-socket-symlink</b> "
-      "<span style='font-family:" + MONO + "'>/dev/log →</span> pg 侧管道",
+      "<span style=\"font-family:" + MONO + "\">/dev/log →</span> pg 侧管道",
       fs=11, color=DIM, lh=1.55),
     # Group E: compute_ctl 内嵌任务
     R("cp-e-bg", 456, 400, 344, 168, fill="rgba(255,255,255,0.045)", stroke=EDGE, radius=12),
@@ -782,7 +851,7 @@ std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
       "<b>configurator</b> 热变更循环（configurator.rs:13）<br>"
       "<b>compute-monitor</b> 追踪最近活跃时间戳<br>"
       "<b>vm-monitor</b> <span style='color:" + FAINT + "'>libs/vm_monitor</span>，仅当 "
-      "<span style='font-family:" + MONO + "'>AUTOSCALING</span> 环境变量置位时起<br>"
+      "<span style=\"font-family:" + MONO + "\">AUTOSCALING</span> 环境变量置位时起<br>"
       "&nbsp;· 跟 autoscaler 协商扩缩容",
       fs=11, color=DIM, lh=1.55),
     # Group F: 日志
@@ -790,18 +859,18 @@ std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
     T("cp-f-h", 832, 412, 332, 22, "日志", fs=13, fw=800, color=FG),
     T("cp-f-b", 832, 440, 332, 118,
       "<b style='color:" + FG + "'>rsyslogd</b> —— PG/组件日志汇聚<br>"
-      "&nbsp;· PG 通过 <span style='font-family:" + MONO + "'>/dev/log</span>（软链到 "
-      "<span style='font-family:" + MONO + "'>rsyslogpipe</span>）写入<br>"
-      "&nbsp;· 其它守护把 <span style='font-family:" + MONO + "'>stderr</span> 直接重定向到<br>"
-      "&nbsp;&nbsp;&nbsp;<span style='font-family:" + MONO + "'>/dev/virtio-ports/tech.neon.log.0</span><br>"
+      "&nbsp;· PG 通过 <span style=\"font-family:" + MONO + "\">/dev/log</span>（软链到 "
+      "<span style=\"font-family:" + MONO + "\">rsyslogpipe</span>）写入<br>"
+      "&nbsp;· 其它守护把 <span style=\"font-family:" + MONO + "\">stderr</span> 直接重定向到<br>"
+      "&nbsp;&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">/dev/virtio-ports/tech.neon.log.0</span><br>"
       "&nbsp;&nbsp;&nbsp;（VM host 侧收）",
       fs=11, color=DIM, lh=1.55),
     # Bottom band
     R("cp-b2-bg", 96, 584, 1088, 72, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.28)", radius=10),
     T("cp-b2-h", 116, 596, 900, 20, "小结", fs=13, fw=800, color=AC),
     T("cp-b2-b", 116, 620, 1048, 30,
-      "客户端流量 <b>入口链</b>：<span style='font-family:" + MONO + "'>proxy →</span>（可选 <span style='font-family:" + MONO + "'>local_proxy →</span>）<span style='font-family:" + MONO + "'>pgbouncer → postgres</span>&nbsp;&nbsp;｜&nbsp;&nbsp;"
-      "<b>控制面链</b>：<span style='font-family:" + MONO + "'>compute_ctl :3080/:3081</span>&nbsp;&nbsp;｜&nbsp;&nbsp;"
+      "客户端流量 <b>入口链</b>：<span style=\"font-family:" + MONO + "\">proxy →</span>（可选 <span style=\"font-family:" + MONO + "\">local_proxy →</span>）<span style=\"font-family:" + MONO + "\">pgbouncer → postgres</span>&nbsp;&nbsp;｜&nbsp;&nbsp;"
+      "<b>控制面链</b>：<span style=\"font-family:" + MONO + "\">compute_ctl :3080/:3081</span>&nbsp;&nbsp;｜&nbsp;&nbsp;"
       "<b>观测</b> 4 个 exporter + rsyslog",
       fs=11.5, color=DIM, lh=1.4),
 ], p, notes="本页把 compute VM 内所有常驻和一次性进程列全，来源是 compute/vm-image-spec-bookworm.yaml（vm-image-spec-bullseye.yaml 内容对齐）。9 个常驻守护进程（sysvInitAction: respawn）：（1）compute_ctl 是 Pod entrypoint / PID 1，由 VM entrypoint 直接拉起，不在 vm-image-spec 的 commands 列表里；负责监护、状态机、HTTP 3080/3081，源码在 compute_tools/ crate，入口 bin/compute_ctl.rs。（2）postgres 是 compute_ctl fork 出来的子进程，跑 postmaster + backends + bgworkers，pgxn/neon 扩展在这里加载，监听 5432。（3）pgbouncer 监听 0.0.0.0:6432，transaction pooling，配置见 compute/etc/pgbouncer.ini，max_client_conn=10000、default_pool_size=64、auth_type=scram-sha-256，通过 unix_socket_dir=/tmp/ 也暴露 socket。（4）local_proxy 监听 0.0.0.0:10432，Neon Authorize 组件，校验客户端 JWT、维护 pg_session_jwt 扩展和 JWKS 授权，reload 通过 SIGHUP（compute_tools/src/local_proxy.rs）；只有开了 Neon Auth 的项目才实际用到，但进程本身对所有 compute 常驻。（5）postgres-exporter Prometheus PG 指标；启动参数 --no-collector.database 关掉 pg_database_size_bytes 采集（会因为坏 db 打爆日志），DATA_SOURCE_NAME 走 cloud_admin@postgres 本地 socket。（6）pgbouncer-exporter Prometheus pgbouncer 指标，通过 unix socket 连 pgbouncer。（7）sql-exporter 监听 :9399，跑通用 SQL-based 指标采集（Neon 定义的 collector 集合）。（8）sql-exporter-autoscaling 监听 :9499，给 autoscaler 拉的一份专用指标（LFC hit/miss、working set size 等）。（9）rsyslogd 用 postgres 用户跑（这样能写自己的 pid 文件），配置 /etc/compute_rsyslog.conf，Postgres 通过 /dev/log 软链到 /var/db/postgres/rsyslogpipe 写日志。4 个 sysinit（只在启动阶段跑一次，不常驻）：cgconfigparser 建 cgroup neon-postgres（vm-monitor 靠这个做资源限制），chmod-resize-swap 和 chmod-set-disk-quota 把这两个特权脚本改成 0711（compute_ctl 通过 sudoers 白名单以 root 跑它们，其他人只能执行不能读），rsyslogd-socket-symlink 建 /dev/log → rsyslogpipe 软链。compute_ctl 进程内还嵌着几个 tokio task / 后台线程，它们不是独立进程但常驻：两个 HTTP server（external 3080、internal 3081，http/server.rs），configurator 热变更循环（configurator.rs:13 configurator_main_loop 等 ConfigurationPending / RefreshConfigurationPending），compute-monitor（源码注释里叫 compute-monitor，跟踪 PG 最近活跃时间戳），vm-monitor（libs/vm_monitor，仅当 AUTOSCALING 环境变量置位时才起，只 linux 上跑，需要 cgroup v2，跟 VM autoscaling 协议协商 downscale / 请求 upscale）。数据面调用链：客户端 → proxy → 可选 local_proxy → pgbouncer → postgres（5432）；控制面：cplane → compute_ctl 3080（JWT），Pod 内 neon 扩展 / local_proxy → compute_ctl 3081（无鉴权）；观测：4 个 exporter + rsyslog；日志 stderr 走 virtio-port /dev/virtio-ports/tech.neon.log.0，PG 走 syslog 管道。")
@@ -810,7 +879,7 @@ std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
 p += 1
 std("s-comp-sm", "COMPUTE", "compute_ctl 状态机 —— ComputeStatus 全 11 态", [
     T("sm-desc", 96, 150, 1088, 34,
-      "这是 <b>compute_ctl 进程内部</b>的状态（<span style='font-family:" + MONO + "'>ComputeStatus</span>，"
+      "这是 <b>compute_ctl 进程内部</b>的状态（<span style=\"font-family:" + MONO + "\">ComputeStatus</span>，"
       "<span style='color:" + DIM + "'>libs/compute_api/src/responses.rs:174</span>），"
       "不是控制面侧 endpoint 的 init/active/suspended 状态。",
       fs=12, color=DIM, lh=1.5),
@@ -827,9 +896,15 @@ std("s-comp-sm", "COMPUTE", "compute_ctl 状态机 —— ComputeStatus 全 11 �
     R("sm-cp", 256, 196, 190, 42, fill="rgba(255,158,138,0.11)", stroke="rgba(255,158,138,0.42)", radius=10),
     T("sm-cp-t", 256, 196, 190, 42, "ConfigurationPending", fs=12, fw=700, color=AC2, align="center", valign="middle"),
     LN("sm-a3", 446, 217, 36, 0, sw=2),
+    T("sm-a3-l", 452, 168, 190, 26, "② 热改配置<br>（Running 起）", fs=9, fw=600, color=FAINT, lh=1.4),
     R("sm-cf", 486, 196, 160, 42, fill="rgba(255,158,138,0.11)", stroke="rgba(255,158,138,0.42)", radius=10),
     T("sm-cf-t", 486, 196, 160, 42, "Configuration", fs=12, fw=700, color=AC2, align="center", valign="middle"),
     LN("sm-a4", 646, 217, 46, 51, sw=2),
+    # ConfigurationPending -> Init（冷启动首个 /configure，主线程 wait_spec 抢到）
+    LN("sm-a3b", 306, 240, 0, 108, sw=2),
+    T("sm-a3b-l", 314, 268, 130, 40,
+      "① <b>冷启动</b>首个<br>/configure：主线程<br>wait_spec 抢到",
+      fs=9, fw=600, color="#7CB3F4", lh=1.42),
     # Init (spec 已就绪)
     R("sm-init", 256, 352, 190, 42, fill="rgba(124,179,244,0.1)", stroke="rgba(124,179,244,0.4)", radius=10),
     T("sm-init-t", 256, 352, 190, 42, "Init", fs=13, fw=700, color="#7CB3F4", align="center", valign="middle"),
@@ -873,22 +948,138 @@ std("s-comp-sm", "COMPUTE", "compute_ctl 状态机 —— ComputeStatus 全 11 �
       "虚线 = 重配失败退回重试<br>成功则回到 Running",
       fs=10, color=FAINT, lh=1.5),
     # Bottom band
-    R("sm-b-bg", 96, 540, 1088, 116, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
-    T("sm-b-h", 116, 550, 900, 20, "两个 pending 入口：谁能调、谁在调", fs=12.5, fw=800, color=AC),
-    T("sm-b-b", 116, 574, 1048, 76,
-      "<b>启动分叉</b>：spec 启动时就有 → <span style='font-family:" + MONO + "'>Empty→Init→Running</span>；要等控制面推 → "
-      "<span style='font-family:" + MONO + "'>Empty→ConfigurationPending→Configuration→Running</span>。<br>"
-      "<b style='color:" + AC2 + "'>→ ConfigurationPending</b>　由 <span style='font-family:" + MONO + "'>:3080/configure</span>（带 spec、要 JWT、阻塞）触发，"
-      "前置状态只放行 <span style='font-family:" + MONO + "'>Empty | Running</span>（<span style='color:" + FAINT + "'>configure.rs:37</span>）。"
-      "控制面下发 spec、PS/SK 拓扑回调、PS 巡检补偿都走这条。<br>"
-      "<b style='color:#7CB3F4'>→ RefreshConfigurationPending</b>　由 <span style='font-family:" + MONO + "'>:3081/refresh_configuration</span>（不带 spec，compute 自己去拉）触发，"
-      "放行 <span style='font-family:" + MONO + "'>Running | Failed | RefreshConfigurationPending</span>（<span style='color:" + FAINT + "'>compute.rs:2048</span>）。"
-      "<b>目前只有 Postgres 自己在调</b>——控制面侧已全部切到 <span style='font-family:" + MONO + "'>/configure</span>。<br>"
-      "<b style='color:#FF8080'>⚠ Failed 实际救不回来</b>：<span style='font-family:" + MONO + "'>reconfigure()</span> 只重写 conf + reload + 跑 SQL，"
-      "<b>从不 start_postgres</b>；PG 没起来时必然失败并自旋，或因 <span style='font-family:" + MONO + "'>pageserver_conninfo</span> 未变被去重直接漂白成 Running。正道是 "
-      "<span style='font-family:" + MONO + "'>/terminate</span> 后重建。",
+    R("sm-b-bg", 96, 528, 1088, 128, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("sm-b-h", 116, 538, 900, 20, "启动的三条路径 & 两个 pending 入口：谁能调、谁在调", fs=12.5, fw=800, color=AC),
+    T("sm-b-b", 116, 562, 1048, 90,
+      "<b>三条启动路径</b>（前两条官方 README 图里没画全）：① 带 CLI spec 启动 → <span style=\"font-family:" + MONO + "\">Empty→Init→Running</span>；"
+      "② <b>冷启动等控制面推</b> → <span style=\"font-family:" + MONO + "\">Empty→ConfigurationPending→<b style='color:#7CB3F4'>Init</b>→Running</span>"
+      "（主线程卡在 <span style=\"font-family:" + MONO + "\">wait_spec</span> 上，被 ConfigurationPending 唤醒后直接进 start_compute，"
+      "此时 configurator 线程还没起来 —— 它在 start_compute 内部才 launch）；"
+      "③ 已 Running 再收 /configure → <span style=\"font-family:" + MONO + "\">Running→ConfigurationPending→Configuration→Running</span>（configurator 线程处理，只 reconfigure 不重启 PG）。<br>"
+      "<b style='color:" + AC2 + "'>→ ConfigurationPending</b>　由 <span style=\"font-family:" + MONO + "\">:3080/configure</span>（带 spec、要 JWT、阻塞）触发，"
+      "前置状态只放行 <span style=\"font-family:" + MONO + "\">Empty | Running</span>（<span style='color:" + FAINT + "'>configure.rs:37</span>）"
+      "—— 从 Empty 来就走 ②，从 Running 来就走 ③。<br>"
+      "<b style='color:#7CB3F4'>→ RefreshConfigurationPending</b>　由 <span style=\"font-family:" + MONO + "\">:3081/refresh_configuration</span>（不带 spec，compute 自己去拉）触发，"
+      "放行 <span style=\"font-family:" + MONO + "\">Running | Failed | RefreshConfigurationPending</span>（<span style='color:" + FAINT + "'>compute.rs:2048</span>）。"
+      "<b>目前只有 Postgres 自己在调</b>。<br>"
+      "<b style='color:#FF8080'>⚠ Failed 实际救不回来</b>：<span style=\"font-family:" + MONO + "\">reconfigure()</span> 只重写 conf + reload + 跑 SQL，"
+      "<b>从不 start_postgres</b>；PG 没起来时必然失败并自旋，或因 <span style=\"font-family:" + MONO + "\">pageserver_conninfo</span> 未变被去重直接漂白成 Running。正道是 "
+      "<span style=\"font-family:" + MONO + "\">/terminate</span> 后重建。",
       fs=10, color=DIM, lh=1.62),
-], p, morph=True, notes="这是 compute_ctl 的状态机，跟控制面侧 endpoint 的 init/active/suspended/stopped/released 是两套完全不同的东西。枚举定义在 libs/compute_api/src/responses.rs:174-202，实例状态存在 ComputeState.status（compute_tools/src/compute.rs:176），初值 Empty（:215），所有迁移统一走 set_status（:229 内层 / :1178 外层封装），每次迁移都 notify_all 唤醒等在 state_changed 条件变量上的线程，外部通过 GET :3080/status 观测。官方图见 compute_tools/README.md:40-64，一共 11 个状态。11 个状态逐个说：Empty —— 启动时没带 spec，等控制面推；ConfigurationPending —— 收到了配置请求（有 spec），等 configurator 线程处理；Init —— spec 启动时就有，正在做首次启动和配置；Running —— 配好了在跑；Configuration —— 正在应用新 spec；Failed —— 启动或配置失败，compute 快要退出、或者等控制面来终止它；TerminationPendingFast —— 收到终止请求，停 PG 之后额外等 30s 再从 /terminate 返回，留窗口给控制面抓状态和日志；TerminationPendingImmediate —— 同上但不等那 30s，立即返回；Terminated —— PG 已停；RefreshConfigurationPending —— 有人请求刷新 spec；RefreshConfiguration —— 正在应用刷新（互斥，此时再来 signal_refresh_configuration 会返 500）。关键边：Empty 有三条出边——有 spec 直接 Init、没 spec 走 ConfigurationPending、也可以直接被 /terminate 打到 TerminationPending*（本页图上只画了 Running 的终止边）。Init 失败 → Failed，成功 → Running。Configuration 失败 → Failed，成功 → Running。两个 pending 入口的触发者：（1）ConfigurationPending 由 POST :3080/configure 触发，门槛 Empty | Running（configure.rs:37），控制面下发 spec、PS/SK 拓扑回调（notify-attach/notify-safekeepers）、PS 巡检补偿 job 都走这条路。（2）RefreshConfigurationPending 由 POST :3081/refresh_configuration 触发，门槛 Running | Failed | RefreshConfigurationPending（compute.rs:2048-2058），Init 静默忽略，其余报错。目前唯一还在调这个接口的是 Postgres 自己（pgxn/neon/libpagestore.c hadron_request_configuration_refresh，仅 lakebase_mode 生效），backend 跟 pageserver 交互异常时自触发（6 个调用点：:1169 重连超阈值、:1286 EOF、:1293 读 COPY 失败、:1299 意外返回码、:1390 上层兜底）；控制面侧的所有调用方已全部切到 /configure。RefreshConfiguration 成功回 Running，失败退回 RefreshConfigurationPending 重试（configurator.rs:159/181）。Failed → RefreshConfigurationPending 这条边状态机上允许但实际无法真正恢复：reconfigure()（compute.rs:2089-2176）全程假设 Postgres 在跑——只做重写 conf + pg_reload_conf + apply_spec_sql，从不 start_postgres；PG 没起来时这些操作必然失败并自旋在 RefreshConfigurationPending，或者因为新拉到的 spec 的 pageserver_conninfo 跟当前相同被 configurator.rs:125-138 的去重逻辑直接跳过、漂白成 Running 但 PG 仍然没启动。所以 Failed 的正道恢复路径是控制面识别 Failed 后走 /terminate → 重建（走完整冷启动 start_compute）。TerminationPendingFast 的 30s 不是等 PG 停，是 PG 已停完之后额外的观察窗口（compute.rs:1146-1155 delay_exit），给控制面时间抓状态和日志。")
+], p, morph=True, notes="这是 compute_ctl 的状态机，跟控制面侧 endpoint 的 init/active/suspended/stopped/released 是两套完全不同的东西。枚举定义在 libs/compute_api/src/responses.rs:174-202，实例状态存在 ComputeState.status（compute_tools/src/compute.rs:176），初值 Empty（:215），所有迁移统一走 set_status（:229 内层 / :1178 外层封装），每次迁移都 notify_all 唤醒等在 state_changed 条件变量上的线程，外部通过 GET :3080/status 观测。官方图见 compute_tools/README.md:40-64，一共 11 个状态，但那张图缺了 ConfigurationPending→Init 这条边。11 个状态逐个说：Empty —— 启动时没带 spec，等控制面推；ConfigurationPending —— 收到了配置请求（有 spec），等 configurator 线程处理；Init —— 正在做首次启动（拉 basebackup、写 conf、start_postgres、首次 apply_spec_sql）；Running —— 配好了在跑；Configuration —— 正在应用新 spec；Failed —— 启动或配置失败，compute 快要退出、或者等控制面来终止它；TerminationPendingFast —— 收到终止请求，停 PG 之后额外等 30s 再从 /terminate 返回，留窗口给控制面抓状态和日志；TerminationPendingImmediate —— 同上但不等那 30s，立即返回；Terminated —— PG 已停；RefreshConfigurationPending —— 有人请求刷新 spec；RefreshConfiguration —— 正在应用刷新（互斥，此时再来 signal_refresh_configuration 会返 500）。启动实际有三条路径，官方 README 的图只画了其中两条，漏了最常见的那条。（① CLI 带 spec）compute_ctl 启动时 pspec 已就绪，run()（compute.rs:627）跳过 wait_spec 直接 start_compute，Empty→Init→Running。（② 冷启动等控制面推 —— 这是生产上最常见的路径，也是 README 图里没有的那条边 ConfigurationPending→Init）run() 发现没有 CLI spec，调 wait_spec（compute.rs:752）阻塞在 state_changed 条件变量上，循环条件是 while state.status != ConfigurationPending（:755）；控制面 POST /configure 进来，handler 在 configure.rs:52 把状态置成 ConfigurationPending 并 notify_all，主线程被唤醒拿到 spec 返回，紧接着 run() 在 :680 调 start_compute，start_compute 一进来就在 compute.rs:827 set_status(Init)，于是日志上就是 empty → configuration-pending → init → running，全部挂在同一个 /configure 的 HTTP span 下（configure.rs:44 特意把 tracing span 传给主线程，正是为了让 start_compute 显示为该请求的子 span）。关键点：这条路径上处理 ConfigurationPending 的是主线程而不是 configurator 线程——configurator 线程是在 start_compute 内部才 launch 的（compute.rs:992 launch_configurator，在 start_postgres 之前），所以冷启动的首个 ConfigurationPending 根本没有 configurator 可以抢，只能由 wait_spec 消费；也因此这次不走 Configuration 状态、不走 reconfigure()，而是走完整的冷启动（prepare_pgdata → start_postgres → configure_as_primary）。（③ Running 再收 /configure）compute 已经在跑，configure.rs:37 的门槛放行 Running，状态 Running→ConfigurationPending，这时 configurator 线程已经在跑并阻塞在 configurator.rs:23-29/35-37 上，被唤醒后走 :41-57：置 Configuration → reconfigure() → 成功 Running / 失败 Failed。这条才是「热改配置」路径，只重写 conf + reload + 跑 SQL，不重启 PG。所以同一个 ConfigurationPending 状态有两个可能的消费者，取决于 configurator 线程有没有起来，这就是为什么 ConfigurationPending 既能到 Init（②）又能到 Configuration（③）。Empty 的另外两条出边：有 CLI spec 直接 Init（①）、也可以直接被 /terminate 打到 TerminationPending*（本页图上只画了 Running 的终止边）。Init 失败 → Failed，成功 → Running。Configuration 失败 → Failed，成功 → Running。两个 pending 入口的触发者：（1）ConfigurationPending 由 POST :3080/configure 触发，门槛 Empty | Running（configure.rs:37）；从 Empty 进来是冷启动（主线程 wait_spec 消费，下一跳 Init），从 Running 进来是热改配置（configurator 线程消费，下一跳 Configuration）。控制面下发 spec、PS/SK 拓扑回调（notify-attach/notify-safekeepers）、PS 巡检补偿 job 都走这条路。（2）RefreshConfigurationPending 由 POST :3081/refresh_configuration 触发，门槛 Running | Failed | RefreshConfigurationPending（compute.rs:2048-2058），Init 静默忽略，其余报错。目前唯一还在调这个接口的是 Postgres 自己（pgxn/neon/libpagestore.c hadron_request_configuration_refresh，仅 lakebase_mode 生效），backend 跟 pageserver 交互异常时自触发——同步 pageserver_receive 与异步 pageserver_try_receive 两个收包函数里，对 PQgetCopyData 返回 -1（COPY 流被对端关闭/EOF）、-2（读 COPY 失败）、其它意外值三种断连都会戳 refresh（同步版 :1286/:1293/:1299，异步版 :1367/:1374/:1381），另外 :1169 重连次数超阈值时也会戳；异步版函数末尾 :1390 还有一处兜底，当 refresh 请求本身也失败时把 refresh 升级为 cancel query；控制面侧的所有调用方已全部切到 /configure。RefreshConfiguration 成功回 Running，失败退回 RefreshConfigurationPending 重试（configurator.rs:159/181）。Failed → RefreshConfigurationPending 这条边状态机上允许但实际无法真正恢复：reconfigure()（compute.rs:2089-2176）全程假设 Postgres 在跑——只做重写 conf + pg_reload_conf + apply_spec_sql，从不 start_postgres；PG 没起来时这些操作必然失败并自旋在 RefreshConfigurationPending，或者因为新拉到的 spec 的 pageserver_conninfo 跟当前相同被 configurator.rs:125-138 的去重逻辑直接跳过、漂白成 Running 但 PG 仍然没启动。所以 Failed 的正道恢复路径是控制面识别 Failed 后走 /terminate → 重建（走完整冷启动 start_compute）。TerminationPendingFast 的 30s 不是等 PG 停，是 PG 已停完之后额外的观察窗口（compute.rs:1146-1155 delay_exit），给控制面时间抓状态和日志。")
+
+# ─────── Slide 6.5: /configure 之后 compute_ctl 与 PG 都做了什么 ───────
+p += 1
+std("s-cfg-seq", "COMPUTE", "POST /configure 之后：compute_ctl 与 PG 的这 2 秒", [
+    T("cf-desc", 96, 150, 1088, 26,
+      "以一次真实冷启动为例（<span style=\"font-family:" + MONO + "\">request_id=75f6a4a6</span>，"
+      "<b>latency=2068ms</b>）：控制面这<b>一次阻塞 HTTP 请求</b>里究竟发生了什么。",
+      fs=12, color=DIM, lh=1.5),
+    # lane headers
+    T("cf-lh0", 104, 180, 68, 20, "相对时刻", fs=10, fw=700, color=FAINT),
+    T("cf-lh1", 176, 180, 480, 20, "compute_ctl（Rust）", fs=12, fw=800, color=AC),
+    T("cf-lh2", 668, 180, 508, 20, "Postgres（fork 出来的子进程 + pgxn/neon）", fs=12, fw=800, color="#7CB3F4"),
+    # ── Row 1
+    R("cf-r1", 96, 204, 1088, 72, fill="rgba(255,158,138,0.06)", stroke="rgba(255,158,138,0.28)", radius=10),
+    T("cf-r1-t", 104, 214, 66, 54, "<b>T0</b><br>.374873Z", fs=9.5, fw=700, color=AC2, lh=1.5, ff=MONO),
+    T("cf-r1-c", 176, 212, 480, 58,
+      "<b>:3080 收 POST /configure</b>（spec+JWT）→ 门槛只放行 "
+      "<span style=\"font-family:" + MONO + "\">Empty|Running</span>"
+      "(<span style='color:" + FAINT + "'>configure.rs:37</span>)<br>"
+      "→ 存 spec → set <b>ConfigurationPending</b>(:52)，交接 span(:44)，handler <b>阻塞等 Running</b>(:61)<br>"
+      "主线程 <span style=\"font-family:" + MONO + "\">wait_spec</span> 醒 →「got spec, continue configuration」"
+      "(<span style='color:" + FAINT + "'>compute.rs:755/759</span>)<br>"
+      "→ start_compute → set <b>Init</b>(:827)，日志上就是 empty→configuration-pending→init",
+      fs=9.5, color=DIM, lh=1.5),
+    T("cf-r1-p", 668, 212, 508, 58,
+      "尚未 fork，<span style=\"font-family:" + MONO + "\">PGDATA</span> 还是空的。<br>"
+      "<span style='color:" + FAINT + "'>所有状态迁移挂在同一个 HTTP span 下，日志里才会出现 "
+      "<span style=\"font-family:" + MONO + "\">HTTP{…}:start_compute:</span> 的嵌套 —— configure.rs:44 有意为之。</span>",
+      fs=9.5, color=DIM, lh=1.5),
+    # ── Row 2
+    R("cf-r2", 96, 280, 1088, 100, fill=PANEL, stroke=EDGE, radius=10),
+    T("cf-r2-t", 104, 290, 66, 82, "<b>+1ms</b><br>↓<br>~+1.3s", fs=9.5, fw=700, color=FG, lh=1.5, ff=MONO),
+    T("cf-r2-h", 176, 284, 480, 17, "PG 启动前的并发准备", fs=13, fw=800, color=HL, lh=1.25),
+    T("cf-r2-c", 176, 301, 480, 73,
+      "· <span style=\"font-family:" + MONO + "\">prepare_pgdata</span>(:873 spawn_blocking)：create_pgdata 清建目录 → "
+      "write_postgres_conf → <b>sync_safekeepers</b>「synced at LSN 0/12ACB950」→ <b>get_basebackup</b> → update_pg_hba<br>"
+      "· resize_swap / set_disk_quota <b>必须早于 PG</b>；tune_pgbouncer(:913)、local_proxy(:931)、rsyslog <b>丢后台不等</b><br>"
+      "· launch_monitor(:991) + <b>launch_configurator(:992)</b> → pre_tasks barrier(:996)",
+      fs=9.5, color=DIM, lh=1.5),
+    T("cf-r2-p", 668, 288, 508, 86,
+      "依然没起。basebackup 解开落到 PGDATA，内含一个 "
+      "<span style=\"font-family:" + MONO + "\">neon.signal</span>，记着这份 basebackup 的 LSN。<br>"
+      "<b style='color:#7CB3F4'>configurator 线程是在这里才 launch 的</b>(:992) —— 晚于 set Init、早于 start_postgres，"
+      "所以冷启动的<b>首个</b> ConfigurationPending 只能被主线程 wait_spec 消费，"
+      "这正是 <span style=\"font-family:" + MONO + "\">configuration-pending → init</span> 这条边的由来。",
+      fs=9.5, color=DIM, lh=1.5),
+    # ── Row 3
+    R("cf-r3", 96, 384, 1088, 92, fill="rgba(124,179,244,0.07)", stroke="rgba(124,179,244,0.3)", radius=10),
+    T("cf-r3-t", 104, 392, 66, 76, "<b>~+1.3s</b><br>PG 拉起", fs=9.5, fw=700, color="#7CB3F4", lh=1.5, ff=MONO),
+    T("cf-r3-h", 176, 390, 480, 17, "start_postgres(:1002)", fs=13, fw=800, color=HL, lh=1.25, ff=MONO),
+    T("cf-r3-c", 176, 407, 480, 68,
+      "· <span style=\"font-family:" + MONO + "\">maybe_cgexec(postgres) -D $PGDATA</span> spawn 子进程(:1819)，"
+      "注入 NEON_AUTH_TOKEN / DatabricksEnvVars(:1792)<br>"
+      "· <span style=\"font-family:" + MONO + "\">PG_PID.store</span>(:1825) → handle_postgres_logs 接走 stderr(:1828)"
+      "<span style='color:" + FAINT + "'>，右侧 [NEON]/[WP]/[NEON_SMGR] 行都是 PG 打的，只是从 compute_ctl 转出来</span><br>"
+      "· <span style=\"font-family:" + MONO + "\">wait_for_postgres</span>(:1831) 轮询等 postmaster 就绪",
+      fs=9, color=DIM, lh=1.45),
+    T("cf-r3-p", 668, 392, 508, 78,
+      "① 加载 pgxn/neon：注册 custom rmgr「neon」id=134、取 vault key<br>"
+      "② <b>found 'neon.signal'</b>，prev LSN 0/12ACB918 →「starting with neon basebackup at LSN "
+      "<b>0/12ACB950</b>」<br>"
+      "③ 起 communicator 线程；listen <span style=\"font-family:" + MONO + "\">0.0.0.0:5432</span> / :: / unix socket<br>"
+      "④ <b style='color:" + AC + "'>[WP] walproposer</b>：读 neon.safekeepers 3 节点 → mconf <b>gen 3</b> → "
+      "quorum <b>2/3</b> → <b>elected term 20</b>，epochStartLsn 0/12ACB950，donor safekeeper-0 →「starts streaming」<br>"
+      "⑤ <b style='color:" + AC + "'>ready to accept connections</b>",
+      fs=9, color=DIM, lh=1.45),
+    # ── Row 4
+    R("cf-r4", 96, 480, 1088, 92, fill=PANEL, stroke=EDGE, radius=10),
+    T("cf-r4-t", 104, 488, 66, 76, "<b>~+1.7s</b><br>catalog<br>对账", fs=9.5, fw=700, color=FG, lh=1.5, ff=MONO),
+    T("cf-r4-h", 176, 486, 480, 17, "configure_as_primary(:1010，仅 Primary)", fs=13, fw=800, color=HL, lh=1.25, ff=MONO),
+    T("cf-r4-c", 176, 503, 480, 68,
+      "· <b style='color:" + AC2 + "'>skip_pg_catalog_updates=true → 整段跳过</b>(:2183)<br>"
+      "· 临时 override <span style=\"font-family:" + MONO + "\">neon.max_cluster_size=-1</span> + reload(:2188)，"
+      "避免建库建表撞配额<br>"
+      "· apply_config(:2191) → <b>apply_spec_sql</b> 按序跑完所有 phase，末尾才是 run_bootstrap_template"
+      "(<span style='color:" + FAINT + "'>spec_apply.rs:359</span>)<br>"
+      "· 撤 override + reload → post_apply_config(:2207，<b>不受开关约束</b>)",
+      fs=9, color=DIM, lh=1.45),
+    T("cf-r4-p", 668, 488, 508, 78,
+      "· 两次 <b>SIGHUP</b>（override 生效 / 撤销），日志两次抱怨 "
+      "<span style=\"font-family:" + MONO + "\">compute_ctl_temp_override.conf</span> 不存在<br>"
+      "· 各 backend <span style=\"font-family:" + MONO + "\">[NEON_SMGR][shard 0] connected to "
+      "pageserver-1…:10001 protocol version 3</span><br>"
+      "· 建 role / database / extension、grants、availability check、drop roles<br>"
+      "· <span style=\"font-family:" + MONO + "\">run_bootstrap_template{template='supabase'}</span>："
+      "<b>already applied, skipping</b>（neon.compute_bootstrap 幂等命中）<br>"
+      "· <span style=\"font-family:" + MONO + "\">pg_cron scheduler started</span>",
+      fs=9, color=DIM, lh=1.45),
+    # ── Row 5
+    R("cf-r5", 96, 576, 1088, 40, fill="rgba(0,229,153,0.07)", stroke="rgba(0,229,153,0.34)", radius=10),
+    T("cf-r5-t", 104, 582, 66, 30, "<b>+2.068s</b><br>200 OK", fs=9, fw=700, color=AC, lh=1.5, ff=MONO),
+    T("cf-r5-c", 176, 582, 480, 30,
+      "算 metrics(:1020) → <b style='color:" + AC + "'>set Running</b>(:1039) →「compute start finished」→ "
+      "阻塞的 handler 醒来，<b>返回 200 latency=2068</b>",
+      fs=9, color=DIM, lh=1.45),
+    T("cf-r5-p", 668, 582, 508, 30,
+      "已可对外服务。<b>Running 之后</b>才异步跑：handle_migrations、ALTER EXTENSION neon UPDATE、"
+      "<span style=\"font-family:" + MONO + "\">[NEON_EXT_STAT]</span>、autoprewarm、LFC offload",
+      fs=9, color=DIM, lh=1.45),
+    # ── takeaway
+    R("cf-band-bg", 96, 622, 1088, 56, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("cf-band", 112, 630, 1056, 42,
+      "<b style='color:" + AC + "'>三个要点</b>　"
+      "① 冷启动的 <span style=\"font-family:" + MONO + "\">/configure</span> 是<b>阻塞</b>调用：这 2068ms 里含了 safekeeper 同步、"
+      "basebackup 拉取、PG 启动、walproposer 选举、catalog 对账全过程，<b>set Running 之后</b>才返回。<br>"
+      "② PG 侧「有数据」看 <b>basebackup + neon.signal</b>，「可写」看 <b>walproposer 选出 term 开始 streaming</b>，"
+      "「可连」看 <b>ready to accept connections</b> —— 三者不同时刻。<br>"
+      "③ <span style=\"font-family:" + MONO + "\">handle_migrations</span> 是 apply_config 里 tokio::spawn 出去的"
+      "（compute.rs:2016），<b>不计入冷启动时延</b>，所以日志里它出现在 200 返回<b>之后</b>。",
+      fs=9.5, color=DIM, lh=1.5),
+], p, notes="这一页把一次真实冷启动（request_id=75f6a4a6-61f7-45b5-9be6-800a6ed19019，07:29:42.374873Z 收到请求，code=200 latency=2068）按 compute_ctl 侧和 Postgres 侧两条泳道拆开讲，所有环节都能在 compute_tools/src/compute.rs、http/routes/configure.rs、spec_apply.rs 里找到对应行号。第一步，HTTP 层。POST :3080/configure 带完整 spec 和 JWT 进来，handler 在 configure.rs:37 先做门槛校验，只有 Empty 或 Running 才放行，否则返回 invalid_status；然后在 :44 把当前 tracing span 存到 state.startup_span，这是故意的，为的是让后面主线程跑的 start_compute 显示成这个 HTTP 请求的子 span（所以日志里是 HTTP{...}:start_compute: 这种嵌套形式）；:46-50 存 spec；:52 set_status(ConfigurationPending) 并 notify_all；最后 :61-79 起一个 spawn_blocking 阻塞等状态变成 Running，如果看到 Failed 就返回错误。所以从控制面视角看，这是一个会挂两秒的同步调用。第二步，主线程接手。主线程本来阻塞在 wait_spec（compute.rs:752）的条件变量上，循环条件是 while state.status != ConfigurationPending（:755），被唤醒后在 :759 打「got spec, continue configuration」，记录 wait_for_spec_ms 并重置 start_time（这样启动耗时不含等 spec 的时间），返回 run() 后在 :680 调 start_compute，start_compute 一进来就在 :827 set_status(Init)。这就是日志上 empty → configuration-pending → init 的来历，处理这个 ConfigurationPending 的是主线程而非 configurator 线程。第三步，PG 启动前的并发准备（compute.rs:848-998）。核心是 prepare_pgdata，在 :873-876 通过 spawn_blocking_child 丢进 pre_tasks JoinSet：内部先 create_pgdata（:1611）清建数据目录，再 write_postgres_conf（:1612）写 postgresql.conf，然后按 mode 决定 LSN —— Primary 会先 check_safekeepers_synced，不满足就 sync_safekeepers_with_retries，打「safekeepers synced at LSN 0/12ACB950」（:1626-1638），Static 用给定 LSN，Replica 用 Lsn(0)；接着 get_basebackup（:1649）从 pageserver 拉 basebackup 铺到 PGDATA，最后 update_pg_hba（:1660）。同期还有 resize_swap（:879-895）和 set_disk_quota（:897-911），这两个必须在 Postgres 起来之前做完，否则 swapoff 会打到启动过程上。另外两件事是丢到后台不等的：tune_pgbouncer（:913-929，源码注释明确写了 so that we don't block the main thread that starts Postgres）和 local_proxy::configure（:931-947），还有 rsyslog / audit log 相关配置（:949-988）。然后 :991 launch_monitor、:992 launch_configurator 起两个后台线程 —— 注意 configurator 是在这里才起来的，比 set Init 晚、比 start_postgres 早，这正是冷启动首个 ConfigurationPending 抢不到 configurator、必须由 wait_spec 消费的原因。:996-998 是 pre_tasks 的 barrier，等所有前置任务收敛。第四步，start_postgres（:1002 → :1789-1837）。lakebase_mode 下拼 DatabricksEnvVars（:1792-1811），否则注入 NEON_AUTH_TOKEN（:1812-1816）；:1819-1824 用 maybe_cgexec 拉起 postgres -D $PGDATA，stderr 走管道；:1825 记 PG_PID；:1828-1829 handle_postgres_logs 把 PG 的 stderr 接进 compute_ctl 的日志流（所以后面所有 [NEON]/[WP]/[NEON_SMGR] 前缀的行其实都是 PG 打的，只是从 compute_ctl 转出来）；:1831 wait_for_postgres 轮询等 postmaster 就绪。PG 侧这一段做的事按日志顺序是：加载 pgxn/neon 扩展并注册 custom resource manager「neon」ID 134、取 vault key；发现 neon.signal 文件，读出 prev LSN 0/12ACB918，打「starting with neon basebackup at LSN 0/12ACB950」；启动 communicator 线程（负责跟 pageserver 的 GetPage 通信）；listen 0.0.0.0:5432、::、以及 unix socket；walproposer 起来后读 neon.safekeepers 拿到 3 个 safekeeper（200100/200101/200103），从 mconf 拿到 generation 3，跟 quorum 2/3 完成投票，elected term 20，epochStartLsn 0/12ACB950，选 safekeeper-0 作为 donor，然后「WAL proposer starts streaming」；最后 ready to accept connections。要点是「可连」和「可写」不是一个时刻：走完 walproposer 选举、拿到 term 并开始 streaming，写入才真正安全。第五步，configure_as_primary（:1010 → :2179-2210）。它先 assert mode == Primary，然后 :2183 判 if !pspec.spec.skip_pg_catalog_updates —— 这就是拓扑回调（butterfly 的 apply_pod_topology_configuration）置 true 时能跳掉的整段。不跳的时候：:2188 用 with_compute_ctl_tmp_override 临时写一个 neon.max_cluster_size=-1 的 override 文件，:2189 pg_reload_conf 让它生效（避免建库建表时撞集群大小配额），:2191 apply_config，出来后 :2197-2205 再写 neon.disable_logical_replication_subscribers=false 并 reload。apply_config（:1972-2040）里的关键是 :2003 调 apply_spec_sql，按 spec_apply.rs 里排好的 phase 顺序跑：预删库 phase、per-database phase、然后是 HandleOtherExtensions / HandleNeonExtension /（lakebase 下还有 HandleDatabricksAuthExtension、AddDatabricksGrants、CreateDatabricksMisc）/ CreateAvailabilityCheck / DropRoles，可选的 FinalizeDropLogicalSubscriptions 和 audit 相关 phase 排在最后（:291-334），phase 循环在 :336-348，最末尾 :358-359 才调 run_bootstrap_template —— 源码注释解释了为什么放在所有 catalog phase 之后：这样 bootstrap 脚本可以依赖 neon 扩展已装好，且 bootstrap 失败不会连带把 extension phase 冲掉，neon.* 监控视图仍然可用。日志里这次是 run_bootstrap_template{template=\"supabase\"}: bootstrap template already applied, skipping，说明幂等表 neon.compute_bootstrap 里已经有记录。apply_config 里还有一件容易看错的事：handle_migrations 是 :2016 tokio::spawn 出去的，源码注释写着 Run migrations separately to not hold up cold starts，所以它不占冷启动时延，日志上出现在 200 返回之后。configure_as_primary 最后 :2207 调 post_apply_config，这一步在 if 外面，即使 skip_pg_catalog_updates=true 也会执行。第六步，收尾。:1020-1038 算三个 metric：start_postgres_ms（从 start_compute 起到 PG 起来）、config_ms（catalog 对账耗时）、total_startup_ms（相对 state.start_time，即 wait_spec 之后重置过的那个）；:1039 set_status(Running)；:1042 打「compute start finished」带 metrics 和 postmaster_pid；:1044 spawn_extension_stats_task（对应日志里的 [NEON_EXT_STAT] 扩展清单）；:1046-1049 autoprewarm；:1050-1052 spawn_lfc_offload_task。set Running 触发条件变量，第一步里那个阻塞的 handler 线程醒来，返回 200，latency=2068。整体上这一页想说明的是：冷启动的 /configure 是重量级同步调用，控制面等的这两秒里包含了跨 safekeeper、pageserver、Postgres 三方的完整编排；而热改配置路径（Running 再收 /configure，走 configurator 线程的 reconfigure）只做其中的 conf 重写 + reload + apply_spec_sql，压根不碰 basebackup 和 start_postgres。")
+
+
 
 # ─────── Slide 7: Bootstrap Template ───────
 p += 1
@@ -924,20 +1115,20 @@ p += 1
 std("s-basebackup", "COMPUTE", "basebackup：无状态 Compute 的冷启动包", [
     T("bb-desc", 96, 168, 1088, 36,
       "Compute 本地无数据，启动时向 Pageserver 拉一个 tarball 现造 PGDATA 骨架。"
-      "注意：与 PostgreSQL 的 <span style='font-family:" + MONO + "'>pg_basebackup</span> <b>毫无关系</b>（代码注释自己吐槽命名不好）。",
+      "注意：与 PostgreSQL 的 <span style=\"font-family:" + MONO + "\">pg_basebackup</span> <b>毫无关系</b>（代码注释自己吐槽命名不好）。",
       fs=14, color=DIM, lh=1.5),
     # left: what's inside
     R("bb1-bg", 96, 214, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
     T("bb1-h", 116, 228, 500, 24, "tar 包里有什么（＝没有用户数据）", fs=16, fw=800, color=AC),
     T("bb1-b", 116, 262, 500, 240,
       "<b>只装非关系型数据</b>，关系文件一个都不带：<br>"
-      "• <span style='font-family:" + MONO + "'>global/pg_control</span>　由 checkpoint 记录<b>现场合成</b><br>"
-      "• SLRU：<span style='font-family:" + MONO + "'>pg_xact</span>（clog）、<span style='font-family:" + MONO + "'>pg_multixact/{offsets,members}</span><br>"
-      "• 目录骨架 + <span style='font-family:" + MONO + "'>PG_VERSION</span> + <span style='font-family:" + MONO + "'>pg_filenode.map</span>（relmap）<br>"
+      "• <span style=\"font-family:" + MONO + "\">global/pg_control</span>　由 checkpoint 记录<b>现场合成</b><br>"
+      "• SLRU：<span style=\"font-family:" + MONO + "\">pg_xact</span>（clog）、<span style=\"font-family:" + MONO + "\">pg_multixact/{offsets,members}</span><br>"
+      "• 目录骨架 + <span style=\"font-family:" + MONO + "\">PG_VERSION</span> + <span style=\"font-family:" + MONO + "\">pg_filenode.map</span>（relmap）<br>"
       "• two-phase 文件（未决 2PC 事务）、aux files（含复制槽状态）<br>"
-      "• <span style='font-family:" + MONO + "'>PGDATA_SPECIAL_FILES</span>、<span style='font-family:" + MONO + "'>pg_hba.conf</span><br>"
-      "• <b>一个 dummy WAL segment</b> ＋ <span style='font-family:" + MONO + "'>neon.signal</span>/<span style='font-family:" + MONO + "'>zenith.signal</span><br>"
-      "&nbsp;&nbsp;signal 里写 <span style='font-family:" + MONO + "'>PREV LSN: …</span>，供 PG 拼首条记录 xl_prev<br><br>"
+      "• <span style=\"font-family:" + MONO + "\">PGDATA_SPECIAL_FILES</span>、<span style=\"font-family:" + MONO + "\">pg_hba.conf</span><br>"
+      "• <b>一个 dummy WAL segment</b> ＋ <span style=\"font-family:" + MONO + "\">neon.signal</span>/<span style=\"font-family:" + MONO + "\">zenith.signal</span><br>"
+      "&nbsp;&nbsp;signal 里写 <span style=\"font-family:" + MONO + "\">PREV LSN: …</span>，供 PG 拼首条记录 xl_prev<br><br>"
       "<b>唯一的例外</b>：unlogged 表的 init fork 会带上，<br>"
       "&nbsp;&nbsp;且被<b>同时当 main fork 发一份</b>（PG 的 reinit.c 依赖它）",
       fs=11.5, color=DIM, lh=1.65),
@@ -945,11 +1136,11 @@ std("s-basebackup", "COMPUTE", "basebackup：无状态 Compute 的冷启动包",
     R("bb2-bg", 656, 214, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
     T("bb2-h", 676, 228, 490, 24, "怎么生成 / 怎么加速", fs=16, fw=800, color=AC2),
     T("bb2-b", 676, 262, 490, 240,
-      "<span style='font-family:" + MONO + "'>send_basebackup_tarball(timeline, req_lsn, …)</span><br>"
+      "<span style=\"font-family:" + MONO + "\">send_basebackup_tarball(timeline, req_lsn, …)</span><br>"
       "&nbsp;&nbsp;所有内容都是从 layer 里 <b>GetPage 读出来现拼的</b><br>"
       "&nbsp;&nbsp;→ 所以能取<b>任意历史 LSN</b>，这正是分支/PITR 的地基<br><br>"
       "<b>prev_lsn 的限制</b>：PS 只留最新记录的前驱<br>"
-      "&nbsp;&nbsp;→ 非时间线末尾取包时只能填 <span style='font-family:" + MONO + "'>Lsn(0)</span><br><br>"
+      "&nbsp;&nbsp;→ 非时间线末尾取包时只能填 <span style=\"font-family:" + MONO + "\">Lsn(0)</span><br><br>"
       "<b>full_backup=true</b>（调试/导出）才连关系文件全带<br>"
       "<b>replica=true</b> 走 hot standby 变体<br>"
       "<b>gzip</b> 可选压缩<br><br>"
@@ -972,79 +1163,82 @@ std("s-basebackup", "COMPUTE", "basebackup：无状态 Compute 的冷启动包",
 p += 1
 std("s-compute-spec", "COMPUTE", "ComputeSpec：一份「期望状态」文档，热加载不重启", [
     T("cs-desc", 96, 168, 1088, 38,
-      "ComputeSpec（<span style='font-family:" + MONO + "'>libs/compute_api/src/spec.rs:35</span>）是<b>声明式</b>的期望状态：谁来跑、连哪个存储、要哪些库/角色/参数。"
-      "compute_ctl 拉取后按序 apply，改配置只 <span style='font-family:" + MONO + "'>pg_ctl reload</span>。",
+      "ComputeSpec（<span style=\"font-family:" + MONO + "\">libs/compute_api/src/spec.rs:35</span>）是<b>声明式</b>的期望状态：谁来跑、连哪个存储、要哪些库/角色/参数。"
+      "compute_ctl 拉取后按序 apply，改配置只 <span style=\"font-family:" + MONO + "\">pg_ctl reload</span>。",
       fs=13.5, color=DIM, lh=1.5),
     # left: what's in the spec
     R("cs1-bg", 96, 214, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
     T("cs1-h", 116, 228, 500, 24, "spec 里有什么（期望状态）", fs=16, fw=800, color=AC),
     T("cs1-b", 116, 262, 500, 244,
-      "<b>集群终态</b> <span style='font-family:" + MONO + "'>cluster</span>：roles / databases /<br>"
+      "<b>集群终态</b> <span style=\"font-family:" + MONO + "\">cluster</span>：roles / databases /<br>"
       "&nbsp;&nbsp;postgresql.conf + settings（GenericOption 列表）<br>"
-      "<b>命令式增量</b> <span style='font-family:" + MONO + "'>delta_operations</span>：DROP/RENAME 等<br>"
+      "<b>命令式增量</b> <span style=\"font-family:" + MONO + "\">delta_operations</span>：DROP/RENAME 等<br>"
       "&nbsp;&nbsp;无法用静态终态表达的操作<br>"
       "<b>存储身份</b>：tenant_id / timeline_id / mode<br>"
       "&nbsp;&nbsp;（Primary / Replica / Static(lsn)）<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>pageserver_connection_info</span>（分片连接描述）<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>safekeeper_connstrings</span> + generation<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">pageserver_connection_info</span>（分片连接描述）<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">safekeeper_connstrings</span> + generation<br>"
       "<b>扩展/代理</b>：remote_extensions、pgbouncer_settings、<br>"
       "&nbsp;&nbsp;local_proxy_config（JWT 认证）<br>"
-      "<b>行为开关</b>：skip_pg_catalog_updates、<br>"
+      "<b>行为开关</b>：<b style=\"color:" + AC2 + ";font-family:" + MONO + "\">skip_pg_catalog_updates</b>"
+      "（跳过 catalog 全量对账）<br>"
       "&nbsp;&nbsp;drop_subscriptions_before_start、audit_log_level、<br>"
-      "&nbsp;&nbsp;autoprewarm、<span style='font-family:" + MONO + "'>bootstrap_template</span>（首启脚本名）",
+      "&nbsp;&nbsp;autoprewarm、<span style=\"font-family:" + MONO + "\">bootstrap_template</span>（首启脚本名）",
       fs=11.5, color=DIM, lh=1.62),
     # right: consumption phases
     R("cs2-bg", 656, 214, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
     T("cs2-h", 676, 228, 490, 24, "compute_ctl 怎么消费（首启顺序）", fs=16, fw=800, color=AC2),
-    T("cs2-b", 676, 262, 490, 244,
-      "拉取：<span style='font-family:" + MONO + "'>GET /compute/api/v2/computes/{id}/spec</span><br>"
-      "&nbsp;&nbsp;（<span style='font-family:" + MONO + "'>compute_tools/src/spec.rs:77</span>）<br>"
-      "① 前置：下载 remote extensions、prepare_pgdata、<br>"
-      "&nbsp;&nbsp;按需 resize swap / 设 disk quota<br>"
-      "② prepare_pgdata：写 postgresql.conf → sync<br>"
-      "&nbsp;&nbsp;safekeepers 取 LSN → 拉 basebackup → pg_hba<br>"
-      "③ apply_spec_sql：<b>有序 phase</b> 建角色/库/扩展<br>"
-      "&nbsp;&nbsp;（<span style='font-family:" + MONO + "'>spec_apply.rs</span> 的 ApplySpecPhase 枚举）<br>"
-      "④ <span style='font-family:" + MONO + "'>bootstrap_template</span> 脚本<b>最后</b>跑<br>"
-      "⑤ handle_migrations 异步执行（<b>不阻塞冷启动</b>）<br><br>"
-      "reconfigure：活着时改配置，重跑 apply_spec_sql +<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>pg_ctl reload</span>，<b>不重启 Postgres</b>",
-      fs=11.5, color=DIM, lh=1.62),
+    *TL("cs2-b", 676, 262, 490, 244, [
+        "拉取：<span style=\"font-family:" + MONO + "\">GET /compute/api/v2/computes/{id}/spec</span>",
+        "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">compute_tools/src/spec.rs:77</span>）",
+        "① 前置：下载 remote extensions、prepare_pgdata、",
+        "&nbsp;&nbsp;按需 resize swap / 设 disk quota",
+        "② prepare_pgdata：写 postgresql.conf → sync",
+        "&nbsp;&nbsp;safekeepers 取 LSN → 拉 basebackup → pg_hba",
+        "③ apply_spec_sql：<b>有序 phase</b> 建角色/库/扩展",
+        "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">spec_apply.rs</span> 的 ApplySpecPhase 枚举）",
+        "④ <span style=\"font-family:" + MONO + "\">bootstrap_template</span> 脚本<b>最后</b>跑（在 ③ 之内）",
+        "⑤ handle_migrations 异步执行（<b>不阻塞冷启动</b>）",
+        ("&nbsp;&nbsp;skip_pg_catalog_updates=true → ③④ 整段跳过", AC2, 800),
+        "reconfigure：活着时改配置，重跑 apply_spec_sql +",
+        "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">pg_ctl reload</span>，<b>不重启 Postgres</b>",
+    ], fs=11.5, color=DIM, lh=1.62),
     # bottom band: butterfly generation + hot reload
-    R("cs3-bg", 96, 528, 1088, 134, fill="rgba(255,158,138,0.06)", stroke="rgba(255,158,138,0.3)", radius=10),
-    T("cs3-h", 116, 540, 900, 20, "Butterfly 怎么生成 & 两种下发", fs=13, fw=800, color=AC2),
-    T("cs3-b", 116, 566, 1048, 88,
-      "• <b>集中生成</b>：<span style='font-family:" + MONO + "'>lib_compute_spec.py</span> 的 get_compute_spec，先查 Redis 缓存否则现建并缓存；roles 从 SCRAM 密文、settings 按 ComputeFlavor 算内存/连接 GUC<br>"
-      "• <b>拉（poll）</b>：<span style='font-family:" + MONO + "'>api_compute_spec.py</span> 直接把 spec 作为 HTTP body 返回 —— 正是 compute_ctl 轮询的那个 URL<br>"
-      "• <b>推（push）</b>：<span style='font-family:" + MONO + "'>POST /configure</span>（全量、<b>阻塞</b>到 Running，角色/库变更立即生效）<br>&nbsp;&nbsp;vs <span style='font-family:" + MONO + "'>POST /refresh_configuration</span>（<b>非阻塞</b>，只比对 pageserver_conninfo，轻量 nudge）<br>"
-      "• 版本：butterfly 侧 <span style='font-family:" + MONO + "'>spec_version/spec_changed_at</span> 注入 JSON（Rust struct 不含，serde 忽略未知字段），数据变更 bump_spec_version + 失效缓存",
+    R("cs3-bg", 96, 520, 1088, 164, fill="rgba(255,158,138,0.06)", stroke="rgba(255,158,138,0.3)", radius=10),
+    T("cs3-h", 116, 530, 900, 20, "Butterfly 怎么生成 & 两种下发", fs=13, fw=800, color=AC2),
+    T("cs3-b", 116, 554, 1048, 126,
+      "• <b>集中生成</b>：<span style=\"font-family:" + MONO + "\">lib_compute_spec.py</span> 的 get_compute_spec，先查 Redis 缓存否则现建并缓存；roles 从 SCRAM 密文、settings 按 ComputeFlavor 算内存/连接 GUC<br>"
+      "• <b>拉（poll）</b>：<span style=\"font-family:" + MONO + "\">api_compute_spec.py</span> 直接把 spec 作为 HTTP body 返回 —— 正是 compute_ctl 轮询的那个 URL<br>"
+      "• <b>推（push）</b>：<span style=\"font-family:" + MONO + "\">POST /configure</span>（全量、<b>阻塞</b>到 Running，角色/库变更立即生效）<br>&nbsp;&nbsp;vs <span style=\"font-family:" + MONO + "\">POST /refresh_configuration</span>（<b>非阻塞</b>，只比对 pageserver_conninfo，轻量 nudge）<br>"
+      "• PS/SK 拓扑回调走 <span style=\"font-family:" + MONO + "\">/configure</span> 但带 <span style=\"font-family:" + MONO + "\">skip_pg_catalog_updates=true</span>：只重写 conf + reload，<b>不碰 role/database/extension/bootstrap</b><br>"
+      "• 版本：butterfly 侧 <span style=\"font-family:" + MONO + "\">spec_version/spec_changed_at</span> 注入 JSON（Rust struct 不含，serde 忽略未知字段），数据变更 bump_spec_version + 失效缓存",
       fs=11.5, color=DIM, lh=1.66),
-], p, notes="ComputeSpec（libs/compute_api/src/spec.rs:35）是声明式期望状态文档。主要字段：cluster（Cluster spec.rs:524：roles/databases/postgresql_conf/settings GenericOption 列表）、delta_operations（DeltaOp DROP/RENAME 等命令式增量）、tenant_id/timeline_id、mode（ComputeMode Primary/Replica/Static(lsn) spec.rs:470）、pageserver_connection_info（分片连接 spec.rs:245，旧字段 pageserver_connstring）、safekeeper_connstrings + safekeepers_generation、storage_auth_token、remote_extensions（RemoteExtSpec）、pgbouncer_settings、local_proxy_config（JWT）、skip_pg_catalog_updates、reconfigure_concurrency、drop_subscriptions_before_start、audit_log_level、autoprewarm/offload_lfc_interval_seconds、suspend_timeout_seconds、bootstrap_template、format_version/operation_uuid/features。compute_ctl 消费：get_config_from_control_plane（compute_tools/src/spec.rs:77）GET {base}/compute/api/v2/computes/{compute_id}/spec。start_compute（compute.rs:793）：前置下载 remote extensions、prepare_pgdata、按需 swap resize/disk quota。prepare_pgdata（compute.rs:1601）写 postgresql.conf → sync safekeepers 取 LSN → 拉 basebackup → 更新 pg_hba/pg_ident。apply_config（compute.rs:1972）跑 apply_spec_sql（spec_apply.rs:40）驱动 ApplySpecPhase 有序枚举（CreatePrivilegedRole...CreateAndAlterRoles...CreateAndAlterDatabases...HandleNeonExtension...DropRoles...），bootstrap_template SQL 最后跑（spec_apply.rs:358 run_bootstrap_template:1381）；handle_migrations（spec_apply.rs:243）异步跑固定 append-only 迁移列表不阻塞冷启动。reconfigure（compute.rs:2089）活时改配置重跑 apply_spec_sql + pg_ctl reload 不重启。Butterfly 生成：lib_compute_spec.py:576 get_compute_spec 先 Redis 缓存否则 _build_spec_dict（504）组装，_build_roles（46）从 SCRAM 密文、_build_settings（218）按 ComputeFlavor calculate_pg_settings_for_memory 算 GUC，_build_pageserver_connection_info（465）建分片 map。下发两路：poll = api_compute_spec.py:163 GET spec 直接返回 body（compute_ctl 轮询该 URL）；push = lib_pod_runtime_configurator.py PodRuntimeConfigurator.configure 按 compute status 选 POST /configure（全量阻塞，port 3080，configure.rs:21，状态 ConfigurationPending 阻塞到 Running）或 POST /refresh_configuration（非阻塞，refresh_configuration.rs 只翻状态 RefreshConfigurationPending，configurator.rs 只比对 pageserver_conninfo 变才 reconfigure，port 3081）。configurator_main_loop（configurator.rs:13）监听两种 pending。角色/库变更必须 /configure 才立即生效（lib_compute_configure.py 注释 9-21）。版本：Endpoint.spec_version（models.py:324）emitted 为 spec_version/spec_changed_at 注入 JSON dict（lib_compute_spec.py:539），Rust ComputeSpec 只有 format_version:f32 和 operation_uuid，serde 忽略未知字段（spec.rs:38）；bump_spec_version（lib_endpoint_core.py:31）数据变更时 +1 并 mark_endpoint_spec_changed 失效 Redis 缓存。")
+], p, notes="ComputeSpec（libs/compute_api/src/spec.rs:35）是声明式期望状态文档。主要字段：cluster（Cluster spec.rs:524：roles/databases/postgresql_conf/settings GenericOption 列表）、delta_operations（DeltaOp DROP/RENAME 等命令式增量）、tenant_id/timeline_id、mode（ComputeMode Primary/Replica/Static(lsn) spec.rs:470）、pageserver_connection_info（分片连接 spec.rs:245，旧字段 pageserver_connstring）、safekeeper_connstrings + safekeepers_generation、storage_auth_token、remote_extensions（RemoteExtSpec）、pgbouncer_settings、local_proxy_config（JWT）、skip_pg_catalog_updates、reconfigure_concurrency、drop_subscriptions_before_start、audit_log_level、autoprewarm/offload_lfc_interval_seconds、suspend_timeout_seconds、bootstrap_template、format_version/operation_uuid/features。compute_ctl 消费：get_config_from_control_plane（compute_tools/src/spec.rs:77）GET {base}/compute/api/v2/computes/{compute_id}/spec。start_compute（compute.rs:793）：前置下载 remote extensions、prepare_pgdata、按需 swap resize/disk quota。prepare_pgdata（compute.rs:1601）写 postgresql.conf → sync safekeepers 取 LSN → 拉 basebackup → 更新 pg_hba/pg_ident。apply_config（compute.rs:1972）跑 apply_spec_sql（spec_apply.rs:40）驱动 ApplySpecPhase 有序枚举（CreatePrivilegedRole...CreateAndAlterRoles...CreateAndAlterDatabases...HandleNeonExtension...DropRoles...），bootstrap_template SQL 最后跑（spec_apply.rs:358 run_bootstrap_template:1381）；handle_migrations（spec_apply.rs:243）异步跑固定 append-only 迁移列表不阻塞冷启动。reconfigure（compute.rs:2089）活时改配置重跑 apply_spec_sql + pg_ctl reload 不重启。skip_pg_catalog_updates 是行为开关：置 true 时 reconfigure（compute.rs:2146）和 configure_as_primary（compute.rs:2183）两个入口都跳过整段 apply_spec_sql——即不做 CREATE/ALTER ROLE、CREATE/DROP DATABASE、extension 对账，也不跑 bootstrap_template（run_bootstrap_template 是 apply_spec_sql 内 spec_apply.rs:358 的唯一调用点，被一并跳过），只剩重写 postgresql.conf + pg_reload_conf。butterfly 的 PS/SK 拓扑回调（apply_pod_topology_configuration）正是靠置 skip_pg_catalog_updates=true 让 /configure 只热更 conf 而不误触 catalog 全量对账和 bootstrap 重放。Butterfly 生成：lib_compute_spec.py:576 get_compute_spec 先 Redis 缓存否则 _build_spec_dict（504）组装，_build_roles（46）从 SCRAM 密文、_build_settings（218）按 ComputeFlavor calculate_pg_settings_for_memory 算 GUC，_build_pageserver_connection_info（465）建分片 map。下发两路：poll = api_compute_spec.py:163 GET spec 直接返回 body（compute_ctl 轮询该 URL）；push = lib_pod_runtime_configurator.py PodRuntimeConfigurator.configure 按 compute status 选 POST /configure（全量阻塞，port 3080，configure.rs:21，状态 ConfigurationPending 阻塞到 Running）或 POST /refresh_configuration（非阻塞，refresh_configuration.rs 只翻状态 RefreshConfigurationPending，configurator.rs 只比对 pageserver_conninfo 变才 reconfigure，port 3081）。configurator_main_loop（configurator.rs:13）监听两种 pending。角色/库变更必须 /configure 才立即生效（lib_compute_configure.py 注释 9-21）。版本：Endpoint.spec_version（models.py:324）emitted 为 spec_version/spec_changed_at 注入 JSON dict（lib_compute_spec.py:539），Rust ComputeSpec 只有 format_version:f32 和 operation_uuid，serde 忽略未知字段（spec.rs:38）；bump_spec_version（lib_endpoint_core.py:31）数据变更时 +1 并 mark_endpoint_spec_changed 失效 Redis 缓存。")
 
 # ─────── Slide 8: LFC (Local File Cache) ───────
 p += 1
 std("s-lfc", "COMPUTE", "LFC：Local File Cache", [
     T("lfc-desc", 96, 170, 1088, 44,
       "Compute 本地磁盘上的页缓存，介于 shared_buffers 和 Pageserver 之间；"
-      "<span style='font-family:" + MONO + "'>pgxn/neon/file_cache.c</span>",
+      "<span style=\"font-family:" + MONO + "\">pgxn/neon/file_cache.c</span>",
       fs=14, color=DIM, lh=1.5),
     R("lfc1-bg", 96, 222, 530, 260, fill=PANEL, stroke=EDGE, radius=12),
     T("lfc1-h", 116, 238, 490, 24, "结构与读路径", fs=16, fw=800, color=AC),
     T("lfc1-b", 116, 272, 490, 200,
       "单文件存放所有 relation 页，用共享 hash map 按<br>"
-      "<span style='font-family:" + MONO + "'>BufferTag</span> 寻址；<b>LRU</b> 淘汰，粒度=chunk<br>"
+      "<span style=\"font-family:" + MONO + "\">BufferTag</span> 寻址；<b>LRU</b> 淘汰，粒度=chunk<br>"
       "&nbsp;&nbsp;chunk = <b>128 页 = 1 MiB</b>（省 hash 内存 + 提升局部性）<br><br>"
       "读路径顺序：<br>"
       "shared_buffers → prefetch 结果 → <b>LFC</b> → Pageserver<br><br>"
-      "启动时文件 <span style='font-family:" + MONO + "'>O_TRUNC</span> 重建，<b>不跨重启保留</b><br>"
+      "启动时文件 <span style=\"font-family:" + MONO + "\">O_TRUNC</span> 重建，<b>不跨重启保留</b><br>"
       "临时/unlogged 表直接跳过 LFC",
       fs=12.5, color=DIM, lh=1.6),
     R("lfc2-bg", 656, 222, 530, 260, fill=PANEL, stroke=EDGE, radius=12),
     T("lfc2-h", 676, 238, 490, 24, "关键 GUC & 跨重启保温", fs=16, fw=800, color=AC2),
     T("lfc2-b", 676, 272, 490, 200,
-      "<span style='font-family:" + MONO + "'>neon.max_file_cache_size</span>　硬上限(MB)，启动定<br>"
-      "<span style='font-family:" + MONO + "'>neon.file_cache_size_limit</span>　软上限，可在线调<br>"
-      "<span style='font-family:" + MONO + "'>neon.file_cache_path</span>　默认 file.cache<br><br>"
+      "<span style=\"font-family:" + MONO + "\">neon.max_file_cache_size</span>　硬上限(MB)，启动定<br>"
+      "<span style=\"font-family:" + MONO + "\">neon.file_cache_size_limit</span>　软上限，可在线调<br>"
+      "<span style=\"font-family:" + MONO + "\">neon.file_cache_path</span>　默认 file.cache<br><br>"
       "<b>Prewarm / Offload</b>（跨 suspend 保温）：<br>"
       "• get_local_cache_state() 导出 chunk-key 状态<br>"
       "• 压缩后上传到 endpoint storage（compute_prewarm.rs）<br>"
@@ -1057,34 +1251,36 @@ std("s-lfc", "COMPUTE", "LFC：Local File Cache", [
 p += 1
 std("s-ddl-fwd", "COMPUTE", "DDL Forwarding：库/角色变更实时联动控制面", [
     T("ddl-desc", 96, 164, 1088, 34,
-      "用户直接跑 <span style='font-family:" + MONO + "'>CREATE DATABASE</span> / <span style='font-family:" + MONO + "'>DROP ROLE</span> 时，"
+      "用户直接跑 <span style=\"font-family:" + MONO + "\">CREATE DATABASE</span> / <span style=\"font-family:" + MONO + "\">DROP ROLE</span> 时，"
       "pgxn/neon 插件在<b>事务提交前</b>把变更 PATCH 给控制面，让控制台实时反映 db/role 状态。"
       "<span style='color:" + DIM + "'>pgxn/neon/neon_ddl_handler.c</span>",
       fs=12, color=DIM, lh=1.55),
     # Left card: capture mechanism
     R("ddl-l-bg", 96, 208, 530, 300, fill=PANEL, stroke=EDGE, radius=12),
     T("ddl-l-h", 116, 220, 490, 22, "① 捕获：ProcessUtility_hook + 子事务栈", fs=14, fw=800, color=AC),
-    T("ddl-l-b", 116, 250, 494, 250,
-      "<b>ProcessUtility_hook</b> 拦截 DDL（neon_ddl_handler.c:1377）<br>"
-      "&nbsp;&nbsp;→ 记录到 <b>DdlHashTable</b>（db_table + role_table）<br><br>"
-      "<b>子事务用哈希表栈</b>处理 SAVEPOINT（:99）：<br>"
-      "&nbsp;&nbsp;• START_SUB → PushTable（压栈）<br>"
-      "&nbsp;&nbsp;• COMMIT_SUB → MergeTable（并入下层）<br>"
-      "&nbsp;&nbsp;• ABORT_SUB → PopTable（丢弃）<br><br>"
-      "<b>提交时发送</b>：NeonXactCallback 在<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>XACT_EVENT_PRE_COMMIT</span> 调 SendDeltas（:533）<br>"
-      "<span style='color:" + AC2 + "'>⚠ 已知缺陷：转发后事务仍可能 abort，暂未处理（源码头注释）</span>",
-      fs=11.5, color=DIM, lh=1.6),
+    *TL("ddl-l-b", 116, 250, 494, 250, [
+        "<b>ProcessUtility_hook</b> 拦截 DDL（neon_ddl_handler.c:1377）",
+        "&nbsp;&nbsp;→ 记录到 <b>DdlHashTable</b>（db_table + role_table）",
+        "",
+        "<b>子事务用哈希表栈</b>处理 SAVEPOINT（:99）：",
+        "&nbsp;&nbsp;• START_SUB → PushTable（压栈）",
+        "&nbsp;&nbsp;• COMMIT_SUB → MergeTable（并入下层）",
+        "&nbsp;&nbsp;• ABORT_SUB → PopTable（丢弃）",
+        "",
+        "<b>提交时发送</b>：NeonXactCallback 在",
+        "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">XACT_EVENT_PRE_COMMIT</span> 调 SendDeltas（:533）",
+        ("⚠ 已知缺陷：转发后事务仍可能 abort，暂未处理（源码头注释）", AC2),
+    ], fs=11.5, color=DIM, lh=1.6),
     # Right card: HTTP protocol
     R("ddl-r-bg", 656, 208, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
     T("ddl-r-h", 676, 220, 490, 22, "② 转发：HTTP PATCH 到控制面", fs=14, fw=800, color=AC2),
     T("ddl-r-b", 676, 250, 492, 250,
-      "<span style='font-family:" + MONO + "'>PATCH {neon.console_url}?endpoint_id=ep-xxx</span><br>"
+      "<span style=\"font-family:" + MONO + "\">PATCH {neon.console_url}?endpoint_id=ep-xxx</span><br>"
       "&nbsp;&nbsp;（curl，超时 3s，重试 5 次）<br>"
-      "Auth：<span style='font-family:" + MONO + "'>Bearer</span> per-compute JWT<br>"
-      "&nbsp;&nbsp;（env <span style='font-family:" + MONO + "'>NEON_CONTROL_PLANE_TOKEN</span>，:1444）<br><br>"
-      "Body：<span style='font-family:" + MONO + "'>{\"dbs\":[…], \"roles\":[…]}</span><br>"
-      "&nbsp;&nbsp;• <span style='font-family:" + MONO + "'>op=set</span>（create/alter upsert）/ <span style='font-family:" + MONO + "'>op=del</span>（drop）<br>"
+      "Auth：<span style=\"font-family:" + MONO + "\">Bearer</span> per-compute JWT<br>"
+      "&nbsp;&nbsp;（env <span style=\"font-family:" + MONO + "\">NEON_CONTROL_PLANE_TOKEN</span>，:1444）<br><br>"
+      "Body：<span style=\"font-family:" + MONO + "\">{\"dbs\":[…], \"roles\":[…]}</span><br>"
+      "&nbsp;&nbsp;• <span style=\"font-family:" + MONO + "\">op=set</span>（create/alter upsert）/ <span style=\"font-family:" + MONO + "\">op=del</span>（drop）<br>"
       "&nbsp;&nbsp;• name / old_name(rename) / owner<br>"
       "&nbsp;&nbsp;• password + encrypted_password（角色）<br><br>"
       "控制面更新 <b>neon_pg_databases / neon_pg_roles</b><br>"
@@ -1095,11 +1291,11 @@ std("s-ddl-fwd", "COMPUTE", "DDL Forwarding：库/角色变更实时联动控制
     T("ddl-b-h", 116, 532, 900, 20, "防止「控制面 → compute → 控制面」双写循环", fs=13, fw=800, color=AC),
     T("ddl-b-b", 116, 558, 1048, 92,
       "• 控制面下发 <b>ComputeSpec</b> 让 compute_ctl 建库/建角色时，compute_ctl 先执行 "
-      "<span style='font-family:" + MONO + "'>SET neon.forward_ddl = false</span>，这样它执行 spec 里的 DDL 就不会再回调控制面<br>"
+      "<span style=\"font-family:" + MONO + "\">SET neon.forward_ddl = false</span>，这样它执行 spec 里的 DDL 就不会再回调控制面<br>"
       "• <b>token 与 writer 身份绑定</b>：控制面校验请求 token 的 compute_id 必须 = endpoint 当前 compute_id；"
       "endpoint 换 writer 会递增 writer_generation，旧 compute 的 token 即便没过期也无法再回调<br>"
-      "• GUC：<span style='font-family:" + MONO + "'>neon.console_url</span>（回调地址，必配）、"
-      "<span style='font-family:" + MONO + "'>neon.forward_ddl</span>（默认 on）",
+      "• GUC：<span style=\"font-family:" + MONO + "\">neon.console_url</span>（回调地址，必配）、"
+      "<span style=\"font-family:" + MONO + "\">neon.forward_ddl</span>（默认 on）",
       fs=12, color=DIM, lh=1.6),
 ], p, notes="DDL Forwarding：用户直接执行 CREATE DATABASE/DROP ROLE 等，pgxn/neon 插件 ProcessUtility_hook 拦截记到 DdlHashTable，子事务用哈希表栈处理 SAVEPOINT（PushTable/MergeTable/PopTable），事务 PRE_COMMIT 时 NeonXactCallback 调 SendDeltasToControlPlane，curl PATCH 到 neon.console_url?endpoint_id=xxx，Bearer per-compute JWT（NEON_CONTROL_PLANE_TOKEN），body {dbs:[],roles:[]} op=set/del + name/old_name/owner/password。控制面 upsert neon_pg_databases/neon_pg_roles 按 (branch_id,name) 幂等。防双写循环：compute_ctl 执行 spec DDL 前 SET neon.forward_ddl=false。token 与 writer 身份绑定，换 writer 递增 writer_generation 使旧 token 失效。已知缺陷：转发后事务仍可能 abort 未处理。源码 pgxn/neon/neon_ddl_handler.c，控制面 handlers/compute_callback/hook_ddl_notify.py。")
 
@@ -1139,11 +1335,11 @@ std("s-sk1", "SAFEKEEPER", "WAL 服务：Paxos-like 复制", [
     T("sk-cml", 810, 448, 374, 20, "commitLSN = 多数派 min(flushLSN)", fs=12, fw=700, color=A_GRN, align="right"),
     # bottom text
     T("sk-bottom", 96, 500, 1088, 172,
-      "• <b>NodeID = (term, uuid)</b>，握手阶段提升 term；<span style='font-family:" + MONO + "'>term_history</span> 里的 <b>last_log_term</b> 区分历史代次（旧文档的 epoch）<br>"
-      "• 恢复：从 quorum 中选 (last_log_term, flushLSN) 最大的 SK 做 leader，补齐 restartLSN..<span style='font-family:" + MONO + "'>commit_lsn</span><br>"
+      "• <b>NodeID = (term, uuid)</b>，握手阶段提升 term；<span style=\"font-family:" + MONO + "\">term_history</span> 里的 <b>last_log_term</b> 区分历史代次（旧文档的 epoch）<br>"
+      "• 恢复：从 quorum 中选 (last_log_term, flushLSN) 最大的 SK 做 leader，补齐 restartLSN..<span style=\"font-family:" + MONO + "\">commit_lsn</span><br>"
       "• <b>Learner 也是 Compute 自己</b>：walproposer 从 quorum 收 flushLSN 算出 commit_lsn，即「学到」哪段已被选定，据此 ACK client commit<br>"
       "• 稳态数据流是 <b>Compute → SK</b>，SK 之间不互相打 WAL；<b>故障恢复时</b> 落后的 SK 会通过 pg 复制协议<br>"
-      "&nbsp;&nbsp;直接<b>从对等 SK 拉缺失 WAL</b>（<span style='font-family:" + MONO + "'>safekeeper/src/recovery.rs</span>，不走 S3）<br>"
+      "&nbsp;&nbsp;直接<b>从对等 SK 拉缺失 WAL</b>（<span style=\"font-family:" + MONO + "\">safekeeper/src/recovery.rs</span>，不走 S3）<br>"
       "• <b>形式化验证</b>：safekeeper/spec/ 目录有 TLA+ 规范",
       fs=13, color=DIM, lh=1.75),
 ], p, notes="Paxos 角色映射（docs/rfcs/004-durability.md:162-163）：Compute walproposer = Proposer + Learner（一身二任），Safekeeper = Acceptor，Pageserver 不在共识内，是下游 WAL 消费者。walservice.md:123-125 也明写 proposer=compute、acceptor=safekeeper。Learner 为什么是 Compute：walproposer 从 quorum 收集 flush_lsn 计算 commit_lsn（GetAcknowledgedByQuorumWALPosition walproposer.c:1994），即学到哪段 WAL 已被多数派选定，据此 ACK client commit。Pageserver 虽然也消费 WAL，但它不参与投票、commit_lsn 的推进不等它。Safekeeper Paxos-like 复制：3 副本，quorum=2，term/last_log_term/commit_lsn，TLA+ 规范。数据流路径：稳态是 Compute walproposer 推向 3 台 SK，SK 之间不主动互连；故障恢复时落后的 SK 从对等 SK 拉 WAL，见 safekeeper/src/recovery.rs recovery_main_loop 每 2s（CHECK_INTERVAL_MS=2000）自检，recovery_needed 选 (last_log_term, flush_lsn) 严格领先且 term==last_log_term 的 peer 做 donor，且有活的 compute 在流时 donors 强制置空避免抢；recover() 先 HTTP GET /v1/tenant/{}/timeline/{} 拿 donor term_history，本地 VoteRequest 得自己 term_history，TermHistory::find_highest_common_point 求最高公共点截断本地 WAL、发 ProposerElected；recovery_stream 用 Postgres 物理复制协议连 donor pg 端口发 START_REPLICATION PHYSICAL {lsn} (term='{term}')，注释明确 It will make safekeeper give out not committed WAL (up to flush_lsn)，能追未 committed 尾巴，S3 上 offloaded WAL 只有已 committed 段做不到。S3 offload 服务的是别的目的：timeline_eviction 冷 timeline 驱逐、Pageserver 灾难恢复。pull_timeline.rs 是另一个整表 tar 打包路径，用于新增 SK 成员 / 成员变更 RFC 035，不是正常追赶。")
@@ -1196,29 +1392,30 @@ std("s-sk-migrate", "SAFEKEEPER", "SK 成员迁移：generation 双阶段递增�
     # Row 2: 3 columns of numbered steps aligned under the states above
     R("skm-c1-bg", 96, 314, 340, 340, fill=PANEL, stroke=EDGE, radius=12),
     T("skm-c1-h", 116, 326, 300, 22, "① 起 joint —— 递增 gen 一次", fs=13, fw=800, color="#7CB3F4"),
-    T("skm-c1-b", 116, 356, 300, 288,
-      "<b>1.</b> 读 timelines 表拿当前配置<br>"
-      "<b>2.</b> 已在 joint 且目标不同 → 拒绝；<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;目标相同 → 续跑（幂等）<br>"
-      "<b>3.</b> <span style='color:" + AC2 + "'>generation.next()</span>（n → n+1），<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;desired_set 写入 new_sk_set，<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;<b>CAS 到 storcon PG</b>（uniqueness + 线性化）<br><br>"
-      "<span style='color:" + FAINT + "'>失败 CAS 立刻中止；说明有另一次</span><br>"
-      "<span style='color:" + FAINT + "'>迁移抢跑（race）</span>",
-      fs=11.5, color=DIM, lh=1.7),
+    *TL("skm-c1-b", 116, 356, 300, 288, [
+        "<b>1.</b> 读 timelines 表拿当前配置",
+        "<b>2.</b> 已在 joint 且目标不同 → 拒绝；",
+        "&nbsp;&nbsp;&nbsp;&nbsp;目标相同 → 续跑（幂等）",
+        "<b>3.</b> <span style='color:" + AC2 + "'>generation.next()</span>（n → n+1），",
+        "&nbsp;&nbsp;&nbsp;&nbsp;desired_set 写入 new_sk_set，",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<b>CAS 到 storcon PG</b>（uniqueness + 线性化）",
+        "",
+        ("失败 CAS 立刻中止；说明有另一次", FAINT),
+        ("迁移抢跑（race）", FAINT),
+    ], fs=11.5, color=DIM, lh=1.7),
     R("skm-c2-bg", 448, 314, 388, 340, fill=PANEL, stroke=EDGE, radius=12),
     T("skm-c2-h", 468, 326, 340, 22, "② 传播 joint + 同步位点", fs=13, fw=800, color=AC2),
-    T("skm-c2-b", 468, 356, 348, 288,
-      "<b>4.</b> <span style='font-family:" + MONO + "'>PUT /membership</span> 到<b>旧集合</b>（quorum），<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;取 max ⟨last_log_term, flush_lsn⟩ 作为<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;<b>sync_position</b>；同时通知 cplane<br>"
-      "<b>5.</b> 对<b>新增</b> SK 做 <span style='font-family:" + MONO + "'>pull_timeline</span>（从旧集<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;合 quorum 拉 tar 包，非 S3）<br>"
-      "<b>6.</b> bump_term(sync_term) 到新集合<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:" + FAINT + "'>（当前代码 TODO，未实现）</span><br>"
-      "<b>7.</b> <span style='font-family:" + MONO + "'>PUT /membership</span> 到<b>新集合</b>，<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;<b>轮询到 quorum 追上 sync_position</b>",
-      fs=11.5, color=DIM, lh=1.7),
+    *TL("skm-c2-b", 468, 356, 348, 288, [
+        "<b>4.</b> <span style=\"font-family:" + MONO + "\">PUT /membership</span> 到<b>旧集合</b>（quorum），",
+        "&nbsp;&nbsp;&nbsp;&nbsp;取 max ⟨last_log_term, flush_lsn⟩ 作为",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<b>sync_position</b>；同时通知 cplane",
+        "<b>5.</b> 对<b>新增</b> SK 做 <span style=\"font-family:" + MONO + "\">pull_timeline</span>（从旧集",
+        "&nbsp;&nbsp;&nbsp;&nbsp;合 quorum 拉 tar 包，非 S3）",
+        "<b>6.</b> bump_term(sync_term) 到新集合",
+        ("&nbsp;&nbsp;&nbsp;&nbsp;（当前代码 TODO，未实现）", FAINT),
+        "<b>7.</b> <span style=\"font-family:" + MONO + "\">PUT /membership</span> 到<b>新集合</b>，",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<b>轮询到 quorum 追上 sync_position</b>",
+    ], fs=11.5, color=DIM, lh=1.7),
     R("skm-c3-bg", 848, 314, 336, 340, fill=PANEL, stroke=EDGE, radius=12),
     T("skm-c3-h", 868, 326, 296, 22, "③ 提交 final —— 再递增一次", fs=13, fw=800, color=AC),
     T("skm-c3-b", 868, 356, 296, 288,
@@ -1226,7 +1423,7 @@ std("s-sk-migrate", "SAFEKEEPER", "SK 成员迁移：generation 双阶段递增�
       "&nbsp;&nbsp;&nbsp;&nbsp;new_conf = {gen=n+2, sk_set=新,<br>"
       "&nbsp;&nbsp;&nbsp;&nbsp;new_sk_set=None}，写库；同时向<br>"
       "&nbsp;&nbsp;&nbsp;&nbsp;<b>safekeeper_timeline_pending_ops</b><br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;插入被剔除 SK 的 <span style='font-family:" + MONO + "'>exclude</span> 操作<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;插入被剔除 SK 的 <span style=\"font-family:" + MONO + "\">exclude</span> 操作<br>"
       "<b>9.</b> finish_migration：<br>"
       "&nbsp;&nbsp;&nbsp;&nbsp;• PUT /membership 到新集合（final）<br>"
       "&nbsp;&nbsp;&nbsp;&nbsp;• reconciler 消费 exclude ops<br>"
@@ -1234,6 +1431,8 @@ std("s-sk-migrate", "SAFEKEEPER", "SK 成员迁移：generation 双阶段递增�
       "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;要 quorum）",
       fs=11.5, color=DIM, lh=1.7),
 ], p, notes="SK 成员迁移 9 步（RFC 035 + safekeeper_service.rs:migrate_to_new_sk_set）：generation 双阶段递增：① 起 joint（步骤 1-3，gen n→n+1，CAS 到 storcon PG 的 timelines 表）② 传播 joint（步骤 4-7：PUT membership 到旧集合拿 sync_position、pull_timeline 初始化新 SK、bump_term 当前未实现、PUT membership 到新集合并等 quorum 追齐 sync_position）③ 提交 final（步骤 8-9，gen n+1→n+2，写 new_conf + exclude ops 队列，finish 阶段 PUT final + reconciler 处理 exclude + 通知 cplane）。SK 侧被动规则：看到更高 gen 就切换并持久化 control file；收到更低 gen 消息一律拒绝（防脑裂核心）。步骤 8 之后迁移不可回滚。")
+
+
 
 # ─────── Pageserver LSN 术语表 ───────
 p += 1
@@ -1342,12 +1541,12 @@ std("s-ps-model", "PAGESERVER", "多租户模型：Tenant / Timeline", [
               "　序列化为 32-hex 字符串（libs/utils/src/id.rs Id([u8;16])）",
               "",
               "<b>tenant_shard_id</b>：格式 &lt;tenant_id&gt;-&lt;shard_slug&gt;（如 ...-0001）；",
-              "　<span style='color:" + FAINT + "'>count=0 只是历史兼容特例、退化成裸 tenant_id 无后缀，</span>",
-              "　<span style='color:" + FAINT + "'>RFC 031 建议新建 tenant 规范做法是显式传 count=1</span>",
+              ("　count=0 只是历史兼容特例、退化成裸 tenant_id 无后缀，", FAINT),
+              ("　RFC 031 建议新建 tenant 规范做法是显式传 count=1", FAINT),
               "",
               "<b>LSN</b>：64 位 WAL 偏移 = 数据版本轴 + 分支锚点",
               "<b>Layer 文件名</b>：&lt;key_start&gt;-&lt;key_end&gt;__&lt;lsn_start&gt;-&lt;lsn_end&gt;-&lt;generation&gt;",
-              "　<span style='font-size:11px;color:" + FAINT + "'>示例：000...000-FFF...FFF__00000000014E8F20-00000000014E8F99-00000001</span>",
+              ("　示例：000...000-FFF...FFF__00000000014E8F20-00000000014E8F99-00000001", FAINT),
               "<b>Generation</b>：末尾 8 位 hex 后缀（-{g:08x}），每次 attach 单调递增，",
               "　彻底避免 split-brain 覆盖（无需 STONITH）",
           ], hc="#7CB3F4", fs=13, headfs=16),
@@ -1392,7 +1591,7 @@ std("s-ps-layer", "PAGESERVER", "Layer 文件：不可变的两级 LSM", [
     T("ly-cmp-h", 116, 558, 400, 20, "vs 传统 LSM-Tree / RocksDB", fs=13, fw=800, color=AC),
     T("ly-cmp-b", 116, 582, 1048, 90,
       "• <b>只有 L0 → L1 两级</b>（RocksDB 通常 L0~L6+ 多级放大压缩），无 size-tiered 深度合并<br>"
-      "&nbsp;&nbsp;<b>但 L1 内 delta 可纵向叠 3~10 层</b>，达 <span style='font-family:" + MONO + "'>image_creation_threshold</span>（默认 3）就物化一张 image 压平；"
+      "&nbsp;&nbsp;<b>但 L1 内 delta 可纵向叠 3~10 层</b>，达 <span style=\"font-family:" + MONO + "\">image_creation_threshold</span>（默认 3）就物化一张 image 压平；"
       "<b>层级标签仍只有 L0 / L1</b><br>"
       "• Delta layer <b>存 WAL 记录</b>（redo op），非 KV put/delete；读时需 walredo 进程回放才能得到页<br>"
       "• 二维索引：Key 范围 × <b>LSN 范围</b>（多版本内建），RocksDB 只有 Key 一维、旧版本靠 seq# 或删除标记<br>"
@@ -1405,7 +1604,7 @@ p += 1
 std("s-ps-inmem", "PAGESERVER", "写入缓冲 InMemoryLayer：pageserver 的 MemTable", [
     T("im-desc", 96, 166, 1088, 44,
       "上一页两级 LSM 都在磁盘 / S3 上。它们<b>之前</b>，ingest 的 WAL 先进一层内存写缓冲 "
-      "<span style='font-family:" + MONO + "'>InMemoryLayer</span> —— 等价 LSM 的 <b>MemTable</b>。"
+      "<span style=\"font-family:" + MONO + "\">InMemoryLayer</span> —— 等价 LSM 的 <b>MemTable</b>。"
       "所以 pageserver 严格说是<b>三级</b>：内存写缓冲 → L0 → L1。",
       fs=13, color=DIM, lh=1.6),
     # ── pipeline diagram ──
@@ -1438,19 +1637,19 @@ std("s-ps-inmem", "PAGESERVER", "写入缓冲 InMemoryLayer：pageserver 的 Mem
               "<b>ephemeral file</b>（本地临时文件，走 page_cache 缓冲）",
               "",
               "内存里只放<b>索引</b>：",
-              "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>BTreeMap&lt;Key, VecMap&lt;Lsn, IndexEntry&gt;&gt;</span>",
+              "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">BTreeMap&lt;Key, VecMap&lt;Lsn, IndexEntry&gt;&gt;</span>",
               "&nbsp;&nbsp;（IndexEntry = 该页版本在文件里的偏移）",
               "",
               "文件 <b>append-only</b>：读时先查内存索引，再按偏移读文件",
-              "<span style='color:#888'>inmemory_layer.rs:1-5（注释）· :70（index）</span>",
+              ("inmemory_layer.rs:1-5（注释）· :70（index）", "#888"),
           ], hc=AC2, fs=12, headfs=15),
     *card("im-c2", 656, 366, 530, 294,
           "三级流水线 & 落盘触发", [
-              "<b>创建</b>：首条 WAL 到达时 <span style='font-family:" + MONO + "'>get_layer_for_write</span>",
+              "<b>创建</b>：首条 WAL 到达时 <span style=\"font-family:" + MONO + "\">get_layer_for_write</span>",
               "&nbsp;&nbsp;新建 open_layer（layer_manager.rs:395-429）",
-              "<b>freeze</b>：<span style='font-family:" + MONO + "'>checkpoint_distance</span> 累计字节 / 定时 tick",
+              "<b>freeze</b>：<span style=\"font-family:" + MONO + "\">checkpoint_distance</span> 累计字节 / 定时 tick",
               "&nbsp;&nbsp;到阈值 → 挪进 frozen_layers，换开新 open_layer（:451-464）",
-              "<b>flush</b>：后台取 <span style='font-family:" + MONO + "'>frozen_layers.front()</span>",
+              "<b>flush</b>：后台取 <span style=\"font-family:" + MONO + "\">frozen_layers.front()</span>",
               "&nbsp;&nbsp;→ create_delta_layer 写成不可变 L0（timeline.rs:5000,5158）",
               "",
               "<b>读路径</b>：open + frozen <b>优先于</b>磁盘 layer map",
@@ -1477,8 +1676,8 @@ std("s-ps-layer-name", "PAGESERVER", "S3 上怎么区分 L0 / L1：光看文件�
       fs=12.5, color=DIM, lh=1.7, ff=MONO),
     *card("lyn1", 96, 396, 350, 190,
           "判定规则", [
-              "<span style='font-family:" + MONO + "'>key_start-key_end</span> 覆盖<b>整个</b> key 空间",
-              "（<span style='font-family:" + MONO + "'>Key::MIN..Key::MAX</span>，全 0…全 F）",
+              "<span style=\"font-family:" + MONO + "\">key_start-key_end</span> 覆盖<b>整个</b> key 空间",
+              "（<span style=\"font-family:" + MONO + "\">Key::MIN..Key::MAX</span>，全 0…全 F）",
               "　→ <b style='color:" + AC + "'>L0</b>",
               "",
               "只覆盖<b>一段子区间</b>（非全 F）",
@@ -1486,18 +1685,18 @@ std("s-ps-layer-name", "PAGESERVER", "S3 上怎么区分 L0 / L1：光看文件�
           ], hc="#7CB3F4", fs=13, headfs=15),
     *card("lyn2", 460, 396, 350, 190,
           "Key 是 18 字节 = 36 hex", [
-              "<span style='font-family:" + MONO + "'>KEY_SIZE = 18</span>（pageserver_api/key.rs）",
+              "<span style=\"font-family:" + MONO + "\">KEY_SIZE = 18</span>（pageserver_api/key.rs）",
               "序列化后正好 36 个十六进制字符",
               "",
-              "<span style='font-family:" + MONO + "'>Key::MAX</span> = 全字段取各自类型 MAX",
+              "<span style=\"font-family:" + MONO + "\">Key::MAX</span> = 全字段取各自类型 MAX",
               "　→ 打印出来就是 36 个 <b>F</b>",
           ], hc=AC2, fs=13, headfs=15),
     *card("lyn3", 824, 396, 360, 190,
           "为什么可靠：单一数据源", [
               "文件名解析出的 key_range 直接构成",
-              "<span style='font-family:" + MONO + "'>PersistentLayerDesc.key_range</span>",
+              "<span style=\"font-family:" + MONO + "\">PersistentLayerDesc.key_range</span>",
               "",
-              "<span style='font-family:" + MONO + "'>index_part.json</span> 的 LayerFileMetadata",
+              "<span style=\"font-family:" + MONO + "\">index_part.json</span> 的 LayerFileMetadata",
               "只存 file_size/generation/shard，",
               "<b>没有</b>单独的 is_l0 字段，永远现算",
           ], hc=AC, fs=12.5, headfs=15),
@@ -1508,15 +1707,15 @@ p += 1
 std("s-layermap", "PAGESERVER", "LayerMap：(Key, LSN) 二维查找索引", [
     T("lm-desc", 96, 170, 1088, 44,
       "读路径关键结构：给定 (key, end_lsn)，找出覆盖它的最新 layer。"
-      "<span style='font-family:" + MONO + "'>pageserver/src/tenant/layer_map.rs</span>",
+      "<span style=\"font-family:" + MONO + "\">pageserver/src/tenant/layer_map.rs</span>",
       fs=14, color=DIM, lh=1.5),
     R("lm1-bg", 96, 222, 530, 252, fill=PANEL, stroke=EDGE, radius=12),
     T("lm1-h", 116, 238, 490, 24, "两步查询 search(key, end_lsn)", fs=16, fw=800, color=AC),
     T("lm1-b", 116, 272, 490, 190,
       "① <b>选版本</b>：historic 是 BTreeMap&lt;Lsn, Version&gt;<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>range(..=lsn).next_back()</span> → O(log V)<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">range(..=lsn).next_back()</span> → O(log V)<br>"
       "② <b>查 key</b>：该版本内的持久化红黑树<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>nodes.range(..=key).next_back()</span> → O(log N)<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">nodes.range(..=key).next_back()</span> → O(log N)<br>"
       "③ <b>选层</b>：select_layer 优先级<br>"
       "&nbsp;&nbsp;image &gt; delta &gt; in-memory layer<br>"
       "返回 SearchResult { layer, lsn_floor }",
@@ -1524,7 +1723,7 @@ std("s-layermap", "PAGESERVER", "LayerMap：(Key, LSN) 二维查找索引", [
     R("lm2-bg", 656, 222, 530, 252, fill=PANEL, stroke=EDGE, radius=12),
     T("lm2-h", 676, 238, 490, 24, "为什么用持久化（不可变）红黑树", fs=16, fw=800, color=AC2),
     T("lm2-b", 676, 272, 490, 190,
-      "<span style='font-family:" + MONO + "'>rpds::RedBlackTreeMapSync&lt;i128, (lsn_end, layer)&gt;</span><br>"
+      "<span style=\"font-family:" + MONO + "\">rpds::RedBlackTreeMapSync&lt;i128, (lsn_end, layer)&gt;</span><br>"
       "• 树本身只索引 <b>Key 一维</b>；LSN 维度靠<b>多版本</b>表达<br>"
       "• 每次插入产生新 version，旧 version 不可变<br>"
       "• 版本 clone <b>O(1)</b>，避免逐 LSN 全量拷贝的平方级内存<br>"
@@ -1534,8 +1733,8 @@ std("s-layermap", "PAGESERVER", "LayerMap：(Key, LSN) 二维查找索引", [
     R("lm3-bg", 96, 490, 1088, 172, fill=PANEL, stroke=EDGE, radius=10),
     T("lm3-h", 116, 502, 500, 20, "L0 / L1 在 map 中的处理差异 & 回溯修改", fs=13, fw=800, color=AC),
     T("lm3-b", 116, 528, 1048, 125,
-      "• <b>L0 delta</b> 的 key 范围恒为 <span style='font-family:" + MONO + "'>Key::MIN..Key::MAX</span>，放进索引树没有区分度 → 额外存一份 "
-      "<span style='font-family:" + MONO + "'>l0_delta_layers: Vec</span>，查询时<b>线性扫描</b><br>"
+      "• <b>L0 delta</b> 的 key 范围恒为 <span style=\"font-family:" + MONO + "\">Key::MIN..Key::MAX</span>，放进索引树没有区分度 → 额外存一份 "
+      "<span style=\"font-family:" + MONO + "\">l0_delta_layers: Vec</span>，查询时<b>线性扫描</b><br>"
       "• <b>L1</b> 层 key 范围互不重叠 → 由红黑树索引，单次 O(log N) 命中<br>"
       "• <b>回溯修改是痛点</b>：compaction 会产出较旧 LSN 的层、GC 会删历史层，但旧 version 无法原地改<br>"
       "&nbsp;&nbsp;→ BufferedHistoricLayerCoverage 先缓冲变更，再从变更点<b>重建</b>后续所有 version<br>"
@@ -1548,21 +1747,21 @@ p += 1
 std("s-indexpart", "PAGESERVER", "index_part.json：远端 timeline 的权威清单", [
     T("ip-desc", 96, 168, 1088, 36,
       "S3 上没有目录列举语义，Pageserver 不靠 LIST 恢复状态，而是读一个 JSON 清单重建 LayerMap。"
-      "<span style='font-family:" + MONO + "'>remote_timeline_client/index.rs</span>",
+      "<span style=\"font-family:" + MONO + "\">remote_timeline_client/index.rs</span>",
       fs=14, color=DIM, lh=1.5),
     # left: content
     R("ip1-bg", 96, 214, 540, 296, fill=PANEL, stroke=EDGE, radius=12),
     T("ip1-h", 116, 228, 500, 24, "里面装了什么（struct IndexPart）", fs=16, fw=800, color=AC),
     T("ip1-b", 116, 262, 500, 236,
-      "<span style='font-family:" + MONO + "'>layer_metadata: HashMap&lt;LayerName, LayerFileMetadata&gt;</span><br>"
+      "<span style=\"font-family:" + MONO + "\">layer_metadata: HashMap&lt;LayerName, LayerFileMetadata&gt;</span><br>"
       "&nbsp;&nbsp;→ <b>全部 layer 的文件名 + 大小 + generation + shard</b><br>"
       "&nbsp;&nbsp;→ 不变量：索引里列出的 layer <b>必须已存在于 S3</b><br>"
-      "<span style='font-family:" + MONO + "'>disk_consistent_lsn</span>　该 timeline 已落盘的 LSN<br>"
-      "<span style='font-family:" + MONO + "'>metadata: TimelineMetadata</span>　含 ancestor / ancestor_lsn<br>"
-      "<span style='font-family:" + MONO + "'>lineage</span>　分支血缘；<span style='font-family:" + MONO + "'>gc_blocking</span>　GC 阻断标记<br>"
-      "<span style='font-family:" + MONO + "'>gc_compaction</span>　bottommost compaction 断点（可续跑）<br>"
-      "<span style='font-family:" + MONO + "'>deleted_at / archived_at / marked_invisible_at</span>　生命周期<br>"
-      "<span style='font-family:" + MONO + "'>rel_size_migration(_at)</span>　rel size 读路径版本切换<br><br>"
+      "<span style=\"font-family:" + MONO + "\">disk_consistent_lsn</span>　该 timeline 已落盘的 LSN<br>"
+      "<span style=\"font-family:" + MONO + "\">metadata: TimelineMetadata</span>　含 ancestor / ancestor_lsn<br>"
+      "<span style=\"font-family:" + MONO + "\">lineage</span>　分支血缘；<span style=\"font-family:" + MONO + "\">gc_blocking</span>　GC 阻断标记<br>"
+      "<span style=\"font-family:" + MONO + "\">gc_compaction</span>　bottommost compaction 断点（可续跑）<br>"
+      "<span style=\"font-family:" + MONO + "\">deleted_at / archived_at / marked_invisible_at</span>　生命周期<br>"
+      "<span style=\"font-family:" + MONO + "\">rel_size_migration(_at)</span>　rel size 读路径版本切换<br><br>"
       "<b>version 字段当前 = 15</b>，KNOWN_VERSIONS 1..15 全部可读<br>"
       "&nbsp;&nbsp;→ 必须<b>前后双向兼容</b>，改字段就得升版本 + 加测试",
       fs=11.5, color=DIM, lh=1.65),
@@ -1573,13 +1772,13 @@ std("s-indexpart", "PAGESERVER", "index_part.json：远端 timeline 的权威清
       "<b>① 启动即真相</b>：attach 时读 index 重建 LayerMap，<br>"
       "&nbsp;&nbsp;本地磁盘为空也能立刻服务（layer 按需下载）<br><br>"
       "<b>② 防脑裂的裁决者</b>：key 带 generation 后缀<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>…/index_part.json-&lt;gen hex&gt;</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">…/index_part.json-&lt;gen hex&gt;</span><br>"
       "&nbsp;&nbsp;新 PS 取<b>能读到的最高 generation</b>那份为起点<br>"
       "&nbsp;&nbsp;老 PS 写自己那份，互不覆盖（RFC 025）<br><br>"
       "<b>③ GC / 删除的记账本</b>：GC 只把 layer 从 index<br>"
       "&nbsp;&nbsp;<b>解链</b>，对象先悬挂；真删要走 deletion queue<br>"
-      "&nbsp;&nbsp;+ <span style='font-family:" + MONO + "'>/upcall/v1/validate</span> 校验 generation<br><br>"
-      "S3 路径：<span style='font-family:" + MONO + "'>tenants/&lt;tenant_shard_id&gt;/timelines/&lt;tl_id&gt;/</span>",
+      "&nbsp;&nbsp;+ <span style=\"font-family:" + MONO + "\">/upcall/v1/validate</span> 校验 generation<br><br>"
+      "S3 路径：<span style=\"font-family:" + MONO + "\">tenants/&lt;tenant_shard_id&gt;/timelines/&lt;tl_id&gt;/</span>",
       fs=11.5, color=DIM, lh=1.65),
     # bottom
     R("ip3-bg", 96, 524, 1088, 138, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
@@ -1602,10 +1801,10 @@ std("s-read-lsn", "读路径", "Page → LSN：Compute 怎么知道该用什么 
     R("rl-lw-bg", 96, 218, 530, 200, fill=PANEL, stroke=EDGE, radius=12),
     T("rl-lw-h", 116, 230, 400, 22, "LwLSN Cache（共享内存 LRU Hash）", fs=15, fw=800, color=AC),
     T("rl-lw-b", 116, 260, 490, 150,
-      "<span style='font-family:" + MONO + "'>key = BufferTag(spcOid, dbOid, relNode, forkNum, blkNum)</span><br>"
-      "<span style='font-family:" + MONO + "'>val = XLogRecPtr</span> = 该 page 的 <b>last_written_lsn</b>（最后修改的 WAL LSN）<br><br>"
+      "<span style=\"font-family:" + MONO + "\">key = BufferTag(spcOid, dbOid, relNode, forkNum, blkNum)</span><br>"
+      "<span style=\"font-family:" + MONO + "\">val = XLogRecPtr</span> = 该 page 的 <b>last_written_lsn</b>（最后修改的 WAL LSN）<br><br>"
       "• 每次产生 WAL record 时，经 <b>set_lwlsn_block_hook</b> 写入缓存<br>"
-      "• 大小由 GUC <span style='font-family:" + MONO + "'>neon.last_written_lsn_cache_size</span> 控制，默认 <b>128K 条目</b><br>"
+      "• 大小由 GUC <span style=\"font-family:" + MONO + "\">neon.last_written_lsn_cache_size</span> 控制，默认 <b>128K 条目</b><br>"
       "• LRU 淘汰后回退到全局 <b>maxLastWrittenLsn</b>（所有被淘汰页的 LSN 上界）",
       fs=12, color=DIM, lh=1.7),
     # Primary vs Replica
@@ -1613,20 +1812,20 @@ std("s-read-lsn", "读路径", "Page → LSN：Compute 怎么知道该用什么 
     T("rl-pri-h", 666, 230, 400, 22, "neon_get_request_lsns()：决定请求 LSN", fs=15, fw=800, color=AC2),
     T("rl-pri-b", 666, 260, 500, 150,
       "<b>Primary 节点</b><br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>request_lsn = UINT64_MAX</span>（「给我最新版」）<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>not_modified_since = last_written_lsn</span>（缓存优化）<br><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">request_lsn = UINT64_MAX</span>（「给我最新版」）<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">not_modified_since = last_written_lsn</span>（缓存优化）<br><br>"
       "<b>Replica 节点</b><br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>request_lsn = max(last_written_lsn, replay_lsn)</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">request_lsn = max(last_written_lsn, replay_lsn)</span><br>"
       "&nbsp;&nbsp;保证读到<b>一致性快照</b>——等同传统 PG 从磁盘读 page-at-point-in-time",
       fs=12, color=DIM, lh=1.7),
     # Flow diagram
     R("rl-flow-bg", 96, 432, 1088, 110, fill=PANEL, stroke=EDGE, radius=10),
     T("rl-flow-h", 116, 444, 600, 20, "完整调用链", fs=13, fw=800, color=AC),
     T("rl-flow-b", 116, 470, 1048, 64,
-      "<span style='font-family:" + MONO + "'>SELECT WHERE id=42</span> → 执行器需要 heap/index page → Buffer Miss → "
-      "<span style='font-family:" + MONO + "'>neon_readv(rel, fork, blk)</span><br>"
-      "&nbsp;&nbsp;→ <span style='font-family:" + MONO + "'>neon_get_request_lsns()</span> 查 LwLSN 缓存 → "
-      "构造 <span style='font-family:" + MONO + "'>GetPage@LSN</span> 发往 Pageserver<br>"
+      "<span style=\"font-family:" + MONO + "\">SELECT WHERE id=42</span> → 执行器需要 heap/index page → Buffer Miss → "
+      "<span style=\"font-family:" + MONO + "\">neon_readv(rel, fork, blk)</span><br>"
+      "&nbsp;&nbsp;→ <span style=\"font-family:" + MONO + "\">neon_get_request_lsns()</span> 查 LwLSN 缓存 → "
+      "构造 <span style=\"font-family:" + MONO + "\">GetPage@LSN</span> 发往 Pageserver<br>"
       "&nbsp;&nbsp;→ PS 用 (Key, LSN) 在 LayerMap 中定位 delta/image 栈 → walredo → 返回 8KB page",
       fs=12, color=DIM, lh=1.6),
     # Key insight
@@ -1635,7 +1834,7 @@ std("s-read-lsn", "读路径", "Page → LSN：Compute 怎么知道该用什么 
     T("rl-key-b", 116, 594, 1048, 54,
       "• <b>LSN 粒度是 page（8KB block），不是单条行</b> —— 一个 page 上的几十条行共享同一个 last_written_lsn<br>"
       "• 行级可见性仍靠传统 <b>MVCC（xmin/xmax + snapshot）</b>，不涉及 LSN —— LSN 只决定 PS 返回哪个版本的物理页<br>"
-      "• Primary 用 <span style='font-family:" + MONO + "'>UINT64_MAX</span> 是为了避免与 GC horizon 竞态：主节点永远要最新页就不会被 GC 掉",
+      "• Primary 用 <span style=\"font-family:" + MONO + "\">UINT64_MAX</span> 是为了避免与 GC horizon 竞态：主节点永远要最新页就不会被 GC 掉",
       fs=12, color=DIM, lh=1.6),
 ], p, notes="Compute 侧通过 LwLSN Cache 跟踪每个 page 最后修改的 WAL LSN。写入时经 set_lwlsn_block_hook 更新缓存（key=BufferTag, val=XLogRecPtr），128K 条目 LRU。读时 neon_get_request_lsns() 查缓存：Primary 发 UINT64_MAX(要最新) + not_modified_since 供 PS 缓存优化；Replica 发 max(lwlsn, replay_lsn) 保证一致性快照。关键：LSN 粒度是 page 不是 row，行可见性仍靠 MVCC。代码：pgxn/neon/neon_lwlsncache.c（缓存）、pgxn/neon/pagestore_smgr.c:507（request_lsns 计算）。")
 
@@ -1697,7 +1896,7 @@ std("s-storcon-schema", "协调层", "Storage Controller 的元数据表（依�
               "",
               "<b style='color:" + FG + "'>hadron_safekeepers</b> — SK 自注册简表：",
               "&nbsp;sk_node_id + listen_http/pg 地址",
-              "&nbsp;<span style='color:" + AC2 + "'>⚠ schema-only：仅建表，无业务代码读写</span>",
+              ("&nbsp;⚠ schema-only：仅建表，无业务代码读写", AC2),
           ], hc="#7CB3F4", fs=11.5, headfs=15),
     *card("scs2", 656, 212, 530, 218,
           "租户 & 分片状态", [
@@ -1721,7 +1920,7 @@ std("s-storcon-schema", "协调层", "Storage Controller 的元数据表（依�
               "",
               "<b style='color:" + FG + "'>hadron_timeline_safekeepers</b> — timeline",
               "&nbsp;→ sk_node_id 映射，legacy_endpoint_id(UUID) 兼容老数据",
-              "&nbsp;<span style='color:" + AC2 + "'>⚠ schema-only：仅建表，无业务代码读写</span>",
+              ("&nbsp;⚠ schema-only：仅建表，无业务代码读写", AC2),
           ], hc=AC2, fs=11.5, headfs=15),
     *card("scs4", 656, 442, 530, 218,
           "运维 & Schema 版本", [
@@ -1751,7 +1950,7 @@ std("s-flush-policy", "PAGESERVER", "为什么 S3 有延迟：Ephemeral Layer �
       fs=14, color=DIM, lh=1.6),
     *card("fp1", 96, 232, 350, 260,
           "① 内存层滚动 (freeze)", [
-              "<span style='font-family:" + MONO + "'>should_roll()</span> 任一命中即滚动：",
+              "<span style=\"font-family:" + MONO + "\">should_roll()</span> 任一命中即滚动：",
               "",
               "<b>checkpoint_distance</b>　默认 <b>256 MiB</b>",
               "　累计 WAL 达阈值",
@@ -1764,20 +1963,20 @@ std("s-flush-policy", "PAGESERVER", "为什么 S3 有延迟：Ephemeral Layer �
           ], hc=AC, fs=12.5, headfs=15),
     *card("fp2", 460, 232, 350, 260,
           "② 定时兜底 + 落盘", [
-              "<span style='font-family:" + MONO + "'>tenant_housekeeping_loop</span>",
+              "<span style=\"font-family:" + MONO + "\">tenant_housekeeping_loop</span>",
               "每 <b>compaction_period</b>（默认 20s，±5%",
               "抖动）tick 一次，逐 timeline 调用",
-              "<span style='font-family:" + MONO + "'>maybe_freeze_ephemeral_layer()</span>",
+              "<span style=\"font-family:" + MONO + "\">maybe_freeze_ephemeral_layer()</span>",
               "",
               "→ 保证超时条件能被真正触发",
               "",
-              "冻结层由 <span style='font-family:" + MONO + "'>flush_loop</span> 异步写成",
+              "冻结层由 <span style=\"font-family:" + MONO + "\">flush_loop</span> 异步写成",
               "本地 delta 文件（不可变）",
           ], hc=AC2, fs=12.5, headfs=15),
     *card("fp3", 824, 232, 360, 260,
           "③ 立即异步上传", [
               "本地落盘完成后<b>立刻</b>",
-              "<span style='font-family:" + MONO + "'>schedule_layer_file_upload()</span>",
+              "<span style=\"font-family:" + MONO + "\">schedule_layer_file_upload()</span>",
               "丢进上传队列，无额外定时器/批处理",
               "",
               "S3 PUT 作为后台任务并发执行",
@@ -1788,9 +1987,9 @@ std("s-flush-policy", "PAGESERVER", "为什么 S3 有延迟：Ephemeral Layer �
     R("fp-lsn-bg", 96, 512, 1088, 118, fill=PANEL, stroke=EDGE, radius=10),
     T("fp-lsn-h", 116, 524, 500, 20, "三段式一致性 LSN", fs=13, fw=800, color=AC),
     T("fp-lsn-b", 116, 548, 1048, 74,
-      "<span style='font-family:" + MONO + "'>last_record_lsn</span>　SK→PS 已收到、内存可读（WAL receiver 每 100 条批提交一次，与 S3 无关）<br>"
-      "<span style='font-family:" + MONO + "'>disk_consistent_lsn</span>　冻结层已确认写到 <b>PS 本地磁盘</b><br>"
-      "<span style='font-family:" + MONO + "'>remote_consistent_lsn</span>（visible）　上传 S3 并校验 generation 非陈旧后才前移 —— 只有它前移，SK 才能裁剪 WAL",
+      "<span style=\"font-family:" + MONO + "\">last_record_lsn</span>　SK→PS 已收到、内存可读（WAL receiver 每 100 条批提交一次，与 S3 无关）<br>"
+      "<span style=\"font-family:" + MONO + "\">disk_consistent_lsn</span>　冻结层已确认写到 <b>PS 本地磁盘</b><br>"
+      "<span style=\"font-family:" + MONO + "\">remote_consistent_lsn</span>（visible）　上传 S3 并校验 generation 非陈旧后才前移 —— 只有它前移，SK 才能裁剪 WAL",
       fs=12, color=DIM, lh=1.7),
 ], p, notes="should_roll() pageserver/src/tenant/timeline.rs:2672-2719，三触发条件：LSN距离/层大小达 checkpoint_distance，或 opened_at 超过 checkpoint_timeout。默认值 libs/pageserver_api/src/config.rs:851(DEFAULT_CHECKPOINT_DISTANCE=256MiB),852(DEFAULT_CHECKPOINT_TIMEOUT=10m),861(DEFAULT_COMPACTION_PERIOD=20s)。housekeeping loop: pageserver/src/tenant/tasks.rs:427-451 tenant_housekeeping_loop，sleep_jitter(period, 5%)后调用tenant.housekeeping()→maybe_freeze_ephemeral_layer (timeline.rs:2148-2178)。flush_loop: timeline.rs:4928+，flush_frozen_layer写本地delta文件→schedule_uploads (timeline.rs:5334,5366-5370)。上传调度: remote_timeline_client.rs:1269-1279 schedule_layer_file_upload→launch_queued_tasks(2022)异步发起S3 PUT，无额外批处理定时器。一致性LSN: disk_consistent_lsn(timeline.rs:282,5320)本地磁盘确认；remote_consistent_lsn_projected/_visible(remote_timeline_client.rs:533,544,111-118,2393-2401)，_visible只在上传确认+generation非陈旧后前移，是这个值通报给SK允许裁剪WAL。ingest批处理 DEFAULT_INGEST_BATCH_SIZE=100 (config.rs:688)，只影响PS内部可读性与S3无关。")
 
@@ -1802,7 +2001,7 @@ std("s-l0-compact-trigger", "PAGESERVER", "L0 什么时候变成 L1：计数阈�
       fs=14, color=DIM, lh=1.6),
     *card("l0c1", 96, 224, 350, 230,
           "① 触发条件", [
-              "<span style='font-family:" + MONO + "'>compaction_threshold</span>　默认 <b>10</b>",
+              "<span style=\"font-family:" + MONO + "\">compaction_threshold</span>　默认 <b>10</b>",
               "　L0 delta layer 数量达到即触发",
               "",
               "compaction.rs:1902　if level0_deltas.len()",
@@ -1810,14 +2009,14 @@ std("s-l0-compact-trigger", "PAGESERVER", "L0 什么时候变成 L1：计数阈�
               "",
               "每次 flush 冻结层后都会检查一次",
               "（timeline.rs:5055-5056），命中就立即",
-              "<span style='font-family:" + MONO + "'>l0_compaction_trigger.notify_one()</span>",
+              "<span style=\"font-family:" + MONO + "\">l0_compaction_trigger.notify_one()</span>",
           ], hc=AC, fs=12.5, headfs=15),
     *card("l0c2", 460, 224, 350, 230,
           "② 定时兜底", [
-              "<span style='font-family:" + MONO + "'>compaction_loop</span>（tasks.rs:216）",
+              "<span style=\"font-family:" + MONO + "\">compaction_loop</span>（tasks.rs:216）",
               "醒来条件取先到者：",
               "",
-              "• <span style='font-family:" + MONO + "'>compaction_period</span> 到点（默认 20s）",
+              "• <span style=\"font-family:" + MONO + "\">compaction_period</span> 到点（默认 20s）",
               "• 事件通知（见①）",
               "• 上轮失败后的 backoff 重试",
               "",
@@ -1826,11 +2025,11 @@ std("s-l0-compact-trigger", "PAGESERVER", "L0 什么时候变成 L1：计数阈�
           ], hc=AC2, fs=12.5, headfs=15),
     *card("l0c3", 824, 224, 360, 230,
           "③ 与背压阈值的关系", [
-              "<span style='font-family:" + MONO + "'>l0_flush_delay_threshold</span>",
+              "<span style=\"font-family:" + MONO + "\">l0_flush_delay_threshold</span>",
               "　= 3×compaction_threshold = <b>30</b>",
               "　超过 → flush 拖慢到 2× 耗时",
               "",
-              "<span style='font-family:" + MONO + "'>l0_flush_stall_threshold</span>",
+              "<span style=\"font-family:" + MONO + "\">l0_flush_stall_threshold</span>",
               "　默认<b>关闭</b>，开启会完全阻塞摄入",
               "",
               "10（该合并了）&lt; 30（拖慢）&lt; stall（阻塞，默认无）",
@@ -1839,8 +2038,8 @@ std("s-l0-compact-trigger", "PAGESERVER", "L0 什么时候变成 L1：计数阈�
     T("l0c-algo-h", 116, 482, 500, 20, "合并算法：不是一把梭，是分批 + k-way merge", fs=13, fw=800, color=AC),
     T("l0c-algo-b", 116, 506, 1048, 86,
       "1. 按起始 LSN 排序，只取<b>连续无 LSN 空洞</b>的一段（compaction.rs:1967-2014），遇到断档就停<br>"
-      "2. 按字节量上限截断本轮处理量（<span style='font-family:" + MONO + "'>compaction_threshold × checkpoint_distance</span>），处理不完标记未完成，留给下一轮——积压大时是分批，不是一次全吃<br>"
-      "3. 选中的 L0 用 <span style='font-family:" + MONO + "'>MergeIterator</span> 做 <b>k-way 流式合并</b>（compaction.rs:2156），按 key/LSN 顺序产出新 L1 delta layer",
+      "2. 按字节量上限截断本轮处理量（<span style=\"font-family:" + MONO + "\">compaction_threshold × checkpoint_distance</span>），处理不完标记未完成，留给下一轮——积压大时是分批，不是一次全吃<br>"
+      "3. 选中的 L0 用 <span style=\"font-family:" + MONO + "\">MergeIterator</span> 做 <b>k-way 流式合并</b>（compaction.rs:2156），按 key/LSN 顺序产出新 L1 delta layer",
       fs=12, color=DIM, lh=1.7),
 ], p, notes="compaction_loop: pageserver/src/tenant/tasks.rs:216，wake条件取先到者：sleep(period)(tasks.rs:255,240,period来自get_compaction_period默认DEFAULT_COMPACTION_PERIOD=20s config.rs:861)，或l0_compaction_trigger.notified()(tasks.rs:256)，或上轮失败backoff(tasks.rs:254)。触发通知：timeline.rs:5055 l0_count>=get_compaction_threshold()后, :5056 notify_one()立即唤醒无需等满一个period。tasks.rs:277-278循环结果为YieldForL0/Pending时自我重新notify接着跑。阈值：compaction_threshold定义config.rs:533，默认DEFAULT_COMPACTION_THRESHOLD=10(config.rs:862,920)。检查代码compaction.rs:1902-1903 if level0_deltas.is_empty()||level0_deltas.len()<threshold提前返回(compact_level0_phase1起始:1883,提前返回:1938)。get_compaction_threshold() timeline.rs:2883。背压联动：l0_flush_delay_threshold(get_l0_flush_delay_threshold timeline.rs:2929-2957)默认=3×compaction_threshold=30(DEFAULT_L0_FLUSH_DELAY_FACTOR=3,timeline.rs:2932)，达到后flush变2倍慢(timeline.rs:5062)；l0_flush_stall_threshold(timeline.rs:2959-3007)默认DEFAULT_L0_FLUSH_STALL_FACTOR=0即禁用(timeline.rs:2963)，开启后l0_count>=阈值时完全阻塞flush(timeline.rs:5010-5011)，两者都clamp到>=compaction_threshold(timeline.rs:2955,3006)。合并算法compact_level0(compaction.rs:1840)委托compact_level0_phase1(:1883)：按起始LSN排序(:1967)取连续LSN run无空洞(:1970-2014)；delta_size_limit=max(compaction_upper_limit,compaction_threshold)*checkpoint_distance(:1983-1987)超限则fully_compacted=false留下一轮(:2002-2013)；k-way合并用MergeIterator::create_with_options(:2156-2162,来自storage_layer/merge_iterator.rs,import at:59)按key/LSN顺序产出target_file_size大小的新L1 delta layer。")
 
@@ -1848,7 +2047,7 @@ std("s-l0-compact-trigger", "PAGESERVER", "L0 什么时候变成 L1：计数阈�
 p += 1
 std("s-lsn-chain", "PAGESERVER", "一条 WAL 的完整生命周期：8 个 LSN 检查点", [
     T("lc-desc", 96, 172, 1088, 40,
-      "<span style='font-family:" + MONO + "'>SELECT pg_current_wal_lsn();</span> 返回的只是<b>最靠前、最不保险</b>的那个检查点——"
+      "<span style=\"font-family:" + MONO + "\">SELECT pg_current_wal_lsn();</span> 返回的只是<b>最靠前、最不保险</b>的那个检查点——"
       "compute 本机写到 OS 但未必 fsync，跟 Neon 的持久化保证无关。",
       fs=14, color=DIM, lh=1.6),
     *[e for i, (mono, desc, note, c) in enumerate([
@@ -1868,7 +2067,7 @@ std("s-lsn-chain", "PAGESERVER", "一条 WAL 的完整生命周期：8 个 LSN �
         T(f"lc{i}n", 738, 234 + i * 42, 430, 20, note, fs=11.5, fw=500, color=FAINT),
     )],
     T("lc-note", 96, 616, 1088, 40,
-      "<b>不等号方向</b>：Insert ≥ Write(<span style='font-family:" + MONO + "'>pg_current_wal_lsn</span>) ≥ Flush ≥ availableLsn ≥ flushLSN ≥ commitLSN ≥ last_record_lsn ≥ disk_consistent_lsn ≥ remote_consistent_lsn。"
+      "<b>不等号方向</b>：Insert ≥ Write(<span style=\"font-family:" + MONO + "\">pg_current_wal_lsn</span>) ≥ Flush ≥ availableLsn ≥ flushLSN ≥ commitLSN ≥ last_record_lsn ≥ disk_consistent_lsn ≥ remote_consistent_lsn。"
       "每往下一级都是更强的持久化/可见性承诺，也离 compute 越远。",
       fs=12.5, color=AC, lh=1.5),
 ], p, notes="pg_current_wal_lsn() = GetXLogWriteRecPtr()，src/backend/access/transam/xlogfuncs.c:279,289；未经Neon改动的原生Postgres函数(diff REL_16_1 vs REL_16_STABLE_neon的xlogfuncs.c为空)。返回LogwrtResult.Write（xlog.c:9230-9238），写到OS但未必fsync，注释xlogfuncs.c:271-276明确'written out to the kernel, but is not necessarily synced to disk'。对比：pg_current_wal_insert_lsn()→GetXLogInsertRecPtr()(xlog.c:9214-9225)最大；pg_current_wal_flush_lsn()→GetFlushRecPtr()(xlog.c:6280-6294)。walproposer只消费GetFlushRecPtr作为本地信号(walproposer_pg.c:923-930 walprop_pg_get_flush_rec_ptr,walproposer.c:296-301轮询检测新WAL广播,availableLsn在WalProposerBroadcast处bump走proposer.c:242-248)，从不修改这些getter。docs/glossary.md:107-128完整LSN链路定义；docs/safekeeper-protocol.md:8-9,36 flushLSN/commitLSN定义；pageserver/src/tenant/timeline.rs:267,1720-1721 last_record_lsn，:282,5320 disk_consistent_lsn。全链路不等式：Insert≥Write(pg_current_wal_lsn)≥Flush(pg_current_wal_flush_lsn)≥availableLsn≥flushLSN≥commitLSN≥last_record_lsn≥disk_consistent_lsn≥remote_consistent_lsn。")
@@ -1917,22 +2116,22 @@ p += 1
 std("s-walredo-sec", "PAGESERVER", "沙箱边界细节：seccomp 白名单、加固与逃逸风险", [
     *card("wrs1", 96, 172, 528, 244,
           "① syscall 白名单（walredoproc.c:174-206）", [
-              "<span style='font-family:" + MONO + "'>exit_group / read / write / select / pselect6</span>　硬需求",
-              "<span style='font-family:" + MONO + "'>brk</span>　内存分配（glibc 只走 brk）",
-              "<span style='font-family:" + MONO + "'>mmap / munmap</span>　仅 musl 下放开（无 mallopt）",
-              "<span style='font-family:" + MONO + "'>getpid</span>（assert 失败路径）<span style='font-family:" + MONO + "'>futex</span>（errbacktrace）",
+              "<span style=\"font-family:" + MONO + "\">exit_group / read / write / select / pselect6</span>　硬需求",
+              "<span style=\"font-family:" + MONO + "\">brk</span>　内存分配（glibc 只走 brk）",
+              "<span style=\"font-family:" + MONO + "\">mmap / munmap</span>　仅 musl 下放开（无 mallopt）",
+              "<span style=\"font-family:" + MONO + "\">getpid</span>（assert 失败路径）<span style=\"font-family:" + MONO + "\">futex</span>（errbacktrace）",
               "",
               "<b>就这些。</b>没有 open/openat、没有任何 socket 调用、",
               "没有 fork/execve/clone、没有 ptrace",
               "默认动作 <b>SCMP_ACT_TRAP</b> → SIGSYS → 打印",
-              "<span style='font-family:" + MONO + "'>seccomp: bad syscall &lt;n&gt;</span> 后 <span style='font-family:" + MONO + "'>_exit(1)</span>",
+              "<span style=\"font-family:" + MONO + "\">seccomp: bad syscall &lt;n&gt;</span> 后 <span style=\"font-family:" + MONO + "\">_exit(1)</span>",
           ], hc=AC2, fs=13, headfs=15),
     *card("wrs2", 656, 172, 528, 244,
           "② 进沙箱前的额外加固", [
-              "<span style='font-family:" + MONO + "'>close_range(3, ~0U, 0)</span>　关掉 PS 泄漏的所有 FD",
-              "<span style='font-family:" + MONO + "'>mallopt(M_MMAP_MAX, 0)</span>　逼 malloc 只用 brk，",
+              "<span style=\"font-family:" + MONO + "\">close_range(3, ~0U, 0)</span>　关掉 PS 泄漏的所有 FD",
+              "<span style=\"font-family:" + MONO + "\">mallopt(M_MMAP_MAX, 0)</span>　逼 malloc 只用 brk，",
               "&nbsp;&nbsp;这样 <b>连 mmap 都不必放开</b>",
-              "Rust 侧 <span style='font-family:" + MONO + "'>.env_clear()</span>，只留 LD_LIBRARY_PATH / *SAN",
+              "Rust 侧 <span style=\"font-family:" + MONO + "\">.env_clear()</span>，只留 LD_LIBRARY_PATH / *SAN",
               "",
               "<b>自检式加载</b>（seccomp.c:111-171）：先验证 openat 可用",
               "→ 装只 trap openat 的测试 filter → 确认真被 trap",
@@ -1947,8 +2146,8 @@ std("s-walredo-sec", "PAGESERVER", "沙箱边界细节：seccomp 白名单、加
               "&nbsp;&nbsp;read/write 上依然可以乱来",
               "stderr <b>无长度上限</b>：process.rs:133 明写「不信任子进程",
               "&nbsp;&nbsp;限制 stderr 长度，目前可无界 Vec 分配」→ 可打爆 PS 内存",
-              "用 TRAP 而非 <span style='font-family:" + MONO + "'>SCMP_ACT_KILL_PROCESS</span>，是 open question",
-              "<span style='font-family:" + MONO + "'>--disable-seccomp</span> 可把沙箱整体关掉",
+              "用 TRAP 而非 <span style=\"font-family:" + MONO + "\">SCMP_ACT_KILL_PROCESS</span>，是 open question",
+              "<span style=\"font-family:" + MONO + "\">--disable-seccomp</span> 可把沙箱整体关掉",
           ], hc="#FFD54A", fs=12.5, headfs=15),
     *card("wrs4", 656, 430, 528, 214,
           "④ 租户隔离边界到哪为止", [
@@ -1957,8 +2156,8 @@ std("s-walredo-sec", "PAGESERVER", "沙箱边界细节：seccomp 白名单、加
               "<b>信任模型</b>（process.rs:90-97）：首个 redo 请求<b>之前</b>可信，",
               "&nbsp;&nbsp;之后不可信 —— 前提是它已关 FD 且已自沙箱",
               "被劫持的进程<b>能看到的只有本 tenant 的数据</b>",
-              "<span style='font-family:" + MONO + "'>redo_block_filter</span>：WAL 记录碰到非目标页 → warn + 忽略",
-              "<span style='font-family:" + MONO + "'>NoLeakChild</span>：drop 即 SIGKILL + wait；detach 用 gate 兜底",
+              "<span style=\"font-family:" + MONO + "\">redo_block_filter</span>：WAL 记录碰到非目标页 → warn + 忽略",
+              "<span style=\"font-family:" + MONO + "\">NoLeakChild</span>：drop 即 SIGKILL + wait；detach 用 gate 兜底",
               "<b>注</b>：仓库内无公开的越权事故记录，以上是设计防线",
           ], hc=AC, fs=12.5, headfs=15),
 ], p, notes="沙箱细节全部对齐源码：白名单在 pgxn/neon_walredo/walredoproc.c:174-206（allowed_syscalls[]），默认动作 SCMP_ACT_TRAP 在 seccomp.c:167，deny handler seccomp.c:240-262 打印 seccomp: bad syscall 并 _exit(1)。#if 0 里的 shmctl/shmdt/unlink 是「优雅 shutdown 才需要」的调用，Neon 选择不放开、改用 _exit(0) 直接退（walredoproc.c:410-419）。enter_seccomp_mode 在 walredoproc.c:208-227：先 close_range(3,~0U,0) 因为 pageserver 可能漏 FD，再 mallopt(M_MMAP_MAX,0) 让 glibc malloc 只用 brk（MALLOC_NO_MMAP 定义在 62-65）。seccomp_load_rules 有自检：装 SIGSYS handler → 确认 openat 正常 → 装只 trap openat 的测试 filter → 确认 trap 触发 → 才装真 handler 和全量 filter。Rust 侧 WalRedoProcess::launch 在 process.rs:58-99：argv 是 postgres --wal-redo --tenant-shard-id，三管道，env_clear 只留 LD_LIBRARY_PATH/DYLD_LIBRARY_PATH/ASAN/UBSAN。风险面：没有 namespace/chroot，seccomp.c:67-73 把它列为未实现想法；stderr 无界是已知 TODO（process.rs:133）；--disable-seccomp 可关（walredoproc.c:346-350）。完整威胁模型见 docs/pageserver-walredo.md:13-45，设计取舍见 docs/core_changes.md:238-254。")
@@ -1975,13 +2174,13 @@ std("s-bp", "全链路", "背压：三层限速把写入速度钉在存储能力
     T("bp1-h", 116, 250, 310, 22, "用户 backend 自己睡", fs=15, fw=800, color=AC),
     T("bp1-b", 116, 278, 310, 170,
       "lag = 本地 flushLsn − PS 反馈 LSN − 阈值<br>"
-      "<span style='font-family:" + MONO + "'>write_lag</span> ← last_received_lsn　<b>500 MB</b><br>"
-      "<span style='font-family:" + MONO + "'>flush_lag</span> ← disk_consistent_lsn　<b>10 GB</b><br>"
-      "<span style='font-family:" + MONO + "'>apply_lag</span> ← remote_consistent_lsn　<b>0=关</b><br>"
+      "<span style=\"font-family:" + MONO + "\">write_lag</span> ← last_received_lsn　<b>500 MB</b><br>"
+      "<span style=\"font-family:" + MONO + "\">flush_lag</span> ← disk_consistent_lsn　<b>10 GB</b><br>"
+      "<span style=\"font-family:" + MONO + "\">apply_lag</span> ← remote_consistent_lsn　<b>0=关</b><br>"
       "&nbsp;&nbsp;开启 = <b>写</b>不许超前 S3 持久化太多<br>"
       "&nbsp;&nbsp;（钳崩溃丢失窗口，强容灾；<b>不卡读</b>）<br>"
       "挂在 <b>ProcessInterrupts</b> 回调上：lag&gt;0 就<br>"
-      "<span style='font-family:" + MONO + "'>pg_usleep(10ms)</span> 并返回 true → 反复重入<br>"
+      "<span style=\"font-family:" + MONO + "\">pg_usleep(10ms)</span> 并返回 true → 反复重入<br>"
       "只卡写事务；只读事务和 walsender 豁免<br>"
       "多 shard 取<b>最慢 shard</b> 的 LSN",
       fs=11.5, color=DIM, lh=1.6),
@@ -1990,10 +2189,10 @@ std("s-bp", "全链路", "背压：三层限速把写入速度钉在存储能力
     T("bp2-n", 485, 228, 120, 18, "② PS 摄入侧", fs=11, fw=800, color=AC2, ff=MONO),
     T("bp2-h", 485, 250, 310, 22, "L0 堆积 → 减速/停摆", fs=15, fw=800, color=AC2),
     T("bp2-b", 485, 278, 310, 170,
-      "<span style='font-family:" + MONO + "'>l0_flush_delay_threshold</span><br>"
+      "<span style=\"font-family:" + MONO + "\">l0_flush_delay_threshold</span><br>"
       "&nbsp;&nbsp;默认 3×compaction_threshold = <b>30 层</b><br>"
       "&nbsp;&nbsp;→ flush 后再睡「一次 flush 耗时」＝<b>2× 慢</b><br>"
-      "<span style='font-family:" + MONO + "'>l0_flush_stall_threshold</span>　<b>默认关闭</b><br>"
+      "<span style=\"font-family:" + MONO + "\">l0_flush_stall_threshold</span>　<b>默认关闭</b><br>"
       "&nbsp;&nbsp;→ 触发则完全阻塞到降回阈值下<br>"
       "&nbsp;&nbsp;compaction 已失败时自动豁免（防死锁）<br><br>"
       "传导到摄入：ephemeral layer <b>roll 时</b>等 flush<br>"
@@ -2005,7 +2204,7 @@ std("s-bp", "全链路", "背压：三层限速把写入速度钉在存储能力
     T("bp3-h", 854, 250, 310, 22, "等 LSN 追平 / 请求限流", fs=15, fw=800, color="#7CB3F4"),
     T("bp3-b", 854, 278, 310, 170,
       "<b>wait_lsn</b>：GetPage 要的 LSN 还没摄入 →<br>"
-      "&nbsp;&nbsp;阻塞等，超时 <span style='font-family:" + MONO + "'>wait_lsn_timeout</span> <b>300 s</b><br>"
+      "&nbsp;&nbsp;阻塞等，超时 <span style=\"font-family:" + MONO + "\">wait_lsn_timeout</span> <b>300 s</b><br>"
       "&nbsp;&nbsp;（pageserver/src/config.rs 另有 60 s 用于本地）<br><br>"
       "<b>l0_flush 全局并发</b>：Semaphore = <b>num_cpus</b><br>"
       "&nbsp;&nbsp;是并发数上限，不是字节预算<br><br>"
@@ -2018,12 +2217,12 @@ std("s-bp", "全链路", "背压：三层限速把写入速度钉在存储能力
     T("bp4-b", 116, 508, 1048, 145,
       "• <b>没有超时上限</b>：PS 挂掉/追不上时反馈 LSN 停止推进，写事务被 10 ms 一轮地无限期节流 —— 这是有意的取舍，"
       "用写可用性换 lag 有界<br>"
-      "• <b>可观测</b>：<span style='font-family:" + MONO + "'>neon.backpressure_throttling_time()</span> 累计节流微秒数、"
-      "<span style='font-family:" + MONO + "'>neon.backpressure_lsns()</span> 看三个反馈 LSN<br>"
+      "• <b>可观测</b>：<span style=\"font-family:" + MONO + "\">neon.backpressure_throttling_time()</span> 累计节流微秒数、"
+      "<span style=\"font-family:" + MONO + "\">neon.backpressure_lsns()</span> 看三个反馈 LSN<br>"
       "&nbsp;&nbsp;Prometheus 指标 compute_backpressure_throttling_seconds_total 由前者换算<br>"
       "• <b>配置陷阱</b>：flush_lag 设得比 PS checkpoint 间隔还小会硬死锁（manifest 里有明确警告）<br>"
       "• 本地开发 control_plane 把 write_lag 压到 15 MB，便于复现节流；生产用 manifest 的 500 MB / 10 GB<br>"
-      "• 旧的 <span style='font-family:" + MONO + "'>l0_flush_wait_upload</span>（flush 等上传）<b>已移除</b>，被 L0 compaction 背压取代",
+      "• 旧的 <span style=\"font-family:" + MONO + "\">l0_flush_wait_upload</span>（flush 等上传）<b>已移除</b>，被 L0 compaction 背压取代",
       fs=11.5, color=DIM, lh=1.6),
 ], p, notes="背压分三层。①Compute侧：三个 max_replication_*_lag GUC，单位MB，write=500MB(对last_received_lsn) flush=10GB(对disk_consistent_lsn) apply=0关闭(对remote_consistent_lsn)。关于 apply_lag 语义：判断条件是 myFlushLsn > applyPtr + max_replication_apply_lag*MB 即本地已flush的LSN超前 remote_consistent_lsn(=已持久化到S3的最新LSN) 超过阈值才节流（walproposer_pg.c:546-548），不是等追平；=0 时该检查直接跳过(关闭)。开启的语义是限制写入速度不超前S3持久化进度太多，从而钳制 compute 崩溃/灾难恢复时的丢失窗口（强容灾），普通业务不需要。注意 apply_lag 只钳制写事务速度，不影响读：Primary 读走 neon_get_request_lsns 的 UINT64_MAX 路径仍能读到刚写入未持久化的数据。applyPtr=min_ps_feedback.remote_consistent_lsn(walproposer_pg.c:791)。实现是挂在 ProcessInterrupts 回调 backpressure_throttling_impl 上(walproposer_pg.c:625)，用户 backend 自己 pg_usleep(10ms/BACK_PRESSURE_DELAY) 后返回 true 导致反复重入，只卡写事务(am_walsender 和无事务ID即只读事务豁免，但 CREATE INDEX CONCURRENTLY 因 PROC_IN_SAFE_IC 仍节流)，多shard取最慢的。②PS摄入侧：l0_flush_delay_threshold 默认3倍compaction_threshold=30层，触发后延迟一次flush耗时即2倍慢；l0_flush_stall_threshold 默认关闭，触发则完全阻塞，compaction失败时豁免防死锁。传导路径是 ephemeral layer roll 时等 flush 完成从而卡住 ingest。③读路径：wait_lsn 等LSN追平默认超时300s；l0_flush 全局 Semaphore=num_cpus 限并发；timeline_get_throttle leaky bucket 默认禁用。运维要点：无超时上限，PS挂了写会无限期节流；用 neon.backpressure_throttling_time() 观测；flush_lag 小于 checkpoint 间隔会硬死锁。")
 
@@ -2037,7 +2236,8 @@ std("s-compact", "PAGESERVER", "Compaction & GC 关键参数", [
     R("cpt-bg", 96, 220, 528, 380, fill=PANEL, stroke=EDGE, radius=12),
     T("cpt-h", 116, 236, 496, 26, "Compaction", fs=17, fw=800, color=AC),
     *[T(f"cpt-l{i}", 116, 274 + i * 40, 496, 26,
-        f"<span style='color:#00E599;font-family:{MONO};font-weight:700'>{k}</span>&nbsp;&nbsp;{v}",
+        f'<span style="color:#00E599;font-family:{MONO};font-weight:700">{k}</span>&nbsp;&nbsp;{v}',
+
         fs=14, color=DIM, lh=1.3)
       for i, (k, v) in enumerate([
           ("checkpoint_distance", "= <b>256 MB</b>（open layer 大小）"),
@@ -2052,7 +2252,8 @@ std("s-compact", "PAGESERVER", "Compaction & GC 关键参数", [
     R("gc-bg", 656, 220, 528, 380, fill=PANEL, stroke=EDGE, radius=12),
     T("gc-h", 676, 236, 496, 26, "GC & 保留策略", fs=17, fw=800, color=AC2),
     *[T(f"gc-l{i}", 676, 274 + i * 40, 496, 26,
-        f"<span style='color:#FF9E8A;font-family:{MONO};font-weight:700'>{k}</span>&nbsp;&nbsp;{v}",
+        f'<span style="color:#FF9E8A;font-family:{MONO};font-weight:700">{k}</span>&nbsp;&nbsp;{v}',
+
         fs=14, color=DIM, lh=1.3)
       for i, (k, v) in enumerate([
           ("gc_period", "= <b>1 h</b>"),
@@ -2071,16 +2272,16 @@ p += 1
 std("s-gc", "PAGESERVER", "Timeline / 分支 GC：谁能被回收", [
     T("gcx-desc", 96, 170, 1088, 44,
       "GC 删的是<b>整个历史 layer 文件</b>，不做文件内部裁剪。"
-      "<span style='font-family:" + MONO + "'>tasks.rs gc_loop → gc_iteration → Timeline::gc_timeline</span>",
+      "<span style=\"font-family:" + MONO + "\">tasks.rs gc_loop → gc_iteration → Timeline::gc_timeline</span>",
       fs=14, color=DIM, lh=1.5),
     R("gcx1-bg", 96, 222, 530, 262, fill=PANEL, stroke=EDGE, radius=12),
     T("gcx1-h", 116, 238, 490, 24, "两条 cutoff 取更保守的那条", fs=16, fw=800, color=AC),
     T("gcx1-b", 116, 272, 490, 202,
-      "<span style='font-family:" + MONO + "'>space</span> ← <b>gc_horizon</b>（默认 64 MiB WAL）<br>"
+      "<span style=\"font-family:" + MONO + "\">space</span> ← <b>gc_horizon</b>（默认 64 MiB WAL）<br>"
       "&nbsp;&nbsp;= last_record_lsn − horizon<br>"
-      "<span style='font-family:" + MONO + "'>time</span> ← <b>pitr_interval</b>（默认 7 天）<br>"
+      "<span style=\"font-family:" + MONO + "\">time</span> ← <b>pitr_interval</b>（默认 7 天）<br>"
       "&nbsp;&nbsp;时间戳反查 LSN<br><br>"
-      "<span style='font-family:" + MONO + "'>GcCutoffs::select_min() = min(space, time)</span><br>"
+      "<span style=\"font-family:" + MONO + "\">GcCutoffs::select_min() = min(space, time)</span><br>"
       "→ PITR 还没算出来时<b>什么都不能删</b><br><br>"
       "<b>gc_period</b> 默认 1 h；设为 0 或 gc_horizon=0 则关闭<br>"
       "以上均可 per-tenant override",
@@ -2088,9 +2289,9 @@ std("s-gc", "PAGESERVER", "Timeline / 分支 GC：谁能被回收", [
     R("gcx2-bg", 656, 222, 530, 262, fill=PANEL, stroke=EDGE, radius=12),
     T("gcx2-h", 676, 238, 490, 24, "子分支如何钉住祖先数据", fs=16, fw=800, color=AC2),
     T("gcx2-b", 676, 272, 490, 202,
-      "祖先 timeline 的 <span style='font-family:" + MONO + "'>GcInfo.retain_lsns</span> 记录所有<br>"
-      "子分支的分叉点：<span style='font-family:" + MONO + "'>Vec&lt;(Lsn, TimelineId, ..)&gt;</span><br>"
-      "• 子 Timeline 构造时 <span style='font-family:" + MONO + "'>insert_child()</span> 登记<br>"
+      "祖先 timeline 的 <span style=\"font-family:" + MONO + "\">GcInfo.retain_lsns</span> 记录所有<br>"
+      "子分支的分叉点：<span style=\"font-family:" + MONO + "\">Vec&lt;(Lsn, TimelineId, ..)&gt;</span><br>"
+      "• 子 Timeline 构造时 <span style=\"font-family:" + MONO + "\">insert_child()</span> 登记<br>"
       "• 析构时 remove_child 摘除<br>"
       "• GC 取 <b>max_retain_lsn</b>，凡 layer 起始 LSN ≤ 它<br>"
       "&nbsp;&nbsp;一律保留（计入 layers_needed_by_branches）<br><br>"
@@ -2121,10 +2322,10 @@ std("s-shard", "PAGESERVER", "Sharding & Generation Number", [
     T("sh1-h", 116, 268, 496, 26, "Key 维度 sharding（RFC 031/032）", fs=17, fw=800, color=AC),
     T("sh1-b", 116, 298, 496, 285,
       "<b>Key</b>（不含 TimelineId / segno，timeline 是独立维度）<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>Key = (spcNode, dbNode, relNode, forkNum, blkNum)</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">Key = (spcNode, dbNode, relNode, forkNum, blkNum)</span><br>"
       "<b>分片函数</b>（Rust 与 pgxn/neon C 两侧必须逐位一致）<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>h = hash_combine(mm32(relNode), mm32(blkNum/stripe_size))</span><br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>shard = h % shard_count</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">h = hash_combine(mm32(relNode), mm32(blkNum/stripe_size))</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">shard = h % shard_count</span><br>"
       "&nbsp;&nbsp;→ 是<b>哈希</b>不是除法取模；spcNode/dbNode/forkNum 不参与<br>"
       "非 rel-block key + initfork <b>固定落 shard 0</b>（basebackup 自足）<br>"
       "<b>stripe_size</b>（页数，8 KiB/页）：上游默认 2048 = 16 MiB；<br>"
@@ -2140,7 +2341,7 @@ std("s-shard", "PAGESERVER", "Sharding & Generation Number", [
       "• Tenant 每次 attach 到某 PS，由 Storage Controller<br>"
       "&nbsp;&nbsp;分配<b>单调递增的 generation 号</b><br>"
       "• S3 对象名前缀带 generation：<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>tenants/&lt;id&gt;/&lt;gen&gt;/timelines/…</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">tenants/&lt;id&gt;/&lt;gen&gt;/timelines/…</span><br>"
       "• 旧代次上传永远不会覆盖新代次<br>"
       "• PS 通过 /re-attach、/validate 上调 SC 校验<br><br>"
       "<b>效果</b>：无需 fencing/STONITH，即可安全支持迁移、",
@@ -2155,7 +2356,7 @@ p += 1
 std("s-secondary", "PAGESERVER", "Secondary Location：热备用的只读缓存", [
     T("secx-desc", 96, 170, 1088, 44,
       "Secondary <b>不服务读写、不摄入 WAL</b>，只靠 heatmap 驱动下载，维持一份温缓存。"
-      "<span style='font-family:" + MONO + "'>pageserver/src/tenant/secondary.rs</span>",
+      "<span style=\"font-family:" + MONO + "\">pageserver/src/tenant/secondary.rs</span>",
       fs=14, color=DIM, lh=1.5),
     R("sec1-bg", 96, 222, 530, 252, fill=PANEL, stroke=EDGE, radius=12),
     T("sec1-h", 116, 238, 490, 24, "Heatmap：告诉 Secondary 下载什么", fs=16, fw=800, color=AC),
@@ -2163,7 +2364,7 @@ std("s-secondary", "PAGESERVER", "Secondary Location：热备用的只读缓存"
       "Attached 侧周期性上传 heatmap（JSON）：<br>"
       "&nbsp;&nbsp;HeatMapTenant{ generation, timelines[..] }<br>"
       "&nbsp;&nbsp;每层带 access_time + <b>cold</b> 标记<br>"
-      "Secondary 只拉 <span style='font-family:" + MONO + "'>hot_layers()</span>，跳过 cold 层<br><br>"
+      "Secondary 只拉 <span style=\"font-family:" + MONO + "\">hot_layers()</span>，跳过 cold 层<br><br>"
       "上传/下载周期：<br>"
       "&nbsp;&nbsp;heatmap_period 默认 <b>60s</b>（有 secondary 才设）<br>"
       "&nbsp;&nbsp;下载默认间隔同样 60s，按 5% jitter 打散",
@@ -2187,6 +2388,8 @@ std("s-secondary", "PAGESERVER", "Secondary Location：热备用的只读缓存"
       fs=12, color=DIM, lh=1.6),
 ], p, notes="Secondary 不服务客户端、不摄入 WAL，只维持温缓存。Attached 侧上传 heatmap(默认60s周期)标记每层access_time和cold位，Secondary只拉hot_layers跳过cold层。SC按PlacementPolicy::Attached(n)调度1主n从，node_secondary字段来自调度intent。迁移前Reconciler会调用tenant_secondary_download预热目的地，之后可以直接读本地盘避免冷启动S3回源；drain时还会比对secondary_lag。目录结构与attached完全相同，晋升不搬文件。")
 
+
+
 # ─────── Slide 18: Broker & Controller ───────
 
 p += 1
@@ -2200,15 +2403,15 @@ std("s-splitbrain", "协调层", "如何防止 Compute / Pageserver 脑裂", [
     T("sb1-h", 116, 250, 500, 22, "term：Paxos-like 单调轮次号", fs=15, fw=800, color=AC),
     T("sb1-b", 116, 278, 500, 230,
       "<b>场景</b>：老 compute 被认为挂了 → 拉起新 compute，但老 compute 又活过来<br><br>"
-      "<b>机制</b>：SK 侧持久化 <span style='font-family:" + MONO + "'>acceptor_state.term</span><br>"
+      "<b>机制</b>：SK 侧持久化 <span style=\"font-family:" + MONO + "\">acceptor_state.term</span><br>"
       "&nbsp;&nbsp;walproposer 启动先发 VoteRequest → 多数派 SK ACK 后<br>"
-      "&nbsp;&nbsp;term 单调递增（<span style='font-family:" + MONO + "'>safekeeper.rs:1078</span> 持久化到磁盘）<br><br>"
+      "&nbsp;&nbsp;term 单调递增（<span style=\"font-family:" + MONO + "\">safekeeper.rs:1078</span> 持久化到磁盘）<br><br>"
       "<b>老 compute 的下场</b><br>"
-      "&nbsp;&nbsp;发 AppendRequest 携带旧 term → SK 见 <span style='font-family:" + MONO + "'>term &gt; msg.term</span><br>"
-      "&nbsp;&nbsp;→ 回 <b>term-only</b> 响应（<span style='font-family:" + MONO + "'>safekeeper.rs:1316</span>）<br>"
+      "&nbsp;&nbsp;发 AppendRequest 携带旧 term → SK 见 <span style=\"font-family:" + MONO + "\">term &gt; msg.term</span><br>"
+      "&nbsp;&nbsp;→ 回 <b>term-only</b> 响应（<span style=\"font-family:" + MONO + "\">safekeeper.rs:1316</span>）<br>"
       "&nbsp;&nbsp;→ walproposer 感知后<b>整个重新选举，不能续写</b><br><br>"
       "任一 SK term 提升即触发全局 term 升级；<br>"
-      "generation 不匹配也会 <span style='font-family:" + MONO + "'>bail!</span> 直接拒绝（storcon 变更配置）",
+      "generation 不匹配也会 <span style=\"font-family:" + MONO + "\">bail!</span> 直接拒绝（storcon 变更配置）",
       fs=11.5, color=DIM, lh=1.7),
     # Right panel: Pageserver (generation number)
     R("sb2-bg", 656, 216, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
@@ -2217,13 +2420,13 @@ std("s-splitbrain", "协调层", "如何防止 Compute / Pageserver 脑裂", [
     T("sb2-b", 676, 278, 500, 230,
       "<b>场景</b>：PS 无响应 → 迁移 tenant 到 PS-B；但 PS-A 又活过来写 S3<br><br>"
       "<b>机制</b>：Storage Controller 是 generation 的<b>唯一颁发者</b><br>"
-      "&nbsp;&nbsp;每次 attach / 重启 <span style='font-family:" + MONO + "'>/re-attach</span> → generation +1<br>"
+      "&nbsp;&nbsp;每次 attach / 重启 <span style=\"font-family:" + MONO + "\">/re-attach</span> → generation +1<br>"
       "&nbsp;&nbsp;所有 layer / index S3 key 带 <b>hex 后缀</b>（8 字节 u32）<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>xxx.__.gen-000000A3</span><br><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">xxx.__.gen-000000A3</span><br><br>"
       "<b>老 PS 的下场</b><br>"
       "&nbsp;&nbsp;仍能上传，但 key 里带旧 generation → <b>永不冲突</b><br>"
       "&nbsp;&nbsp;index_part.json 版本号最高者胜（新 PS 加载最新）<br>"
-      "&nbsp;&nbsp;<b>DELETE 前必须先 <span style='font-family:" + MONO + "'>/upcall/v1/validate</span></b><br>"
+      "&nbsp;&nbsp;<b>DELETE 前必须先 <span style=\"font-family:" + MONO + "\">/upcall/v1/validate</span></b><br>"
       "&nbsp;&nbsp;storcon 核验 generation 仍最新才允许物理删除<br><br>"
       "→ 老 PS 覆盖不了、删不掉，最坏留些垃圾 S3 对象，靠 tombstone/GC 清",
       fs=11.5, color=DIM, lh=1.7),
@@ -2315,7 +2518,7 @@ std("s-synsize", "BRANCHING", "Synthetic Size：与物理布局解耦的计费",
 p += 1
 std("s-schema-diff", "BRANCHING", "分支 Schema Diff：Butterfly 的实现（Neon 上游未实现）", [
     T("sd-desc", 96, 168, 1088, 40,
-      "Neon 上游<b>没有</b> schema/branch diff 功能，只提供 <span style='font-family:" + MONO + "'>pg_dump --schema-only</span> 原语；"
+      "Neon 上游<b>没有</b> schema/branch diff 功能，只提供 <span style=\"font-family:" + MONO + "\">pg_dump --schema-only</span> 原语；"
       "Butterfly 在其之上封装了「与父分支对比」的能力。",
       fs=14, color=DIM, lh=1.5),
     # left: Neon primitive
@@ -2324,14 +2527,14 @@ std("s-schema-diff", "BRANCHING", "分支 Schema Diff：Butterfly 的实现（Ne
     T("sd1-h", 116, 250, 500, 22, "只提供 pg_dump 原语，没有 diff", fs=15, fw=800, color=AC),
     T("sd1-b", 116, 278, 500, 230,
       "<b>可用的构件</b>：每台 compute 都暴露<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>GET /database_schema?database=&lt;db&gt;</span><br>"
-      "&nbsp;&nbsp;→ compute_ctl 内部 shell 出 <span style='font-family:" + MONO + "'>pg_dump --schema-only</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">GET /database_schema?database=&lt;db&gt;</span><br>"
+      "&nbsp;&nbsp;→ compute_ctl 内部 shell 出 <span style=\"font-family:" + MONO + "\">pg_dump --schema-only</span><br>"
       "&nbsp;&nbsp;→ 把 DDL 文本流式返回<br><br>"
       "<b>代码位置</b><br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>compute_tools/src/catalog.rs:57</span> get_database_schema<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>http/routes/database_schema.rs:25</span> HTTP handler<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>compute_tools/src/http/openapi_spec.yaml:176</span><br><br>"
-      "<b>关于 diff 的历史提及</b>：仅 <span style='font-family:" + MONO + "'>docs/rfcs/003-laptop-cli.md:232</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">compute_tools/src/catalog.rs:57</span> get_database_schema<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">http/routes/database_schema.rs:25</span> HTTP handler<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">compute_tools/src/http/openapi_spec.yaml:176</span><br><br>"
+      "<b>关于 diff 的历史提及</b>：仅 <span style=\"font-family:" + MONO + "\">docs/rfcs/003-laptop-cli.md:232</span><br>"
       "&nbsp;&nbsp;2022 年 CLI 设计草案里一句 <b>neon snapshot diff</b><br>"
       "&nbsp;&nbsp;针对本地 snapshot，非分支，<b>从未落地</b>",
       fs=11.5, color=DIM, lh=1.7),
@@ -2340,17 +2543,17 @@ std("s-schema-diff", "BRANCHING", "分支 Schema Diff：Butterfly 的实现（Ne
     T("sd2-n", 676, 228, 200, 18, "BUTTERFLY", fs=11, fw=800, color=AC2, ff=MONO),
     T("sd2-h", 676, 250, 490, 22, "分支 ↔ 父分支对比（scope 受限）", fs=15, fw=800, color=AC2),
     T("sd2-b", 676, 278, 490, 230,
-      "<b>API</b>　<span style='font-family:" + MONO + "'>GET /api/v2/branches/:id/schema-diff</span><br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>?database=&lt;db&gt;</span>　只接 database，<b>无第二 branch 参数</b><br>"
+      "<b>API</b>　<span style=\"font-family:" + MONO + "\">GET /api/v2/branches/:id/schema-diff</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">?database=&lt;db&gt;</span>　只接 database，<b>无第二 branch 参数</b><br>"
       "&nbsp;&nbsp;仅比对<b>直接父分支</b>；root 分支返回 BadParam<br><br>"
-      "<b>核心流程</b>　<span style='font-family:" + MONO + "'>lib_branch_schema.py</span><br>"
+      "<b>核心流程</b>　<span style=\"font-family:" + MONO + "\">lib_branch_schema.py</span><br>"
       "&nbsp;&nbsp;① find_active_pod × 2（父/子各自定位）<br>"
       "&nbsp;&nbsp;② ThreadPoolExecutor <b>并发</b> fetch_schema<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;→ 各调各 pod 的 <span style='font-family:" + MONO + "'>/database_schema</span><br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;→ 各调各 pod 的 <span style=\"font-family:" + MONO + "\">/database_schema</span><br>"
       "&nbsp;&nbsp;③ clean_schema 剔除 pg_dump timestamp/version 头<br>"
-      "&nbsp;&nbsp;④ Python <span style='font-family:" + MONO + "'>difflib.unified_diff</span> 出报告<br><br>"
-      "<b>返回</b>　unified-diff 文本 + <span style='font-family:" + MONO + "'>lines_added</span> /<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>lines_removed</span> / <span style='font-family:" + MONO + "'>has_changes</span>",
+      "&nbsp;&nbsp;④ Python <span style=\"font-family:" + MONO + "\">difflib.unified_diff</span> 出报告<br><br>"
+      "<b>返回</b>　unified-diff 文本 + <span style=\"font-family:" + MONO + "\">lines_added</span> /<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">lines_removed</span> / <span style=\"font-family:" + MONO + "\">has_changes</span>",
       fs=11.5, color=DIM, lh=1.7),
     # bottom band
     R("sd3-bg", 96, 530, 1088, 132, fill="rgba(255,158,138,0.06)", stroke="rgba(255,158,138,0.3)", radius=10),
@@ -2359,7 +2562,7 @@ std("s-schema-diff", "BRANCHING", "分支 Schema Diff：Butterfly 的实现（Ne
       "• <b>父子对齐 CoW 语义</b>：子分支继承父分支所有 layer，diff = 「从 ancestor_lsn 之后子分支上做了哪些 DDL」，与 branching 模型天然对齐<br>"
       "• <b>任意分支对比</b>需要显式路径找 LCA、可能跨 project／跨 shard，控制面复杂度高；先满足 90% 场景（review 一次变更）<br>"
       "• Neon 上游只关心「让 compute 能被 dump」；<b>UI/diff 是控制面职责</b>，故只提供原语不做上层功能 ── 与 Butterfly 分工合理<br>"
-      "• 前端：<span style='font-family:" + MONO + "'>branch-schema-diff.json</span> 直接调该 API；几乎每个分支页面都挂 「Schema Diff」 tab",
+      "• 前端：<span style=\"font-family:" + MONO + "\">branch-schema-diff.json</span> 直接调该 API；几乎每个分支页面都挂 「Schema Diff」 tab",
       fs=12, color=DIM, lh=1.7),
 ], p, notes="分支 Schema Diff：Neon 上游没有实现（grep .rs/.py/.md/.go 关于 schema_diff/branch diff 全无命中，只在 docs/rfcs/003-laptop-cli.md:232 有 2022 年一句 CLI 草案 neon snapshot diff 从未实现）。Neon 只提供构件：GET /database_schema?database=<db> 每个 compute 上暴露，compute_ctl 内部 shell 出 pg_dump --schema-only 流式返回 DDL，代码 compute_tools/src/catalog.rs:57 get_database_schema、http/routes/database_schema.rs:25、openapi_spec.yaml:176。Butterfly 在其上封装 GET /api/v2/branches/:branch_id/schema-diff?database=<db>，代码 handlers/branch/api_branch_schema_diff.py:32、lib_branch_schema.py。scope 只支持与直接父分支对比（api_branch_schema_diff.py:53 取 branch_b_obj.parent_branch_id；无父返回 BadParam）。流程：find_active_pod × 2 定位父子 pod → ThreadPoolExecutor 并发 fetch_schema 各调 compute_ctl HTTP /database_schema → clean_schema 剔除 pg_dump timestamp/version 头减 diff 噪声 → difflib.unified_diff。返回 unified-diff 文本+ lines_added/lines_removed/has_changes。前端 branch-schema-diff.json 直接调，每个分支页都挂 Schema Diff tab。文档 static/docs/schema-diff.md、api/branches.md:486。设计取舍：父子对齐 CoW 语义、任意分支对比需 LCA 复杂度高、Neon 上游只做原语上层留给控制面。")
 
@@ -2369,7 +2572,7 @@ std("s-schema-diff", "BRANCHING", "分支 Schema Diff：Butterfly 的实现（Ne
 p += 1
 std("s-wake", "PROXY", "wake_compute：从「连接请求」到「一台活着的 Postgres」", [
     T("wk-desc", 96, 166, 1088, 38,
-      "Proxy <b>每次连接前都会调一次</b> wake_compute（<span style='font-family:" + MONO + "'>connect_compute.rs:114</span>）；"
+      "Proxy <b>每次连接前都会调一次</b> wake_compute（<span style=\"font-family:" + MONO + "\">connect_compute.rs:114</span>）；"
       "连接失败且错误可重试时<b>作废缓存再叫一次</b> —— 这就是「compute 已经被销毁、缓存过期」的自愈路径。",
       fs=13.5, color=DIM, lh=1.5),
     # left: proxy side
@@ -2377,46 +2580,46 @@ std("s-wake", "PROXY", "wake_compute：从「连接请求」到「一台活着�
     T("wk1-n", 116, 224, 260, 18, "PROXY 侧（RUST）", fs=11, fw=800, color=AC, ff=MONO),
     T("wk1-h", 116, 246, 500, 22, "缓存优先 + 单飞 + 退避重试", fs=15, fw=800, color=AC),
     T("wk1-b", 116, 274, 500, 232,
-      "① 先查 <b>node_info 缓存</b>（moka）<span style='font-family:" + MONO + "'>cache/node_info.rs:8</span><br>"
-      "&nbsp;&nbsp;默认 <span style='font-family:" + MONO + "'>size=4000, idle_ttl=4m</span>（<b>空闲</b> TTL，非绝对）<br>"
-      "&nbsp;&nbsp;命中即返回，标记 <span style='font-family:" + MONO + "'>ColdStartInfo::WarmCached</span><br>"
+      "① 先查 <b>node_info 缓存</b>（moka）<span style=\"font-family:" + MONO + "\">cache/node_info.rs:8</span><br>"
+      "&nbsp;&nbsp;默认 <span style=\"font-family:" + MONO + "\">size=4000, idle_ttl=4m</span>（<b>空闲</b> TTL，非绝对）<br>"
+      "&nbsp;&nbsp;命中即返回，标记 <span style=\"font-family:" + MONO + "\">ColdStartInfo::WarmCached</span><br>"
       "&nbsp;&nbsp;<b>失败也缓存</b>，但只 30s（或按 retry_info.retry_at）<br>"
       "② miss → 取 <b>per-endpoint 许可</b>（ApiLocks）再<b>二次查缓存</b><br>"
       "&nbsp;&nbsp;防惊群 dog-piling；另有 endpoint 级限流<br>"
-      "③ 真正发 <span style='font-family:" + MONO + "'>GET /wake_compute?session_id=&amp;<br>"
+      "③ 真正发 <span style=\"font-family:" + MONO + "\">GET /wake_compute?session_id=&amp;<br>"
       "&nbsp;&nbsp;application_name=&amp;endpointish=ep-xxx</span><br>"
-      "&nbsp;&nbsp;头带 <span style='font-family:" + MONO + "'>Authorization: Bearer &lt;jwt&gt;</span> + X-Request-ID<br>"
+      "&nbsp;&nbsp;头带 <span style=\"font-family:" + MONO + "\">Authorization: Bearer &lt;jwt&gt;</span> + X-Request-ID<br>"
       "④ 可重试错误 → <b>指数退避</b>重试<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>num_retries=8, base=100ms, exp=1.6</span> ≈ 总 7s<br>"
-      "&nbsp;&nbsp;wake 成功后连 PG 另有一套：<span style='font-family:" + MONO + "'>5 次 / 200ms / ×2</span>",
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">num_retries=8, base=100ms, exp=1.6</span> ≈ 总 7s<br>"
+      "&nbsp;&nbsp;wake 成功后连 PG 另有一套：<span style=\"font-family:" + MONO + "\">5 次 / 200ms / ×2</span>",
       fs=11.5, color=DIM, lh=1.66),
     # right: butterfly side
     R("wk2-bg", 656, 212, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
     T("wk2-n", 676, 224, 260, 18, "BUTTERFLY 侧（PYTHON）", fs=11, fw=800, color=AC2, ff=MONO),
     T("wk2-h", 676, 246, 490, 22, "分布式锁 + 温池取 pod + 等就绪", fs=15, fw=800, color=AC2),
     T("wk2-b", 676, 274, 490, 232,
-      "① 解析 <span style='font-family:" + MONO + "'>endpointish</span> → endpoint_id + <b>pooled 标记</b><br>"
-      "&nbsp;&nbsp;（<span style='font-family:" + MONO + "'>-pooler</span> 后缀＝走 PgBouncer）<br>"
-      "② <b>Redis 分布式锁</b> <span style='font-family:" + MONO + "'>wake:{endpoint_id}</span>，TTL 30s<br>"
+      "① 解析 <span style=\"font-family:" + MONO + "\">endpointish</span> → endpoint_id + <b>pooled 标记</b><br>"
+      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">-pooler</span> 后缀＝走 PgBouncer）<br>"
+      "② <b>Redis 分布式锁</b> <span style=\"font-family:" + MONO + "\">wake:{endpoint_id}</span>，TTL 30s<br>"
       "③ 锁内按需<b>补齐前置状态</b>：Project storage attach、<br>"
-      "&nbsp;&nbsp;分支 unarchive；<span style='font-family:" + MONO + "'>RESTARTING/RESTORING</span> 直接回可重试 503<br>"
+      "&nbsp;&nbsp;分支 unarchive；<span style=\"font-family:" + MONO + "\">RESTARTING/RESTORING</span> 直接回可重试 503<br>"
       "④ 绑定 compute：<b>复用现有健康 pod</b>，否则从<br>"
       "&nbsp;&nbsp;<b>温 pod 池</b>分配 —— <b>热路径上不创建 k8s pod</b><br>"
       "⑤ 新分配则<b>同步等就绪</b>：每 <b>0.5s</b> 轮询 status，<br>"
       "&nbsp;&nbsp;最多 <b>8s</b> 等到 RUNNING；超时回 503 +<br>"
-      "&nbsp;&nbsp;<span style='font-family:" + MONO + "'>RETRY_POD_INIT_IN_PROGRESS, retry_delay_ms=1000</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">RETRY_POD_INIT_IN_PROGRESS, retry_delay_ms=1000</span><br>"
       "⑥ pooled 模式额外 sleep <b>1s</b> 让 PgBouncer<br>"
-      "&nbsp;&nbsp;清掉 <span style='font-family:" + MONO + "'>server_login_retry</span> 陈旧缓存",
+      "&nbsp;&nbsp;清掉 <span style=\"font-family:" + MONO + "\">server_login_retry</span> 陈旧缓存",
       fs=11.5, color=DIM, lh=1.66),
     # bottom: wire contract
     R("wk3-bg", 96, 526, 1088, 136, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
     T("wk3-h", 116, 538, 900, 20, "线上协议（两侧字段严格对齐）", fs=13, fw=800, color=AC),
     T("wk3-b", 116, 564, 1048, 92,
-      "<b>成功 200</b>　<span style='font-family:" + MONO + "'>{\"address\": \"10.244.1.23:5432\", \"server_name\": null, \"aux\": {endpoint_id, project_id, branch_id, compute_id, cold_start_info}}</span><br>"
-      "&nbsp;&nbsp;Proxy 用 <span style='font-family:" + MONO + "'>address</span> 拆 host:port；<span style='font-family:" + MONO + "'>server_name</span> 有值则 <b>SslMode::Require</b>，null 则 Disable；<span style='font-family:" + MONO + "'>aux</span> 进 metrics<br>"
-      "&nbsp;&nbsp;pooled 时 port 换成 <b>PgBouncer 端口</b>；Rust 侧结构体 <span style='font-family:" + MONO + "'>WakeCompute</span>（<span style='font-family:" + MONO + "'>control_plane/messages.rs:289</span>）<br>"
-      "<b>失败</b>　<span style='font-family:" + MONO + "'>{error, status:{code, message, details:{user_facing_message, error_info.reason, retry_info.retry_delay_ms}}}</span><br>"
-      "&nbsp;&nbsp;可重试 reason：<span style='font-family:" + MONO + "'>RUNNING_OPERATIONS / CONCURRENCY_LIMIT_REACHED / LOCK_ALREADY_TAKEN / ENDPOINT_IDLE / PROJECT_UNDER_MAINTENANCE</span>",
+      "<b>成功 200</b>　<span style=\"font-family:" + MONO + "\">{\"address\": \"10.244.1.23:5432\", \"server_name\": null, \"aux\": {endpoint_id, project_id, branch_id, compute_id, cold_start_info}}</span><br>"
+      "&nbsp;&nbsp;Proxy 用 <span style=\"font-family:" + MONO + "\">address</span> 拆 host:port；<span style=\"font-family:" + MONO + "\">server_name</span> 有值则 <b>SslMode::Require</b>，null 则 Disable；<span style=\"font-family:" + MONO + "\">aux</span> 进 metrics<br>"
+      "&nbsp;&nbsp;pooled 时 port 换成 <b>PgBouncer 端口</b>；Rust 侧结构体 <span style=\"font-family:" + MONO + "\">WakeCompute</span>（<span style=\"font-family:" + MONO + "\">control_plane/messages.rs:289</span>）<br>"
+      "<b>失败</b>　<span style=\"font-family:" + MONO + "\">{error, status:{code, message, details:{user_facing_message, error_info.reason, retry_info.retry_delay_ms}}}</span><br>"
+      "&nbsp;&nbsp;可重试 reason：<span style=\"font-family:" + MONO + "\">RUNNING_OPERATIONS / CONCURRENCY_LIMIT_REACHED / LOCK_ALREADY_TAKEN / ENDPOINT_IDLE / PROJECT_UNDER_MAINTENANCE</span>",
       fs=11.5, color=DIM, lh=1.7),
 ], p, notes="wake_compute 全链路。Proxy 侧：connect_compute.rs:114 每次连接前无条件调 wake_compute；连接失败且 err.should_retry_wake_compute() 为真且节点信息来自缓存，则 invalidate_cache 后再 wake（connect_compute.rs:135-154，retry.rs:64 大部分 IO 错误都算可重试，含义是 compute 可能已销毁缓存过期）。wake_compute 实现 cplane_proxy_v1.rs:409：先查 node_info 缓存（check_cache! 宏 416-435），moka Cache（cache/node_info.rs:8），默认 CACHE_DEFAULT_OPTIONS=size=4000,idle_ttl=4m（config.rs:119，--wake-compute-cache），命中标 ColdStartInfo::WarmCached（466）；错误也缓存但用 CplaneExpiry 默认 30s（cache/common.rs:13,92），若控制面返回 retry_info.retry_at 则用它。miss 后取 per-endpoint ApiLocks 许可（443-450）再二次查缓存防 dog-piling，还有 wake_compute_endpoint_rate_limiter 限流（452）。真正 HTTP 见 do_wake_compute（272-336）：GET .../wake_compute?session_id=&application_name=&endpointish=，头 Authorization Bearer jwt + X-Request-ID。重试 proxy/src/proxy/wake_compute.rs:31 循环 + retry_after 指数退避，配置 WAKE_COMPUTE_DEFAULT_VALUES=num_retries=8,base_retry_wait_duration=100ms,retry_wait_exponent_base=1.6 约 7s（config.rs:256）；wake 成功后连 PG 用 CONNECT_TO_COMPUTE_DEFAULT_VALUES=5次/200ms/×2（config.rs:252）。per-endpoint wake 并发锁默认 permits=0 即关闭（config.rs:308）。Butterfly 侧 handlers/proxy_callback/api_compute_wake.py:33 GET /wake_compute + @require_proxy_auth：compute_wake_impl（lib_compute_wake.py:704）解析 endpointish 为 endpoint_id+pooled；wake_endpoint_under_lock（612）校验后取 Redis 分布式锁 wake:{endpoint_id} TTL 30s（lib_endpoint_wake_lock.py:12）；_wake_under_lock（551）处理 Project storage attach、分支 unarchive、状态校验（RESTARTING/RESTORING 回可重试 503，只有 SUSPENDED/ACTIVE 继续）；_bind_endpoint_compute（491）复用健康 pod 或从温 pod 池 allocate_endpoint_compute 分配（热路径不创建 k8s pod）；新分配则 _wait_endpoint_compute_ready（176）每 WAKE_READY_POLL_INTERVAL_SECONDS=0.5s 轮询最多 WAKE_READY_TIMEOUT_SECONDS=8s 等 RUNNING，超时返回 503 + RETRY_POD_INIT_IN_PROGRESS + retry_delay_ms=1000；pooled 额外 _wait_pooler_settle sleep WAKE_POOLER_SETTLE_SECONDS=1.0s 清 PgBouncer server_login_retry 陈旧缓存。协议：成功 200 返回 {address, server_name, aux}（_build_wake_response lib_compute_wake.py:664），Proxy 侧 parse_host_port 拆 address，server_name 有值走 SslMode::Require 否则 Disable，aux 变 MetricsAuxInfo，Rust 结构体 WakeCompute（messages.rs:289）字段名严格对齐；pooled 时 port 用 DEFAULT_PGBOUNCER_PORT。失败返回 {error, status.code, status.message, status.details.user_facing_message/error_info.reason/retry_info.retry_delay_ms}（make_proxy_error lib_proxy_error.py:38），可重试 reason 有 RUNNING_OPERATIONS/CONCURRENCY_LIMIT_REACHED/LOCK_ALREADY_TAKEN/ENDPOINT_IDLE/PROJECT_UNDER_MAINTENANCE。")
 
@@ -2558,6 +2761,298 @@ std("s-numbers", "数字", "关键参数一览", [
     )],
 ], p, notes="所有关键参数一览：Pageserver/GC/Safekeeper/Compute 四列")
 
+# ─────── log prefixes: [NEON] [NEON_SMGR] [WP] [COMMUNICATOR] ───────
+p += 1
+std("s-log-prefix", "COMPUTE", "读懂 compute 日志：[NEON] / [NEON_SMGR] / [WP] / [COMMUNICATOR]", [
+    T("lp-desc", 96, 170, 1088, 44,
+      "kubectl 拉出的 compute-pod 日志里，PG 相关行都带方括号前缀 —— 各自来自不同子系统，"
+      "定位问题时能一眼分辨是内核、存储、复制还是通信出了状况。",
+      fs=15, color=DIM, lh=1.55),
+    *card("lp1", 96, 224, 530, 186,
+          "[NEON] · 内核启动补丁", [
+              "PG 内核 fork 补丁，非扩展代码",
+              "readNeonSignalFile()：读 neon.signal，",
+              "设 prev-LSN 串起 WAL 插入链",
+              "内联 elog(LOG,…)，不走宏",
+              ("xlog.c v17:5511 · v16:5140（核心 fork）", FAINT),
+          ], hc=AC, fs=13, headfs=16),
+    *card("lp2", 660, 224, 530, 186,
+          "[NEON_SMGR] · 存储管理器扩展", [
+              "neon smgr 扩展替换本地文件存储",
+              "pageserver_connect()：建 libpq 连接",
+              "到某个 pageserver 分片",
+              "宏 neon_shard_log；[shard N] 来自该变体",
+              ("libpagestore.c:785 · 宏 NEON_TAG neon.h:53", FAINT),
+          ], hc="#7CB3F4", fs=13, headfs=16),
+    *card("lp3", 96, 420, 530, 186,
+          "[WP] · walproposer bgworker", [
+              "Paxos-like 共识，向 SK quorum 流式发 WAL",
+              "parse cfg → connect → Greeting",
+              "→ 选举 term → starts streaming",
+              "宏 wp_log / wpg_log",
+              ("walproposer.c · WP_LOG_PREFIX walproposer.h:949", FAINT),
+              ("bgworker WalProposerMain walproposer_pg.c:688", FAINT),
+          ], hc="#C89EFF", fs=13, headfs=16),
+    *card("lp4", 660, 420, 530, 186,
+          "[COMMUNICATOR] · 通信 bgworker", [
+              "独立 bgworker，跑 Rust tokio 运行时",
+              "当前仅暴露 metrics / 控制 socket",
+              "未来接管全部 pageserver I/O（GetPage）",
+              "Rust 侧只发 tracing，转出时 C 侧补前缀",
+              ("communicator_process.c:231 errmsg_internal", FAINT),
+          ], hc=AC2, fs=13, headfs=16),
+    R("lp-band-bg", 96, 618, 1088, 60, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("lp-band-t", 112, 636, 96, 44, "统一前缀", fs=12, fw=800, color=AC, lh=1.3),
+    T("lp-band", 216, 626, 956, 46,
+      "四类前缀都在 <b>Postgres 侧</b>产生（内核补丁 / neon 扩展 C 代码 / bgworker），随 PG 子进程 stderr 输出；"
+      "compute_ctl 捕获后统一加 <b>PG:</b> 前缀以区分自身日志（handle_postgres_logs → compute.rs:1829，"
+      "加前缀在 pg_helpers.rs:595），多行消息用零宽空格 U+200B 合并成一行。",
+      fs=11, color=DIM, lh=1.5),
+], p, notes="这一页解释 kubectl compute-pod 日志里那些方括号前缀分别是什么、来自哪个子系统，全部经 background agent 从源码逐条核实过 file:line。四个前缀的来源并不统一：[NEON] 是 Postgres 内核 fork 补丁（不是扩展），在 src/backend/access/transam/xlog.c 的 readNeonSignalFile() 里用内联 elog(LOG, \"[NEON] ...\") 直接打，没有宏，各主版本行号不同（v17 xlog.c:5511、v16 :5140、v15 :4988、v14 :5736），作用是启动时读 basebackup 里的 neon.signal 文件、把 prev record LSN 设好，让 WAL 插入能正确接链。[NEON_SMGR] 来自 pgxn/neon 扩展的存储管理器层，宏 NEON_TAG \"[NEON_SMGR] \" 定义在 neon.h:53，日志走 neon_log / neon_shard_log 宏；日志里那行 [NEON_SMGR][shard 0] connected to pageserver 出自 libpagestore.c:785 的 pageserver_connect()，[shard N] 段是 neon_shard_log 变体加的；这一层把 PG 的本地文件存储替换成向 pageserver 分片拉页。[WP] 是 walproposer，宏 WP_LOG_PREFIX \"[WP] \" 在 walproposer.h:949，wp_log 用于纯 walproposer 代码（walproposer.c）、wpg_log 用于 PG 胶水层（walproposer_pg.c）；它作为名为 WAL proposer 的 bgworker 注册在 walproposer_pg.c:688，入口 WalProposerMain，跑 Paxos-like 共识把 WAL 流给 safekeeper quorum，日志里能看到 parse neon.safekeepers、连接、ProposerGreeting/AcceptorGreeting、elected term、WAL proposer starts streaming 这条生命周期。[COMMUNICATOR] 比较特殊，它是较新的独立 bgworker（名 Storage communicator process），内部跑 Rust tokio 多线程运行时，当前只对外提供 metrics/控制 socket，规划是将来接管全部与 pageserver 的 GetPage 通信；Rust 线程本身用 tracing/info! 打日志不带方括号，前缀是转发到 PG 日志时在 C 侧补的——communicator_process.c:231 的 errmsg_internal(\"[COMMUNICATOR] %s\", errbuf)。最后统一收口：这四类行本质都是 Postgres 进程（内核或其 bgworker）写到 stderr 的，compute_ctl（compute_tools，Rust）在 compute.rs:1829 调 handle_postgres_logs 接住子进程 stderr，并在 pg_helpers.rs:595 的 handle_postgres_logs_async 里给每条（可能多行）消息前面加 PG: 前缀、多行用零宽空格 U+200B 拼成一行，好让下游日志处理区分 Postgres 输出和 compute_ctl 自己的日志。所以看日志的判断法：PG: 是 compute_ctl 加的外层壳，方括号是 PG 侧各子系统自己加的内层标签。")
+
+# ─────── safekeeper 周期任务清单 ───────
+p += 1
+std("s-sk-tasks", "SAFEKEEPER", "safekeeper 周期任务清单：以 timeline_manager 为调度中枢", [
+    T("skt-desc", 96, 166, 1088, 44,
+      "safekeeper 的后台工作不是各自起 loop，而是集中在<b>每 timeline 一个的 timeline_manager</b> 里统一调度；"
+      "只有少数几个是进程级全局任务。",
+      fs=14, color=DIM, lh=1.5),
+    *card("skt1", 96, 218, 530, 190,
+          "调度中枢 · per-timeline", [
+              ("main_task：300ms 醒一次（外加事件唤醒）", AC, 700),
+              "每轮依次驱动：整段备份 → control file 落盘",
+              "→ WAL 回收 → partial 备份 → 驱逐检查",
+              "所有 per-timeline 任务都由它 spawn",
+              ("timeline_manager.rs:235 · REFRESH_INTERVAL=300ms:93", FAINT),
+          ], hc=AC, fs=12, headfs=15),
+    *card("skt2", 660, 218, 524, 190,
+          "两种 WAL 备份，别混", [
+              ("wal_backup · 事件驱动", "#7CB3F4", 700),
+              "封满 16MB 整段才 offload S3，commit_lsn 一变就醒",
+              "只由 determine_offloader 选中的一台传，退避10ms~5s",
+              ("partial_backup · 定时 15m", AC2, 700),
+              "未写满的尾段也传，默认 partial_backup_timeout=15m",
+              ("wal_backup.rs:330·206 · partial_backup:429 · lib.rs:74", FAINT),
+          ], hc="#7CB3F4", fs=12, headfs=15),
+    *card("skt3", 96, 424, 358, 190,
+          "WAL 回收 + control file", [
+              "回收 horizon = min(remote_consistent_lsn,",
+              "&nbsp;&nbsp;backup_lsn, commit_lsn, flush_lsn)",
+              "再退一个段号，不动当前 partial 段",
+              "control file 落盘：默认 300s",
+              ("timeline_manager.rs:557 · remove_wal.rs:17 · lib.rs:75", FAINT),
+          ], hc=AC, fs=11.5, headfs=14.5),
+    *card("skt4", 462, 424, 358, 190,
+          "驱逐 / 反驱逐", [
+              "本机资源紧张时把 timeline 卸到远端",
+              "min_resident 默认 15m 才允许驱逐",
+              "反驱逐时 redownload_partial_segment",
+              "重新拉回本地 .partial",
+              ("timeline_eviction.rs · lib.rs:82", FAINT),
+          ], hc=AC2, fs=11.5, headfs=14.5),
+    *card("skt5", 828, 424, 356, 190,
+          "进程级全局任务", [
+              "broker push：1s 播 SafekeeperTimelineInfo",
+              "peer recovery：2s 探一次对端状态",
+              "tombstone GC：24h · metrics 采集：30s",
+              "TLS 证书 reload：60s",
+              ("broker.rs:25·54 · recovery.rs:196 · bin/safekeeper.rs", FAINT),
+          ], hc="#C89EFF", fs=11.5, headfs=14.5),
+    R("skt-band-bg", 96, 630, 1088, 48, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("skt-band-t", 112, 644, 96, 20, "记忆点", fs=12, fw=800, color=AC, lh=1.3),
+    T("skt-band", 216, 642, 956, 24,
+      "per-timeline 任务全部挂在 timeline_manager 下统一驱动；broker/recovery/GC/metrics 是进程级、和 timeline 数量无关。",
+      fs=11, color=DIM, lh=1.5),
+], p, notes="这一页只讲 safekeeper 有哪些周期性行为，不涉及具体报错日志（诊断挪到下一页 s-sk-logs）。全部经 background agent 从 safekeeper 源码逐条核实过 file:line 与默认值。调度模型：safekeeper 的后台工作不是各自起 loop，而是集中在每个 timeline 一个的 timeline_manager 里。main_task 在 safekeeper/src/timeline_manager.rs:235，REFRESH_INTERVAL=300ms（:93），每轮除了定时唤醒还会被状态变化和 compute 连接变化唤醒，依次调用 update_backup、update_control_file_save、update_wal_removal、update_partial_backup，然后做驱逐检查（:289-330）。所有 per-timeline 后台任务都由它 spawn，这是看 safekeeper 后台行为的唯一入口。两种 WAL 备份必须分清：wal_backup 是整段备份，只在 WAL 段写满 16MB 封段后把整段 offload 到 S3，由 wal_backup::update_task 起（wal_backup.rs:69/94-105），loop 在 WalBackupTask::run（:330-401），是事件驱动的——commit_lsn 一变就唤醒，失败按 10ms~5s 退避；并且同一 timeline 的多个 SK 里只有一台负责上传，由 determine_offloader（:206-249）选出，落后超过 max_offloader_lag（默认 128MiB）会换人。partial_backup 是补充机制：把当前正在写、还没写满的最后一个段也传上去，好让尾部 WAL 也在 S3 有份（timeline 驱逐和 peer 恢复都要用），task 在 wal_backup_partial.rs:429，周期是 conf.partial_backup_timeout，CLI 默认 DEFAULT_PARTIAL_BACKUP_TIMEOUT=15m（lib.rs:74），首轮用 rand_duration 打散。其余周期任务：WAL 本地回收由 update_wal_removal（timeline_manager.rs:557）驱动，horizon 是 min(remote_consistent_lsn, backup_lsn, commit_lsn, flush_lsn, 可选的 walsender horizon)（remove_wal.rs:17-33），再退一个段号，所以正常回收不会删当前 partial 段；control file 落盘间隔 control_file_save_interval 默认 300s（lib.rs:75），commit_lsn 落后一整段时会强制刷；驱逐/反驱逐在 timeline_eviction.rs，受 enable_offload 开关和 eviction_min_resident（默认 15m，lib.rs:82）约束，反驱逐 do_uneviction → redownload_partial_segment 会把 .partial 重新下载回来。进程级（和 timeline 数量无关，只起一份）：broker push 每 1s 广播 SafekeeperTimelineInfo（broker.rs:25/54，含 term、last_log_term、flush/commit/backup/remote_consistent_lsn）；peer recovery 每 2s 探一次（recovery.rs:196）；tombstone GC 24h（bin/safekeeper.rs:628-639）；metrics 采集 30s（bin/safekeeper.rs 附近738-754）；TLS 证书 reload 60s（bin/safekeeper.rs:588-600）；另有 Hadron 全局磁盘水位检查 60s（默认关）。记忆点：区分 per-timeline（随 timeline 数量线性增长，全部经 timeline_manager 驱动）与进程级（固定份数，和租户/timeline 规模无关）两类任务，是看懂 safekeeper 后台行为的关键。")
+
+# ─────── safekeeper 日志：两类常见刷屏诊断 ───────
+p += 1
+std("s-sk-logs", "SAFEKEEPER", "safekeeper 常见刷屏日志诊断：ENOENT 竞态 vs 预期 NotFound", [
+    T("skl-desc", 96, 166, 1088, 44,
+      "生产日志里最常见的两类 INFO 行——partial 上传 ENOENT、timeline NotFound——都<b>不是故障</b>，但成因完全不同，"
+      "下面给出完整调用链与自愈条件。",
+      fs=14, color=DIM, lh=1.5),
+    *card("skl4", 96, 218, 530, 404,
+          "① partial 上传 ENOENT —— 竞态，不是丢数据", [
+              ("term: 0 ⇒ 从未有 walproposer 选举，空闲 timeline", AC2, 700),
+              ("· get_last_log_term 返回 0（safekeeper.rs:204-210）", FAINT),
+              ("· INITIAL_TERM=0（safekeeper_api/lib.rs:17）", FAINT),
+              "",
+              "调用链：main_task → do_upload(:564)",
+              "→ upload_segment(:239/246) 拼出本地路径",
+              "→ backup_partial_segment 里 File::open 失败",
+              ("&nbsp;&nbsp;(wal_backup.rs:572-580)", FAINT),
+              "",
+              ("根因：本地 .partial 已被驱逐流程删掉", AC2, 700),
+              "do_eviction → delete_offloaded_wal → remove_file",
+              ("&nbsp;&nbsp;(timeline_eviction.rs:159-193)", FAINT),
+              "但正常流程里 offloaded 后不该再跑 partial backup",
+              ("&nbsp;&nbsp;(spawn 前查 !is_offloaded，manager.rs:285；反向", FAINT),
+              ("&nbsp;&nbsp;也要求 partial_task.is_none()，eviction.rs:41)", FAINT),
+              "⇒ 驻留保护与驱逐删文件的状态分歧（低危边缘 case）",
+              "",
+              ("自愈：info! 级(:573)，非 warn/error；数据在远端", AC, 700),
+              "partial 和其他 SK 上都有，正确 offload 或反驱逐重下载",
+              "后即恢复。长期不自愈才值得深追。",
+          ], hc="#FF8080", fs=11, headfs=15),
+    *card("skl5", 660, 218, 524, 404,
+          "② GET timeline → NotFound —— 预期行为", [
+              ("timeline 不在本机 global map ⇒ 直接返回 NotFound", AC, 700),
+              "",
+              "调用链：routes.rs:765 注册路由",
+              "→ timeline_status_handler(:170)",
+              "→ global_timelines.get(ttid)",
+              "→ TimelineError::NotFound(global_map.rs:92)",
+              "→ ApiError::NotFound(timeline.rs:429-431)",
+              ("外层「Error processing HTTP request」为 INFO 级", FAINT),
+              ("&nbsp;&nbsp;(http-utils/src/error.rs:157 专门用 info! 打)", FAINT),
+              "",
+              ("调用方：仓库内只有 safekeeper 自己打这个端点", AC, 700),
+              "· pull_timeline.rs:512/567：成员变更时探 donor",
+              "· recovery.rs:265-273：peer recovery 直接打",
+              "· storcon <b>不调</b>此端点，心跳走 get_utilization，5s",
+              ("&nbsp;&nbsp;(storage_controller/src/heartbeater.rs:341-351)", FAINT),
+              "",
+              ("结论：这个 ~10 分钟轮询来自对端 SK 或外部巡检，", DIM, 500),
+              "探的是已删除/已迁走的 timeline；pull 路径显式把",
+              "NOT_FOUND 当「无需拉取」处理(:571-579)，预期噪音。",
+          ], hc=AC, fs=11, headfs=15),
+    R("skl-band-bg", 96, 634, 1088, 44, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("skl-band", 112, 646, 1056, 22,
+      "文件名解码：&lt;segno&gt;_&lt;term&gt;_&lt;flush_lsn&gt;_&lt;commit_lsn&gt;_sk&lt;node_id&gt;.partial —— 注意 "
+      "<b>flush 在 commit 之前</b>（wal_backup_partial.rs:195），容易读反。",
+      fs=11, color=DIM, lh=1.5),
+], p, notes="这一页专门诊断生产日志里反复刷的那两类 safekeeper INFO 行，全部经 background agent 从源码逐条核实过 file:line。第一类：partial_backup 反复报 failed to upload ... Failed to open file 「.../000000010000000000000001.partial」 for wal backup: No such file or directory。调用链是 main_task → do_upload（:564）→ upload_segment（:239/246）拼出本地路径 → wal_backup::backup_partial_segment（wal_backup.rs:572-580）里 File::open 失败，错误文本就是那句 context。关键线索是 PartialRemoteSegment 里的 term: 0：last_log_term 由 get_last_log_term（safekeeper.rs:204-210）算，term_history 为空时返回 0，而新建 timeline 的初始 term 就是 INITIAL_TERM=0（state.rs:122-138），所以 term:0 意味着这条 timeline 从来没有 walproposer 赢过选举、提交过真实 term 下的 WAL——是个空闲/空 timeline，正好是驱逐候选。删掉本地文件的机制是 timeline 驱逐：do_eviction（timeline_eviction.rs:148）先校验本地段与远端一致，把 control file 切成 Offloaded，然后在 delete_offloaded_wal 打开时通过 delete_local_segment 直接 remove_file 掉本地 .partial（:159-161/187-193），此后只剩远端副本。但按设计，offloaded 的 timeline 不该再跑 partial backup（update_partial_backup 只在 !is_offloaded 时 spawn，timeline_manager.rs:285；反过来 ready_for_eviction 也要求 partial_backup_task.is_none()，timeline_eviction.rs:41）。所以看到 partial 任务活着、去开一个已被驱逐删掉的文件，说明 partial 任务的驻留保护与驱逐删文件之间出现了竞态或管理器状态分歧——是真实的边缘 case，但危害很低：日志级别是 info!（wal_backup_partial.rs:573）而非 warn/error，已提交的数据在远端 partial 和其他 SK 上都有，循环会继续重试，等 timeline 被正确 offload 或反驱逐（do_uneviction → redownload_partial_segment 会把 .partial 重新下载回来）就自愈。只有长期不自愈才值得深追，且修的方向是驱逐与 partial 任务的交互，不是上传代码本身。远端文件名由 remote_segment_name（wal_backup_partial.rs:195-210）格式化成 segno_term_flush_lsn_commit_lsn_sk<node>.partial，注意顺序是 flush 在 commit 前面，容易读反；本地文件名只是 segno.partial。第二类：GET /v1/tenant/{tid}/timeline/{tlid} 返回 NotFound: timeline ... not found。路由注册在 safekeeper/src/http/routes.rs:765，handler 是 timeline_status_handler（:170），它调 global_timelines.get(ttid)，timeline 不在本机内存 map 里就返回 TimelineError::NotFound（timelines_global_map.rs:92），再映射成 ApiError::NotFound(\"timeline {} not found\")（timeline.rs:429-431）；外层「Error processing HTTP request」这句以及它是 INFO 级，都来自 libs/http-utils/src/error.rs:157（NotFound 分支专门用 info! 打）。调用方：仓库内调 timeline_status 的只有 safekeeper 自己——pull_timeline.rs:512/567 在 pull/成员变更时探 donor 状态，recovery.rs:265-273 的 peer recovery 直接打这个 URL；而 storage controller 的 SafekeeperClient（storage_controller/src/safekeeper_client.rs:63-170）根本没实现 timeline_status，它的心跳走 get_utilization、间隔 5s（heartbeater.rs:341-351），所以这个 ~10 分钟的轮询不是 storcon 发的，更可能来自对端 SK 的 pull/recovery 或仓库外的控制面/巡检，探的是已删除、已迁走或已被 exclude 的 timeline。pull 路径本身就把 NOT_FOUND 当无害处理（pull_timeline.rs:571-579，日志写 no need to pull it），所以这类行属预期噪音。结论：两类行都是 INFO、都不代表可用性受损；NotFound 完全预期，partial ENOENT 是低危竞态、通常自愈。")
+
+# ─────── pageserver 周期任务清单 ───────
+p += 1
+std("s-ps-tasks", "PAGESERVER", "pageserver 周期任务清单：per-tenant 三件套 + 进程级全局", [
+    T("pst-desc", 96, 166, 1088, 42,
+      "pageserver 的后台任务分两层：三个 <b>per-tenant</b> loop 随租户激活起（数量随租户线性增长），"
+      "其余都是<b>进程级</b>全局任务，各起一份、自己遍历所有租户/分片。",
+      fs=14, color=DIM, lh=1.5),
+    *card("pst1", 96, 214, 358, 196,
+          "compaction_loop · 20s", [
+              ("per-tenant · tasks.rs:216", AC, 700),
+              "LSM 式压缩：L0(全宽/重叠) → L1(分区/不重叠)",
+              "按需生成 image layer 压低读放大",
+              ("可被 L0 提前唤醒：l0_compaction_trigger", AC2, 700),
+              "flush 出新 L0 时 notify，不必等满 20s",
+              ("DEFAULT_COMPACTION_PERIOD=20s config.rs:861", FAINT),
+              ("trigger: tasks.rs:256 · timeline.rs:5056", FAINT),
+          ], hc=AC, fs=11.5, headfs=14.5),
+    *card("pst2", 462, 214, 358, 196,
+          "gc_loop · 1h", [
+              ("per-tenant · tasks.rs:343", AC, 700),
+              "回收 GC horizon / PITR 窗口之外的层",
+              "重建页面已不再需要的历史版本即可删",
+              "gc_horizon 默认 64MiB，pitr 默认 7 天",
+              ("DEFAULT_GC_PERIOD=1 hr config.rs:884", FAINT),
+          ], hc="#7CB3F4", fs=11.5, headfs=14.5),
+    *card("pst3", 828, 214, 356, 196,
+          "housekeeping · 20s", [
+              ("per-tenant · tasks.rs:427", AC, 700),
+              "冻结长期不动的 ephemeral layer",
+              "静默空闲 walredo 进程（idle 180s）",
+              "刷新 feature-resolver 标志",
+              "打印 getpage 限流统计",
+              ("与 compaction 同周期，±5% 抖动", FAINT),
+          ], hc="#C89EFF", fs=11.5, headfs=14.5),
+    *card("pst4", 96, 426, 358, 196,
+          "secondary / heatmap · 60s", [
+              ("进程级 · 两个全局 scheduler", AC2, 700),
+              "heatmap_upload：attached 侧上传热点层清单",
+              "&nbsp;&nbsp;并发 8；全局默认 ZERO，SC 按租户设 60s",
+              "secondary_download：温备侧照清单预下载",
+              "&nbsp;&nbsp;并发 1；ETag 条件 GET，未变则早退",
+              ("secondary.rs:374 从 bin/pageserver.rs:686", FAINT),
+          ], hc=AC2, fs=11.5, headfs=14.5),
+    *card("pst5", 462, 426, 358, 196,
+          "disk_usage_eviction · 60s", [
+              ("进程级 · disk_usage_eviction_task.rs:220", AC2, 700),
+              "statvfs 量文件系统真实用量，超阈值才动",
+              "max_usage_pct 默认 80% / 剩余 &lt; 2GB",
+              "驱逐序：RelativeAccessed（相对访问 LRU，",
+              "层数多的租户先被削）",
+              ("period=60s config.rs:300 · 阈值 :297-298", FAINT),
+          ], hc="#FF8080", fs=11.5, headfs=14.5),
+    *card("pst6", 828, 426, 356, 196,
+          "计量与自监控", [
+              ("进程级 · 多个独立任务", AC2, 700),
+              "consumption metrics 采集推送：10m",
+              "synthetic size 计费换算：10m",
+              "metrics 快照刷新：30s · TLS 证书：60s",
+              "删除队列 autoflush：10s",
+              "feature flag 拉取：10m",
+              ("config.rs:680/682/728 · deleter.rs:19", FAINT),
+          ], hc="#7CB3F4", fs=11.5, headfs=14.5),
+    R("pst-band-bg", 96, 638, 1088, 40, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("pst-band", 112, 650, 1056, 22,
+      "分层记忆：<b>compaction / gc / housekeeping</b> 由 start_background_loops(tasks.rs:135) 随租户激活起；"
+      "其余固定一份，与租户规模无关。全租户后台并发被 CONCURRENT_BACKGROUND_TASKS（¾ tokio 线程）限住。",
+      fs=11, color=DIM, lh=1.5),
+], p, notes="这一页只列 pageserver 有哪些周期性后台任务（日志逐行解读挪到下一页 s-ps-logs），全部经 background agent 从源码逐条核实过 file:line 与默认值。核心分层认知：pageserver 后台任务分两类，一类是 per-tenant，随租户激活时由 start_background_loops（pageserver/src/tenant/tasks.rs:135，从 tenant.rs:3480 调用）spawn，数量随租户数线性增长，只有三个——compaction（:138）、gc（:164）、housekeeping（:189）；另一类是进程级全局任务，在 bin/pageserver.rs 里各起一份，自己遍历所有租户/分片。先说 per-tenant 三件套。compaction_loop 在 tasks.rs:216，周期 get_compaction_period()，默认 DEFAULT_COMPACTION_PERIOD=20s（libs/pageserver_api/src/config.rs:861）。pageserver 存储是 LSM-tree 式分层：WAL flush 先落成 L0 delta layer（覆盖全 key 范围、LSN 上互相重叠、读放大高），compaction 把它们重写成按 key 分区、互不重叠的 L1 layer，并周期性物化 image layer（某 LSN 的全量快照）以压低读放大。重要细节：除了 20s 定时，它还能被 L0 提前唤醒——select 里除了 sleep(period) 还 arm 了 tenant.l0_compaction_trigger.notified()（tasks.rs:256），这个 trigger 是个 Arc<Notify>（tenant.rs:352，初始化 :4499），由 timeline 的 layer flush 路径在 L0 层堆积时 notify（timeline.rs:5056，另有 :6093），loop 自己在 CompactionOutcome::YieldForL0/Pending 时也会重新 notify（:277-278）；所以实际行为是「20s 周期 OR 新 L0 到达就提前跑」，且只在 error_run==0 时才 arm 这个 trigger。gc_loop 在 tasks.rs:343，周期 get_gc_period() 默认 DEFAULT_GC_PERIOD=1 hr（config.rs:884），gc_horizon 默认 64MiB、pitr 默认 7 天，删除 GC horizon/PITR 窗口之外、重建页面已不再需要的层。第三个 per-tenant loop 是 tenant_housekeeping_loop，body 在 tasks.rs:427，它复用 compaction 的周期（get_compaction_period()，为 ZERO 时回落到 DEFAULT_COMPACTION_PERIOD=20s），带 ±5% 抖动；每轮调 tenant.housekeeping()（tenant.rs:3381）做四件事：把 active timeline 上长期不动的 ephemeral layer 冻结（maybe_freeze_ephemeral_layer）、静默空闲的 walredo 进程（WALREDO_IDLE_TIMEOUT=180s，tenant.rs:3409）、刷新 feature-resolver 标志、打印 getpage 限流统计。再说进程级全局任务。secondary_download 与 heatmap_upload 是两个全局 scheduler，由 secondary::spawn_tasks（secondary.rs:374，从 bin/pageserver.rs:686）起：heatmap_uploader（heatmap_uploader.rs:32/:132）在 attached 侧上传热点层清单 JSON，并发 heatmap_upload_concurrency 默认 8（config.rs:685），周期 get_heatmap_period()，全局默认 Duration::ZERO 即关闭，实际由 storage controller 按租户设成 60s（reconciler.rs:29）；downloader_task（downloader.rs:58，per-tenant span :618）在 secondary 侧照清单预下载 layer，DEFAULT_DOWNLOAD_INTERVAL=60s（:56），并发默认 1（config.rs:686），下载时带上次成功的 ETag 做条件 GET、未变就早退。disk_usage_eviction_task：loop 在 disk_usage_eviction_task.rs:220（body :205，从 launch_disk_usage_global_eviction_task :166，bin/pageserver.rs:699 起），period 默认 Duration::from_secs(60)（config.rs:300，DiskUsageEvictionTaskConfig 的 Default 实现）；每轮用 statvfs 量文件系统级真实用量，超过 max_usage_pct（默认 80%，config.rs:297）或剩余低于 min_avail_bytes（默认 2_000_000_000，config.rs:298）才驱逐本地层文件回收空间，候选顺序 EvictionOrder::RelativeAccessed{highest_layer_count_loses_first:true}（默认，config.rs:490-496），即相对访问 LRU、层数多的租户先被削。注意它和 heatmap 用的是同一份 access-time 数据。计量类：consumption_metrics::run（consumption_metrics.rs:99，bin/pageserver.rs:805 起，受 background_jobs_barrier 门控）实际起两个 worker——collect_metrics（body :155，loop :196）周期 metric_collection_interval 默认 10 min（config.rs:680），采集 per-tenant/timeline 指标后 HTTP POST 到 metric_collection_endpoint（upload_metrics_http :243），同时刷本地磁盘缓存、可选上传到 metric_collection_bucket；注意 endpoint 默认是 None（config.rs:681），未配置时 run 直接早退（:104）。calculate_synthetic_size_worker（body :367，loop :378）周期 synthetic_size_calculation_interval 默认 10 min（config.rs:682），遍历 active 的 shard-zero 租户算计费用的 synthetic size。自监控类：metrics_collection_task（bin/pageserver.rs:771，loop :786-796）每 METRICS_COLLECTION_INTERVAL=30s（libs/utils/src/metrics_collector.rs:73）刷一次缓存的指标快照，若 force_metric_collection_on_scrape 打开则整个任务跳过；TLS 证书 reload 周期 ssl_cert_reload_period 默认 60s（config.rs:728），loop 在 ReloadingCertificateResolver::new（libs/http-utils/src/tls_certs.rs:162-171），仅启用 https 时活；basebackup_cache cleanup 周期默认 60s（config.rs:441，basebackup_cache.rs:433-450），但 basebackup_cache_config 默认 None（config.rs:837）所以通常不跑；删除队列的三个 worker（bin/pageserver.rs:542 spawn）严格说是消息驱动而非定时，但都带 autoflush 超时——list_writer 10s/100ms（list_writer.rs:41/45）、validator 10s（validator.rs:37）、deleter 10s（deleter.rs:19）；feature-resolver 拉 PostHog 特性标志，周期 posthog_config.refresh_interval，否则 DEFAULT_POSTHOG_REFRESH_INTERVAL=600s（feature_resolver.rs:21），loop 在 posthog_client_lite/src/background_loop.rs:72-76，仅配了 posthog_config 才起。另外确认过 bin/pageserver.rs 里 page_service listener、gRPC handler、signal handler 和一次性的 drive_init 都不是周期任务，是事件/连接驱动。最后一个约束：全租户后台并发被 CONCURRENT_BACKGROUND_TASKS 信号量（约 ¾ tokio 线程数）限住，所以任务再多也不会把 CPU 打满。")
+
+# ─────── pageserver 日志：稳态刷屏逐行解读 ───────
+p += 1
+std("s-ps-logs", "PAGESERVER", "读懂 pageserver 日志：稳态刷屏行逐条解码", [
+    T("psl-desc", 96, 166, 1088, 42,
+      "compute 日志是 SQL/WAL；pageserver 日志相反 —— 绝大多数是上一页那些后台 loop 的心跳，"
+      "而且稳态下多为「无变化、跳过」的 no-op，真正的 GetPage 请求反而不刷屏。",
+      fs=14, color=DIM, lh=1.5),
+    *card("psl1", 96, 214, 530, 198,
+          "Decided to check image layers: false", [
+              ("Distance-based: false, time-based: false", "#C89EFF", 700),
+              "问的是「该不该物化新 image layer」，两个判据",
+              "距离：自上次检查摄入的 WAL 是否 ≥ 阈值(默认 2)",
+              "&nbsp;&nbsp;× checkpoint_distance",
+              "时间：墙钟是否超过 checkpoint_timeout（默认 10m）",
+              "两个都 false ⇒ 本轮跳过，纯 no-op",
+              ("timeline.rs:5837 should_check_if_image_layers_required", FAINT),
+          ], hc="#C89EFF", fs=11.5, headfs=14.5),
+    *card("psl2", 660, 214, 524, 198,
+          "metadata key compaction: trigger_generation=false", [
+              ("delta_files_accessed=2, total_keys_retrieved=0", "#C89EFF", 700),
+              "metadata key = aux 文件（复制槽、逻辑解码状态）",
+              "存在稀疏 keyspace，用一次 vectored scan 读",
+              "扫描访问的 delta 文件数 ≥ 16 才生成新 image layer",
+              "本例只 2 个 ⇒ trigger_generation=false、跳过",
+              ("timeline.rs:5743 · MAX_AUX_FILE_V2_DELTAS=16", FAINT),
+          ], hc="#C89EFF", fs=11.5, headfs=14.5),
+    *card("psl3", 96, 428, 358, 194,
+          "Heatmap unchanged", [
+              ("since last successful download", "#7CB3F4", 700),
+              "secondary 下载时带上次成功的 ETag",
+              "做条件 GET，对象存储回 Unmodified",
+              "即早退、不重新下载",
+              "⇒ 最常见的 no-op 心跳行",
+              ("downloader.rs:731", FAINT),
+          ], hc="#7CB3F4", fs=11.5, headfs=14.5),
+    *card("psl4", 462, 428, 358, 194,
+          "Status: N tasks running, M pending", [
+              ("下载 1 running / 上传 8 running", AC2, 700),
+              "两个 scheduler 共用同一个 helper：",
+              "TenantBackgroundJobs::run() 每轮打一次",
+              "所以两个 span 下格式完全相同",
+              "1 和 8 正好是两个并发默认值",
+              ("scheduler.rs:182 · config.rs:685-686", FAINT),
+          ], hc=AC2, fs=11.5, headfs=14.5),
+    *card("psl5", 828, 428, 356, 194,
+          "responded /metrics bytes=…", [
+              ("total / spawning / collection / encoding_ms", AC, 700),
+              "跑在 blocking span 下：gather + Prometheus",
+              "文本编码是 CPU 密集同步活，放 async 线程",
+              "会拖垮执行器，故 offload 到阻塞线程池",
+              ("stalenss_ms 是源码里的拼写错误", "#FF8080"),
+              ("endpoint.rs:254 · 293 · 330", FAINT),
+          ], hc=AC, fs=11.5, headfs=14.5),
+    R("psl-band-bg", 96, 638, 1088, 40, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("psl-band", 112, 650, 1056, 22,
+      "读日志技巧：<b>span 名就是任务名</b> —— compaction_loop / secondary_download / heatmap_upload_scheduler "
+      "一眼归类到上一页的清单；看到 false / unchanged / =0 基本都是 no-op 心跳，不用追。",
+      fs=11, color=DIM, lh=1.5),
+], p, notes="这一页把 kubectl 拉 pageserver-pod 出来那一大片日志逐行解码（任务清单本身在上一页 s-ps-tasks），全部经 background agent 从源码核实过 file:line。总原则：compute 日志以 SQL/WAL streaming 为主，pageserver 日志相反，稳态下几乎全是后台周期任务的心跳，且大多是 no-op（无变化、跳过），真正的读请求 GetPage、basebackup 反而不常刷屏；所以看 pageserver 日志的第一步是看 span 名归类，第二步是判断这行是不是 no-op。逐行解码。第一行「Decided to check image layers: false. Distance-based decision: false, time-based decision: false」出自 pageserver/src/tenant/timeline.rs:5837 的 should_check_if_image_layers_required，它回答的问题是「本轮该不该去检查、进而物化新的 image layer」；distance 判据是自上次检查以来摄入的 WAL 量是否 ≥ image_layer_creation_check_threshold（默认 2，config.rs:902）× checkpoint_distance；time 判据是墙钟时间是否超过 checkpoint_timeout（默认 10m，config.rs:852，小租户可到 48h）。两个判据都 false 就直接跳过，是最典型的 no-op 行。相关 span：compact_timeline 在 tenant.rs:3223/3259，create_image_layers 在 compaction.rs:1390。日志里若出现 partition_mode=l0_l1_boundary，指在 L0/L1 边界处 repartition（compaction.rs:1307-1345），因为边界以下已被压成低读放大的 L1，repartition 很快。第二行「metadata key compaction: trigger_generation=false, delta_files_accessed=2, total_kb_retrieved=0, total_keys_retrieved=0, read_time=0.000054342s」出自 timeline.rs:5743 的 create_image_layer_for_metadata_keys。metadata key 指 aux 文件（复制槽、逻辑解码状态等），它们存在稀疏 keyspace 里，用一次 vectored scan 读；若这次扫描访问到的 delta 文件数 ≥ MAX_AUX_FILE_V2_DELTAS（16，pgdatadir_mapping.rs:63）就触发生成新的 image layer 来压平，本例只访问了 2 个，所以 trigger_generation=false、跳过；total_keys_retrieved=0 说明这个租户压根没有 aux 文件。第三行「Heatmap unchanged since last successful download」在 downloader.rs:731：secondary 下载时会带上次成功下载记下的 ETag 发条件 GET，对象存储返回 Unmodified 就早退、不重新下载整份 heatmap，这是 secondary 侧最常见的 no-op 心跳。heatmap 是 attached 侧上传的 JSON 清单（heatmap.rs），HeatMapTenant{generation,timelines,upload_period_ms}，每层 HeatMapLayer 带 name/metadata/access_time/cold，secondary 只拉 hot_layers()、跳过 cold 层；内容由 timeline.rs:4181 的 generate_heatmap 产生，排序决定下载优先级（cold 最后、L0 最后、新 LSN 优先）。第四行「Status: N tasks running, M pending」不是某个具体任务打的，而是两个 scheduler 共用的通用 helper：TenantBackgroundJobs::run() 在 secondary/scheduler.rs:182-186 每轮打一次，secondary_download_scheduler 和 heatmap_upload_scheduler 都 alias 到它，所以两个 span 下会出现格式完全相同的行，调度间隔 1~10s。一个很好用的交叉验证：日志里 secondary_download_scheduler 显示「1 tasks running」、heatmap_upload_scheduler 显示「8 tasks running」，正好分别等于 secondary_download_concurrency 默认 1（config.rs:686）和 heatmap_upload_concurrency 默认 8（config.rs:685）——说明两个 scheduler 都在并发上限上满负荷跑，pending 数就是排队的租户数。第五行「GET /metrics …」相关有两条：「metrics_collector: Collected 205 metric families in 7 ms」出自 libs/utils/src/metrics_collector.rs:53-57 的 metrics_collector span；「responded /metrics bytes=2194113 total_ms=13 spawning_ms=0 collection_ms=7 encoding_ms=5 stalenss_ms=5」出自 libs/http-utils/src/endpoint.rs:330-338。handler 是 endpoint.rs:254 的 prometheus_metrics_handler，它把活儿放到 spawn_blocking（:293）里跑，因为 gather + Prometheus 文本编码是 CPU 密集的同步工作，直接在 async 线程上跑会拖垮 tokio 执行器；这也是日志里能看到 blocking span 和 spawning_ms 计时的原因。注意 stalenss_ms 是源码里的拼写错误（应为 staleness），不是日志被截断，grep 时要按错的拼法搜。pageserver 默认 force_metric_collection_on_scrape=true 即每次抓取都重新采集，另有独立任务每 30s 刷缓存快照。读日志技巧总结：span 名就是任务名，一眼归类到上一页清单里的某个 loop；行里出现 false / unchanged / =0 这类字样基本都是 no-op 心跳，不必追查；真正需要警觉的是 warn/error 级、或者本该 no-op 的行突然带上非零耗时和重试。")
+
 # ─────── Metrics & 可观测 ───────
 p += 1
 std("s-metrics", "可观测", "关键指标：从背压到冷启动，看哪几个数就够", [
@@ -2591,8 +3086,8 @@ std("s-metrics", "可观测", "关键指标：从背压到冷启动，看哪几�
         )],
     )],
     T("mt-tail", 96, 640, 1088, 44,
-      "此外：<span style='font-family:" + MONO + "'>proxy_compute_connection_latency_seconds</span>（带 cold_start_info 标签）看 Proxy 侧冷启动；"
-      "<span style='font-family:" + MONO + "'>/metrics.json</span> 里 compute_ctl 的 <span style='font-family:" + MONO + "'>total_startup_ms</span> 把冷启动拆成 "
+      "此外：<span style=\"font-family:" + MONO + "\">proxy_compute_connection_latency_seconds</span>（带 cold_start_info 标签）看 Proxy 侧冷启动；"
+      "<span style=\"font-family:" + MONO + "\">/metrics.json</span> 里 compute_ctl 的 <span style=\"font-family:" + MONO + "\">total_startup_ms</span> 把冷启动拆成 "
       "wait_for_spec / sync_safekeepers / pageserver_connect / basebackup / start_postgres / config 各段。",
       fs=11.5, color=FAINT, lh=1.6),
 ], p, notes="指标定义位置：背压 pageserver/src/metrics.rs:4289-4353（global 与 per-tenant 两套，标签 kind=pagestream）；compute 侧 backpressure_throttling_time() 在 pgxn/neon/neon.c:713，经 sql_exporter 暴露为 compute_backpressure_throttling_seconds_total。Layer：pageserver_layer_count metrics.rs:705-712、layers_per_read metrics.rs:136-170（含 batch/amortized 三个 global 变体）、storage_operations_seconds metrics.rs:88-128（operation 枚举 59-86 含 compact / create images / layer flush / layer flush delay / gc / find gc cutoffs）。WAL lag：safekeeper/src/metrics.rs:570-647 一整组 LSN gauge，peer_horizon_lsn 610-617 是最落后 SK；PS 侧 last_record_lsn 633-639、disk_consistent_lsn 642-648、wait_lsn_seconds 484-490、wait_lsn_in_progress_micros 504-518。WALredo：metrics.rs:2993-3035，含 wal_redo_seconds、records/bytes histogram、process_launch_duration。冷启动：basebackup_query_seconds metrics.rs:2259-2266 用专门的 COMPUTE_STARTUP_BUCKETS(2244-2251) 5ms~60s；proxy/src/metrics.rs:71-74 的 compute_connection_latency_seconds 标签组在 314-321 含 cold_start_info；compute_ctl 的 ComputeMetrics 结构在 libs/compute_api/src/responses.rs:244-284，不进 Prometheus，走 /metrics.json 给控制面。注意 Grafana dashboard JSON 不在本仓库。")
@@ -2799,4 +3294,66 @@ with open("/tmp/neon_bento_deck.json", "w") as f:
 
 print(f"Generated {len(slides)} slides, wrote to /tmp/neon_bento_deck.json")
 print(f"JSON size: {len(out)} bytes")
+
+
+# ═══════════════════════ SLIDE INDEX (markdown) ═══════════════════════
+# 从已构建的 slides 反推出目录，写成 SLIDES_INDEX.md 供检索。
+# 与 deck 同源同生成，不会漂移。
+
+def _plain(html):
+    """Strip the few inline tags used in titles down to plain text."""
+    txt = re.sub(r"<[^>]+>", "", html or "")
+    return (txt.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">")
+               .replace("&amp;", "&").strip())
+
+
+def _el(slide, eid):
+    for e in slide.get("elements", []):
+        if e["id"] == eid:
+            return e
+    return None
+
+
+idx_lines = [
+    "# Neon 架构解析 · 幻灯片索引",
+    "",
+    "由 `gen_neon_bento.py` 自动生成，请勿手改；改动幻灯片后重新运行生成脚本即可刷新。",
+    "",
+    f"- 总页数：**{len(slides)}**",
+    "- 生成物：`Bento_Slides.bento.html`（内嵌 `bento/slides` JSON）",
+    "",
+    "| # | 章节 | 分类 | 标题 | slide id |",
+    "|---|---|---|---|---|",
+]
+_chapter = "封面"
+for _n, _s in enumerate(slides, 1):
+    _div = _el(_s, "divttl")
+    _num = _el(_s, "divnum")
+    if _div is not None:
+        _chapter = "{} {}".format(_plain(_num["html"]) if _num else "", _plain(_div["html"])).strip()
+        idx_lines.append("| {} | **{}** | 分节页 | — | `{}` |".format(_n, _chapter, _s["id"]))
+        continue
+    _t = _el(_s, "stitle") or _el(_s, "cover-title") or _el(_s, "end-title")
+    _k = _el(_s, "kicker")
+    idx_lines.append("| {} | {} | {} | {} | `{}` |".format(
+        _n, _chapter, _plain(_k["html"]) if _k else "—",
+        _plain(_t["html"]) if _t else "—", _s["id"]))
+
+idx_lines += ["", "## 按分类归组", ""]
+_by_kick = {}
+for _n, _s in enumerate(slides, 1):
+    _k = _el(_s, "kicker")
+    if not _k:
+        continue
+    _by_kick.setdefault(_plain(_k["html"]), []).append((_n, _s))
+for _kk in sorted(_by_kick, key=lambda k: -len(_by_kick[k])):
+    idx_lines.append("- **{}**（{} 页）：{}".format(
+        _kk, len(_by_kick[_kk]),
+        "、".join("{} {}".format(n, _plain((_el(s, "stitle") or {}).get("html", "")))
+                  for n, s in _by_kick[_kk])))
+idx_lines.append("")
+
+with open("SLIDES_INDEX.md", "w") as f:
+    f.write("\n".join(idx_lines))
+print("Wrote SLIDES_INDEX.md ({} rows)".format(len(slides)))
 
