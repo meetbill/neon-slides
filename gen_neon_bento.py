@@ -507,7 +507,9 @@ std("s-read", "读路径", "一次 SELECT 的旅程", [
 
 p += 1
 divider("s-div3", 4, "组件逐层拆解：读写路径贯穿", p)
-# ─────── Slide 5: Compute 层概述 ───────
+
+
+# ─────── PROXY 层概述 ───────
 p += 1
 std("s-proxy", "PROXY", "连接代理：路由 + 认证 + Serverless 网关", [
     T("px-desc", 96, 170, 1088, 50,
@@ -603,6 +605,303 @@ std("s-conn-route", "PROXY", "连上 Neon：Proxy 怎么知道你要连哪个库
       "• 埋点：<span style=\"font-family:" + MONO + "\">SniKind</span> 指标区分 <span style=\"font-family:" + MONO + "\">Sni</span> / <span style=\"font-family:" + MONO + "\">NoSni</span> / <span style=\"font-family:" + MONO + "\">PasswordHack</span>，可观测各路径占比",
       fs=12, color=DIM, lh=1.7),
 ], p, notes="连接 Neon 的 endpoint 路由三法，统一入口 ComputeUserInfoMaybeEndpoint::parse（proxy/src/auth/credentials.rs:74-156），由 proxy/src/proxy/mod.rs:53 每连接调一次。① options 启动参数：?options=endpoint%3Dep-xxx，project= 是旧写法仍兼容；解析 options_raw()（pqproto.rs:398）拆词 + parse_endpoint_param（password_hack.rs:33）取前缀 + .at_most_one() 保证唯一，出现两个 token 或同时有 endpoint= 和 project= 都判歧义返回 None（测试 credentials.rs:317,336）。② TLS SNI：<endpoint>.<common-name>，第一个点前 label 是 endpoint_id，后半段必须在证书 CN 集合内，endpoint_sni() credentials.rs:63；保留子域 api（SERVERLESS_DRIVER_SNI）和 apiauth（AUTH_BROKER_SNI）不走 SNI 路由，见 serverless/mod.rs:60；SNI 从 stream.rs:266 sni_hostname() 取，WebSocket 客户端无 SNI 用 HTTP Host 头代替（pglb/mod.rs:190）。③ Password Hack：给不支持 SNI 的老客户端，格式 endpoint=<name>;<password> 或 endpoint=<name>$<password>，分号和美元符谁先出现按谁切（password_hack.rs:16-30）；只在①②都失败时触发，在 auth_quirks（backend/mod.rs:211）里 TryFrom 失败分支调 hacks::password_hack_no_authentication（hacks.rs:63），Proxy 先发 AuthenticationCleartextPassword（flow.rs:77），密码不在 Proxy 校验直接透传 compute。优先级：match (endpoint_option, endpoint_from_domain) credentials.rs:106，两者不一致直接 InconsistentProjectNames 拒连；一致或只有一个用 a.or(b) 即 options 优先；都没有则 None 落 Password Hack，解不出返回 MissingEndpointName 并提示升级 libpq 或加 ?options=endpoint%3D<id>（auth/mod.rs:50）。SniKind 指标区分 Sni/NoSni/PasswordHack。")
+
+# ─────── TLS 机制：两跳加密 ───────
+p += 1
+std("s-tls-overview", "PROXY · TLS", "Neon 的 TLS：两跳加密，两套证书", [
+    T("to-desc", 96, 166, 1088, 36,
+      "客户端永远不直连 Postgres。TLS 在 <b>Client ↔ Proxy</b> 和 <b>Proxy ↔ Compute</b> 各做一次，"
+      "证书、信任链、SNI 语义完全不同。源码：<span style=\"font-family:" + MONO + "\">proxy/src/tls/</span> · "
+      "<span style=\"font-family:" + MONO + "\">compute_tools/src/tls.rs</span>",
+      fs=13, color=DIM, lh=1.5),
+    # hop 1
+    R("to-c", 96, 214, 200, 86, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.45)", radius=12),
+    T("to-ch", 106, 226, 180, 22, "Client", fs=16, fw=800, color=AC, align="center"),
+    T("to-cb", 106, 252, 180, 38, "psql / 驱动 /<br>serverless HTTP", fs=12, color=DIM, align="center", lh=1.4),
+    LN("to-a1", 306, 257, 70, 0, stroke=ARROW, thick=10),
+    R("to-h1", 386, 214, 230, 86, fill="rgba(255,213,74,0.10)", stroke="rgba(255,213,74,0.5)", radius=12),
+    T("to-h1h", 396, 222, 210, 20, "TLS ① 公网", fs=13, fw=800, color=ARROW, align="center"),
+    T("to-h1b", 396, 244, 210, 48, "通配证书 *.neon.tech<br>SNI = endpoint 名<br>ALPN postgresql / h2", fs=11.5, color=DIM, align="center", lh=1.4),
+    LN("to-a2", 626, 257, 70, 0, stroke=ARROW, thick=10),
+    R("to-p", 706, 214, 200, 86, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.45)", radius=12),
+    T("to-ph", 716, 226, 180, 22, "Proxy", fs=16, fw=800, color=AC, align="center"),
+    T("to-pb", 716, 252, 180, 38, "rustls · TLS 1.2/1.3<br>终止并重新发起", fs=12, color=DIM, align="center", lh=1.4),
+    LN("to-a3", 916, 257, 60, 0, stroke=ARROW, thick=10),
+    R("to-h2", 986, 214, 198, 86, fill="rgba(255,158,138,0.12)", stroke="rgba(255,158,138,0.5)", radius=12),
+    T("to-h2h", 996, 222, 178, 20, "TLS ② 内网", fs=13, fw=800, color=AC2, align="center"),
+    T("to-h2b", 996, 244, 178, 48, "Neon Internal CA<br>ECDSA P-256<br>hostname = compute", fs=11.5, color=DIM, align="center", lh=1.4),
+    # compute box under hop2 arrow conceptually — put a strip
+    R("to-g", 96, 316, 1088, 52, fill=PANEL, stroke=EDGE, radius=10),
+    T("to-gb", 116, 328, 1048, 28,
+      "Compute（patched PG）只对 Proxy 暴露 TLS。用户侧 <span style=\"font-family:" + MONO + "\">sslmode=verify-full</span> 校验的是 <b>Proxy 证书</b>，不是 Postgres 叶子证书。",
+      fs=14, color=DIM, lh=1.4),
+    *card("to1", 96, 382, 350, 246,
+          "① 公网跳：Client → Proxy", [
+              "• 证书：Let's Encrypt / 通配 CN",
+              "• 选证书：<span style=\"font-family:" + MONO + "\">CertResolver</span> 按 SNI 剥域名",
+              "• 路由：SNI 第一个 label = endpoint",
+              "• 强制 TLS：明文 Startup 直接拒",
+              "• 支持 Direct TLS（无 SSLRequest）",
+              "• Channel binding 绑 Proxy 叶子证",
+          ], hc=AC, fs=13, headfs=15),
+    *card("to2", 462, 382, 350, 246,
+          "② 内网跳：Proxy → Compute", [
+              "• 信任：OS 根证 + <span style=\"font-family:" + MONO + "\">NEON_INTERNAL_CA_FILE</span>",
+              "• compute_ctl 把 cert-manager 证书",
+              "&nbsp;&nbsp;拷进 PGDATA（600）并写 <span style=\"font-family:" + MONO + "\">ssl=on</span>",
+              "• 协商：Postgres SSLRequest 或 Direct",
+              "• <span style=\"font-family:" + MONO + "\">sslmode=require / prefer</span>",
+              "• 证书变更 60s 轮询热更新",
+          ], hc=AC2, fs=13, headfs=15),
+    *card("to3", 828, 382, 356, 246,
+          "为什么拆成两跳", [
+              "• 一个 Proxy 前面挂成千上万 endpoint，",
+              "&nbsp;&nbsp;不能给每台 compute 签公网证",
+              "• SNI 在 TLS 握手就能读到，",
+              "&nbsp;&nbsp;Postgres 协议本身没有集群字段",
+              "• 内网用短命 P-256 证 + 内部 CA，",
+              "&nbsp;&nbsp;轮换不影响用户 sslmode",
+              "• SCRAM 在 Proxy 终结，compute 另鉴权",
+          ], hc="#C89EFF", fs=13, headfs=15),
+], p, notes="Neon TLS 两跳：Client↔Proxy 用公网通配证书（CertResolver 按 SNI 选证，SNI 第一段是 endpoint_id），Proxy↔Compute 用 Neon Internal CA + compute_ctl 把 cert-manager 证书落到 PGDATA。用户 sslmode=verify-full 校验的是 Proxy 证书。源码 proxy/src/tls/{mod,server_config,client_config}.rs、pglb/handshake.rs、compute_tools/src/tls.rs。")
+
+# ─────── TLS 握手：SSLRequest vs Direct TLS ───────
+p += 1
+std("s-tls-handshake", "PROXY · TLS", "客户端握手：SSLRequest 升级，或直接开打 TLS", [
+    T("th-desc", 96, 166, 1088, 36,
+      "<span style=\"font-family:" + MONO + "\">pglb/handshake.rs</span> 循环读 Startup。同一条连接 SSL / GSS 各自只允许试一次；"
+      "配了 TLS 却发明文 Startup → <span style=\"font-family:" + MONO + "\">TlsRequired</span>（「试试 sslmode=require」）。",
+      fs=13, color=DIM, lh=1.5),
+    R("th1-bg", 96, 212, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("th1-h", 116, 224, 500, 22, "路径 A · 经典 SSLRequest", fs=16, fw=800, color=AC),
+    T("th1-b", 116, 254, 500, 244,
+      "① 客户端先发 8 字节 SSLRequest<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">00 00 00 08  04 d2 16 2f</span>（80877103）<br>"
+      "② Proxy 回单字节 <b>S</b>＝接受 / <b>N</b>＝拒绝<br>"
+      "③ 客户端立刻 ClientHello，rustls Accept<br>"
+      "④ 从 ServerHello 的 SNI 解析 endpoint<br>"
+      "⑤ 校验 ALPN：空 或 <span style=\"font-family:" + MONO + "\">postgresql</span>，其它即协议违规<br>"
+      "⑥ TLS 完成后再读真正的 StartupMessage<br><br>"
+      "GSSENCRequest 一律回 <b>N</b>，不支持 Kerberos。<br>"
+      "WebSocket / HTTP 入口 TLS 已在边缘终止，"
+      "<span style=\"font-family:" + MONO + "\">handshake_tls = None</span>，不再二次升级。",
+      fs=13, color=DIM, lh=1.55),
+    R("th2-bg", 656, 212, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("th2-h", 676, 224, 488, 22, "路径 B · Direct TLS", fs=16, fw=800, color=AC2),
+    T("th2-b", 676, 254, 488, 244,
+      "部分新驱动（及 ALPN <span style=\"font-family:" + MONO + "\">postgresql</span>）<br>"
+      "把 ClientHello <b>直接当第一包</b>发过来，<br>"
+      "不再先走 SSLRequest。<br><br>"
+      "Handshake 把这段当 <span style=\"font-family:" + MONO + "\">SslRequest { direct }</span>，<br>"
+      "<span style=\"font-family:" + MONO + "\">accept_direct_tls()</span> 后<br>"
+      "<span style=\"font-family:" + MONO + "\">session.read_tls(&amp;mut early_buf)</span> 喂给 rustls。<br><br>"
+      "early data 必须在 Accept 前吃完，<br>"
+      "否则 <span style=\"font-family:" + MONO + "\">HandshakeError::EarlyData</span>。<br>"
+      "若这边没配 TLS，Direct 已经无法回 N，只能断开。",
+      fs=13, color=DIM, lh=1.55),
+    R("th3-bg", 96, 528, 1088, 134, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("th3-h", 116, 540, 900, 20, "两套 rustls::ServerConfig，同一套 CertResolver", fs=14, fw=800, color=AC),
+    T("th3-b", 116, 566, 1048, 84,
+      "rustls 不能按连接改 ALPN（<span style=\"font-family:" + MONO + "\">rustls#2260</span>），所以 <span style=\"font-family:" + MONO + "\">configure_tls()</span> 克隆出：<br>"
+      "• <span style=\"font-family:" + MONO + "\">pg_config.alpn = [postgresql]</span>　← TCP Postgres / Direct TLS<br>"
+      "• <span style=\"font-family:" + MONO + "\">http_config.alpn = [h2, http/1.1]</span>　← SQL-over-HTTP / WS 升级 / REST Broker<br>"
+      "协议版本：TLS 1.2 + 1.3（兼容老 libpq）。无 Client Auth。可选 <span style=\"font-family:" + MONO + "\">SSLKEYLOGFILE</span> 仅排障。",
+      fs=13, color=DIM, lh=1.55),
+], p, notes="握手在 proxy/src/pglb/handshake.rs。经典路径：SSLRequest(80877103) → 回 S → rustls Accept → 再读 Startup。Direct TLS：第一包就是 ClientHello，accept_direct_tls + session.read_tls 喂 early data。ALPN 只接受空或 postgresql。pg_config / http_config 因 rustls 不能动态改 ALPN 而拆成两份 ServerConfig，共用 CertResolver。GSS 拒绝。WS/HTTP 不再二次 TLS。明文 Startup + 已配 TLS = TlsRequired。")
+
+# ─────── 证书选择 CertResolver ───────
+p += 1
+std("s-tls-cert", "PROXY · TLS", "CertResolver：一张通配证，按 SNI 剥域名匹配", [
+    T("tc-desc", 96, 166, 1088, 36,
+      "<span style=\"font-family:" + MONO + "\">tls/server_config.rs</span> 把每张叶子证的 CN 收成 HashMap。"
+      "握手时 <span style=\"font-family:" + MONO + "\">ResolvesServerCert::resolve(sni)</span> 从右往左剥 label，命中即用；全都不中用 default。",
+      fs=13, color=DIM, lh=1.5),
+    *card("tc1", 96, 214, 360, 300,
+          "证书怎么进进程", [
+              "• 启动：<span style=\"font-family:" + MONO + "\">-c server.crt -k server.key</span>",
+              "• 额外：<span style=\"font-family:" + MONO + "\">certs_dir/*/tls.crt+tls.key</span>",
+              "&nbsp;&nbsp;（对齐 cert-manager 默认文件名）",
+              "• CN 规范化：",
+              "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">CN=*.neon.tech</span> → <span style=\"font-family:" + MONO + "\">neon.tech</span>",
+              "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">CN=apiauth.xxx</span> → 去掉 apiauth.",
+              "&nbsp;&nbsp;否则剥掉 <span style=\"font-family:" + MONO + "\">CN=</span> 前缀",
+              "• 同时算好 <span style=\"font-family:" + MONO + "\">TlsServerEndPoint</span>",
+              "&nbsp;&nbsp;（叶子证 DER 的 SHA-256）给 SCRAM 用",
+          ], hc=AC, fs=13, headfs=15),
+    *card("tc2", 472, 214, 360, 300,
+          "SNI 匹配算法", [
+              "sni = ep-foo-bar.ap-southeast-1.aws.neon.tech",
+              "① 整串当 key 查　→ miss",
+              "② 剥第一段　ap-southeast-1.aws.neon.tech",
+              "③ 再剥　aws.neon.tech",
+              "④ 再剥　neon.tech　→ hit 通配证",
+              "",
+              "没有嵌套自定义域，所以没做更复杂的",
+              "通配优先级。自定义 CNAME 全 miss",
+              "就落到 <b>default 证</b>——",
+              "<span style=\"font-family:" + MONO + "\">sslmode=verify-full</span> 会失败。",
+          ], hc=AC2, fs=13, headfs=15),
+    *card("tc3", 848, 214, 336, 300,
+          "没有 SNI 时", [
+              "老 libpq / 某些 JDBC 不发 SNI。",
+              "Resolver 只能给 default 证。",
+              "",
+              "后果：",
+              "• <span style=\"font-family:" + MONO + "\">require</span> 仍能连（不校主机名）",
+              "• <span style=\"font-family:" + MONO + "\">verify-full</span> 对 CNAME 失败",
+              "• endpoint 改走 options / password hack",
+              "",
+              "备选方案（代码注释里）：",
+              "SAN 塞所有域名，或按域名拆 Proxy。",
+          ], hc="#C89EFF", fs=13, headfs=15),
+    R("tc4-bg", 96, 530, 1088, 132, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.35)", radius=10),
+    T("tc4-h", 116, 542, 900, 20, "和路由那页的关系", fs=14, fw=800, color=AC2),
+    T("tc4-b", 116, 568, 1048, 82,
+      "证书匹配用的是 <b>剥完通配之后的 common_name 集合</b>；endpoint 解析用的是 <b>SNI 的第一段 label</b>。"
+      "两件事都发生在 TLS 握手，但字典不一样。<br>"
+      "<span style=\"font-family:" + MONO + "\">endpoint_sni()</span> 还要求 remainder ∈ common_names，并且丢掉保留子域 "
+      "<span style=\"font-family:" + MONO + "\">api</span>（serverless driver）和 <span style=\"font-family:" + MONO + "\">apiauth</span>（auth broker）——"
+      "这两个走 HTTP Host / Neon-Connection-String，不靠 SNI 选库。",
+      fs=13, color=DIM, lh=1.55),
+], p, notes="CertResolver（proxy/src/tls/server_config.rs）：启动加载 -c/-k，certs_dir 下 cert-manager 的 tls.crt/tls.key。CN=*.host 存成 host，CN=apiauth.x 去掉 apiauth。resolve 循环 sni.split_once('.') 直到命中，否则 default。无 SNI 也 default，verify-full 对 CNAME 失败。TlsServerEndPoint 在加载时就算好。endpoint_sni 另用第一段 label，且 api/apiauth 不参与选库。")
+
+# ─────── Channel Binding ───────
+p += 1
+std("s-tls-cbind", "PROXY · TLS", "SCRAM Channel Binding：把认证钉在这张叶子证上", [
+    T("cb-desc", 96, 166, 1088, 36,
+      "TLS 防窃听，防不了另一张合法证的中间人。SCRAM-SHA-256-PLUS 把"
+      "<span style=\"font-family:" + MONO + "\">tls-server-end-point</span>（RFC 5929）塞进 GS2 header，让密码交换和当前叶子证绑定。",
+      fs=13, color=DIM, lh=1.5),
+    *card("cb1", 96, 214, 540, 280,
+          "TlsServerEndPoint 怎么算", [
+              "<span style=\"font-family:" + MONO + "\">tls/mod.rs</span> 解析叶子证 signature OID：",
+              "• ECDSA_WITH_SHA_256 或 SHA256_WITH_RSA →",
+              "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">SHA256(cert_der)</span>　（整张叶子证，不是 tbs）",
+              "• 其它 OID（含 MD5/SHA-1）→ <span style=\"font-family:" + MONO + "\">Undefined</span>",
+              "&nbsp;&nbsp;明确不加弱哈希，未知算法记 error 日志",
+              "",
+              "握手完成后 <span style=\"font-family:" + MONO + "\">cert_resolver.resolve(sni)</span>",
+              "把这份 32 字节哈希挂到 <span style=\"font-family:" + MONO + "\">Stream::Tls</span> 上，",
+              "后续 SASL 直接读，不必再解析 X.509。",
+          ], hc=AC, fs=13.5, headfs=16),
+    *card("cb2", 656, 214, 528, 280,
+          "GS2 flag（sasl/channel_binding.rs）", [
+              "<span style=\"font-family:" + MONO + "\">n</span>　客户端不会 channel binding　→ 编码 <span style=\"font-family:" + MONO + "\">biws</span>",
+              "<span style=\"font-family:" + MONO + "\">y</span>　客户端以为服务端不会　→ <span style=\"font-family:" + MONO + "\">eSws</span>",
+              "<span style=\"font-family:" + MONO + "\">p=tls-server-end-point</span>　双方都要绑",
+              "&nbsp;&nbsp;cbind_input = <span style=\"font-family:" + MONO + "\">p=...,,</span> + 证书哈希，再 Base64",
+              "",
+              "Proxy 作为 SCRAM 终点：用 <b>自己的</b> 叶子证哈希。",
+              "连 compute 时 <span style=\"font-family:" + MONO + "\">postgres_rustls.rs</span>",
+              "再从 compute 对端证算一遍，给第二跳 SCRAM 用。",
+              "两跳的 binding 不是同一张证——这是故意的。",
+          ], hc=AC2, fs=13.5, headfs=16),
+    R("cb3-bg", 96, 510, 1088, 152, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("cb3-h", 116, 522, 900, 20, "攻击面 / 边界", fs=14, fw=800, color=AC),
+    T("cb3-b", 116, 548, 1048, 102,
+      "• PLUS 能挡住「另签一张合法通配证来终结 TLS 再转发」的 MITM；普通 SCRAM（n/y）挡不住。<br>"
+      "• 用户 <span style=\"font-family:" + MONO + "\">sslmode=require</span> 不校验主机名，必须靠 PLUS 或升级到 verify-full。<br>"
+      "• 证书轮换 = binding 哈希变了，未完成的 SCRAM 握手会失败，下次连接自动用新证。<br>"
+      "• compute 侧同样只认 P-256 + SHA-256；<span style=\"font-family:" + MONO + "\">compute_tools</span> 装证时会核对私钥和叶子证公钥一致，避免半更新。",
+      fs=13, color=DIM, lh=1.5),
+], p, notes="Channel binding：tls/mod.rs 对 ECDSA_WITH_SHA_256 / SHA256_WITH_RSA 的叶子证 DER 做 SHA-256，得到 TlsServerEndPoint；其它 OID 为 Undefined。SASL GS2 n/y/p= 见 sasl/channel_binding.rs。Proxy 用自己的证绑定客户端 SCRAM；postgres_rustls.rs 连 compute 时用 compute 对端证再绑一次。两跳不是同一张证。")
+
+# ─────── Proxy → Compute 内网 TLS ───────
+p += 1
+std("s-tls-compute", "COMPUTE · TLS", "第二跳：compute_ctl 把内部 CA 证书塞进 Postgres", [
+    T("ct-desc", 96, 166, 1088, 36,
+      "控制面把 <span style=\"font-family:" + MONO + "\">TlsConfig { key_path, cert_path }</span> 放进 compute_ctl_config。"
+      "compute_ctl 不让 PG 直接读 cert-manager 卷——要拷进 PGDATA 并 chmod 600。",
+      fs=13, color=DIM, lh=1.5),
+    *card("ct1", 96, 214, 360, 318,
+          "落地到 PGDATA", [
+              "<span style=\"font-family:" + MONO + "\">update_key_path_blocking</span>",
+              "① 读 cert-manager 的 key/crt",
+              "② <span style=\"font-family:" + MONO + "\">verify_key_cert</span>：只接受",
+              "&nbsp;&nbsp;ECDSA P-256，公钥必须匹配",
+              "③ 写入 <span style=\"font-family:" + MONO + "\">$PGDATA/server.key</span>",
+              "&nbsp;&nbsp;和 <span style=\"font-family:" + MONO + "\">server.crt</span>，mode 0600",
+              "④ postgresql.conf：",
+              "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">ssl = on</span>",
+              "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">ssl_cert_file = 'server.crt'</span>",
+              "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">ssl_key_file = 'server.key'</span>",
+              "pgBouncer / local_proxy 同步拿到同一对证。",
+          ], hc=AC, fs=13, headfs=15),
+    *card("ct2", 472, 214, 360, 318,
+          "热轮换", [
+              "<span style=\"font-family:" + MONO + "\">watch_cert_for_changes</span>",
+              "每 60s SHA-256 证书文件。",
+              "digest 变了 → 再拷一次 key/crt。",
+              "",
+              "拷之前先 verify，避免 cert-manager",
+              "滚动时 key 新、crt 旧的竞态",
+              "把 Postgres 配进不一致状态。",
+              "",
+              "PG 自己不 reload ssl 文件；",
+              "新连接用新证，取决于 PG 是否",
+              "重新打开 ssl_cert_file。",
+              "（短连接为主，通常可接受）",
+          ], hc=AC2, fs=13, headfs=15),
+    *card("ct3", 848, 214, 336, 318,
+          "Proxy 怎么验", [
+              "<span style=\"font-family:" + MONO + "\">client_config.rs</span>",
+              "RootCertStore =",
+              "　native certs（Let's Encrypt，",
+              "　给 console-redirect /",
+              "　pg-sni-router 公网那跳）",
+              "+ <span style=\"font-family:" + MONO + "\">NEON_INTERNAL_CA_FILE</span>",
+              "　（K8s 内部中间 CA）",
+              "",
+              "<span style=\"font-family:" + MONO + "\">connect_tls</span>：",
+              "Direct → 直接 rustls",
+              "Postgres → 先发 SSLRequest",
+              "compute 拒 TLS 且 sslmode=require",
+              "→ <span style=\"font-family:" + MONO + "\">TlsError::Required</span>（可重试）",
+          ], hc="#C89EFF", fs=13, headfs=15),
+], p, notes="compute_tools/src/tls.rs：watch 60s、verify ECDSA P-256 公钥匹配、写入 PGDATA server.crt/key mode 600。config.rs 写 ssl=on。libs/compute_api TlsConfig{key_path,cert_path}。Proxy client_config 加载 native + NEON_INTERNAL_CA_FILE。connect_tls 支持 Direct / Postgres SSLRequest，Require 被拒可重试。")
+
+# ─────── pg-sni-router + sslmode 边界 ───────
+p += 1
+std("s-tls-router", "PROXY · TLS", "pg-sni-router：嵌进主 Proxy 的运维端口，以及 sslmode 边界", [
+    T("tr-desc", 96, 166, 1088, 36,
+      "PR #11882 把 sni-router 嵌进主 <span style=\"font-family:" + MONO + "\">proxy</span> 进程："
+      "带上 <span style=\"font-family:" + MONO + "\">--sni-router-destination</span> 就在同进程再开两个端口。"
+      "逻辑仍在 <span style=\"font-family:" + MONO + "\">binary/pg_sni_router.rs</span>；独立 bin 只是薄封装。",
+      fs=13, color=DIM, lh=1.5),
+    *card("tr1", 96, 214, 540, 250,
+          "同进程 · 两端口", [
+              "SNI：<span style=\"font-family:" + MONO + "\">{svc}--{ns}--{port}.external</span>",
+              "→ <span style=\"font-family:" + MONO + "\">{svc}.{ns}.&lt;dest&gt;:{port}</span>",
+              "",
+              "<span style=\"font-family:" + MONO + "\">--sni-router-listen</span>　4432",
+              "&nbsp;&nbsp;只终结客户端 TLS，后端明文",
+              "<span style=\"font-family:" + MONO + "\">--sni-router-listen-tls</span>　4433",
+              "&nbsp;&nbsp;再对 compute 发 SSLRequest，内部 CA 升第二跳",
+              "证书：<span style=\"font-family:" + MONO + "\">--sni-router-tls-{key,cert}</span>",
+          ], hc=AC, fs=13, headfs=15),
+    *card("tr2", 656, 214, 528, 250,
+          "sslmode 对照（用户侧）", [
+              "<span style=\"font-family:" + MONO + "\">disable</span>　被拒（TlsRequired）",
+              "<span style=\"font-family:" + MONO + "\">prefer</span>　能连，但不推荐",
+              "<span style=\"font-family:" + MONO + "\">require</span>　加密但不校主机名；无 SNI 也能连",
+              "<span style=\"font-family:" + MONO + "\">verify-ca</span>　校链，不校主机名",
+              "<span style=\"font-family:" + MONO + "\">verify-full</span>　SNI/Host 必须对上通配 CN",
+              "&nbsp;&nbsp;自定义 CNAME 无 SAN → 失败",
+              "",
+              "无 SNI 的老客户端：用 options=endpoint%3D",
+              "或 password hack；不要指望 verify-full。",
+          ], hc=AC2, fs=13, headfs=15),
+    R("tr3-bg", 96, 480, 1088, 182, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("tr3-h", 116, 492, 900, 20, "一张图串起来", fs=14, fw=800, color=AC),
+    T("tr3-b", 116, 518, 1048, 132,
+      "用户流量：psql sslmode=verify-full → 主 listen（--proxy）→ SSLRequest/DirectTLS → CertResolver 选 *.neon.tech<br>"
+      "→ SNI 第一段变成 endpoint_id → SCRAM-PLUS 用 Proxy 叶子证哈希做 channel binding<br>"
+      "→ wake compute → Proxy 用 NEON_INTERNAL_CA 连 compute:5432（SSLRequest 或 Direct）<br>"
+      "→ compute_ctl 早已把 P-256 证放进 PGDATA，Postgres ssl=on 接住<br>"
+      "运维通道：同一进程的 4432/4433，SNI 是 <span style=\"font-family:" + MONO + "\">svc--ns--port</span>，不走认证/唤醒，只按 SNI 转发。",
+      fs=13.5, color=DIM, lh=1.5),
+], p, notes="PR #11882 把 pg-sni-router 嵌进主 proxy：#[clap(flatten)] PgSniRouterArgs，--sni-router-destination 有值才 spawn 两路 task_main（listen 4432 只终结客户端 TLS；listen-tls 4433 再 SSLRequest 升到 compute）。独立 bin/pg_sni_router.rs 只是调 binary::pg_sni_router::run()。SNI {svc}--{ns}--{port}.external → {svc}.{ns}.{dest}:{port}。用户 sslmode：disable 拒，require 不校名，verify-full 依赖 SNI 对通配 CN。无 SNI 走 options/password hack。")
+
 
 # ─────── Slide 5: Compute 层概述 ───────
 p += 1
@@ -1214,6 +1513,64 @@ std("s-compute-spec", "COMPUTE", "ComputeSpec：一份「期望状态」文档�
       "• 版本：butterfly 侧 <span style=\"font-family:" + MONO + "\">spec_version/spec_changed_at</span> 注入 JSON（Rust struct 不含，serde 忽略未知字段），数据变更 bump_spec_version + 失效缓存",
       fs=11.5, color=DIM, lh=1.66),
 ], p, notes="ComputeSpec（libs/compute_api/src/spec.rs:35）是声明式期望状态文档。主要字段：cluster（Cluster spec.rs:524：roles/databases/postgresql_conf/settings GenericOption 列表）、delta_operations（DeltaOp DROP/RENAME 等命令式增量）、tenant_id/timeline_id、mode（ComputeMode Primary/Replica/Static(lsn) spec.rs:470）、pageserver_connection_info（分片连接 spec.rs:245，旧字段 pageserver_connstring）、safekeeper_connstrings + safekeepers_generation、storage_auth_token、remote_extensions（RemoteExtSpec）、pgbouncer_settings、local_proxy_config（JWT）、skip_pg_catalog_updates、reconfigure_concurrency、drop_subscriptions_before_start、audit_log_level、autoprewarm/offload_lfc_interval_seconds、suspend_timeout_seconds、bootstrap_template、format_version/operation_uuid/features。compute_ctl 消费：get_config_from_control_plane（compute_tools/src/spec.rs:77）GET {base}/compute/api/v2/computes/{compute_id}/spec。start_compute（compute.rs:793）：前置下载 remote extensions、prepare_pgdata、按需 swap resize/disk quota。prepare_pgdata（compute.rs:1601）写 postgresql.conf → sync safekeepers 取 LSN → 拉 basebackup → 更新 pg_hba/pg_ident。apply_config（compute.rs:1972）跑 apply_spec_sql（spec_apply.rs:40）驱动 ApplySpecPhase 有序枚举（CreatePrivilegedRole...CreateAndAlterRoles...CreateAndAlterDatabases...HandleNeonExtension...DropRoles...），bootstrap_template SQL 最后跑（spec_apply.rs:358 run_bootstrap_template:1381）；handle_migrations（spec_apply.rs:243）异步跑固定 append-only 迁移列表不阻塞冷启动。reconfigure（compute.rs:2089）活时改配置重跑 apply_spec_sql + pg_ctl reload 不重启。skip_pg_catalog_updates 是行为开关：置 true 时 reconfigure（compute.rs:2146）和 configure_as_primary（compute.rs:2183）两个入口都跳过整段 apply_spec_sql——即不做 CREATE/ALTER ROLE、CREATE/DROP DATABASE、extension 对账，也不跑 bootstrap_template（run_bootstrap_template 是 apply_spec_sql 内 spec_apply.rs:358 的唯一调用点，被一并跳过），只剩重写 postgresql.conf + pg_reload_conf。butterfly 的 PS/SK 拓扑回调（apply_pod_topology_configuration）正是靠置 skip_pg_catalog_updates=true 让 /configure 只热更 conf 而不误触 catalog 全量对账和 bootstrap 重放。Butterfly 生成：lib_compute_spec.py:576 get_compute_spec 先 Redis 缓存否则 _build_spec_dict（504）组装，_build_roles（46）从 SCRAM 密文、_build_settings（218）按 ComputeFlavor calculate_pg_settings_for_memory 算 GUC，_build_pageserver_connection_info（465）建分片 map。下发两路：poll = api_compute_spec.py:163 GET spec 直接返回 body（compute_ctl 轮询该 URL）；push = lib_pod_runtime_configurator.py PodRuntimeConfigurator.configure 按 compute status 选 POST /configure（全量阻塞，port 3080，configure.rs:21，状态 ConfigurationPending 阻塞到 Running）或 POST /refresh_configuration（非阻塞，refresh_configuration.rs 只翻状态 RefreshConfigurationPending，configurator.rs 只比对 pageserver_conninfo 变才 reconfigure，port 3081）。configurator_main_loop（configurator.rs:13）监听两种 pending。角色/库变更必须 /configure 才立即生效（lib_compute_configure.py 注释 9-21）。版本：Endpoint.spec_version（models.py:324）emitted 为 spec_version/spec_changed_at 注入 JSON dict（lib_compute_spec.py:539），Rust ComputeSpec 只有 format_version:f32 和 operation_uuid，serde 忽略未知字段（spec.rs:38）；bump_spec_version（lib_endpoint_core.py:31）数据变更时 +1 并 mark_endpoint_spec_changed 失效 Redis 缓存。")
+
+# ─────── lakebase_mode ───────
+p += 1
+std("s-lakebase", "COMPUTE", "lakebase_mode：Databricks 托管形态总开关", [
+    T("lb-desc", 96, 166, 1088, 40,
+      "源码里到处出现的 <b>lakebase_mode</b> 不是某个功能的开关，而是「这套二进制正跑在 Databricks 托管环境里」的总判据。"
+      "关掉它（默认）就完全等价于开源 Neon。",
+      fs=13.5, color=DIM, lh=1.5),
+    *card("lb1", 96, 212, 536, 204,
+          "① 一个名字，两处开关", [
+              ("Lakebase = Databricks 把 Neon 内部分叉后的托管产品形态", AC2, 700),
+              "代码里叫 Hadron：45 个文件带 BEGIN_HADRON / END_HADRON 标记",
+              "&nbsp;&nbsp;（safekeeper 8、pgxn/neon 6、storage_controller 4、pageserver 6…）",
+              "",
+              ("两个同名开关各管一侧，且都默认 false", AC2, 700),
+              "① compute_ctl --lakebase-mode（bin/compute_ctl.rs:155）管进程行为",
+              "② GUC neon.lakebase_mode（neon.c:610，PGC_POSTMASTER）管 PG 内行为",
+              ("⇒ 不开时全部走 else 分支，与开源上游逐行一致", FAINT),
+          ], fs=11, headfs=15),
+    *card("lb2", 648, 212, 536, 204,
+          "② 部署形态：Pod → dblet 宿主网络", [
+              ("端口重映射：一个 --http-port 派生内外两个口", AC2, 700),
+              "external = http_port，internal = http_port + 1（compute_ctl.rs:196-211）",
+              "postgresql.conf 显式写出 port =，并单列 Databricks settings 段（config.rs:360）",
+              "",
+              ("容器化前提不同 ⇒ 三处让步", AC2, 700),
+              "允许 pgdata 已被预挂载，不强制重建（compute.rs:1207）",
+              "跳过 prewarm_postgres_vm_memory：会撞 dblet 端口（compute.rs:1729）",
+              "日志改落文件：COMPUTE_CTL_LOG_DIRECTORY（compute_ctl.rs:228）",
+          ], hc=AC2, fs=11, headfs=15),
+    *card("lb3", 96, 428, 536, 196,
+          "③ 身份 / 权限 / TLS：catalog 被 Databricks 化", [
+              ("spec 里多一段 databricks_settings（spec.rs:601-610）", AC2, 700),
+              "→ ssl_ca_file、databricks.workspace_url、identity_login、",
+              "&nbsp;&nbsp;enable_sql_restrictions，外加 databricks_pg_hba / pg_ident（pg_helpers.rs:193）",
+              "",
+              ("apply_spec_sql 多插 5 个 phase（spec_apply.rs:192-215 / 291-312）", AC2, 700),
+              "建 databricks_monitor / _control_plane / _gateway 三个角色（compute.rs:449）",
+              "装 databricks_auth 扩展，给 monitor 授 neon.* 与 health_check 权限",
+              "privileged role 去掉 REPLICATION（:695）；迁移把 neon_superuser 改写为 databricks_superuser",
+          ], hc="#7CB3F4", fs=11, headfs=15),
+    *card("lb4", 648, 428, 536, 196,
+          "④ 自愈、背压与可观测", [
+              ("连不上 pageserver 时自己去要新配置", AC2, 700),
+              "libpagestore.c:1065 只有 lakebase 才 POST /refresh_configuration",
+              "configurator.rs:22-38 的等待谓词也只在 lakebase 多守两个状态",
+              "",
+              ("卡死就主动退出，让上层重新调度", AC2, 700),
+              "pg_init_timeout 看门狗：5s 轮询，超时 exit(1)（monitor.rs:363-397）",
+              "背压阈值按分片数放大：max_replication_*_lag × 分片数（walproposer_pg.c:511）",
+              "指标 pg_cctl_attached / _pagestream_request_errors / _statement_timeout_errors",
+          ], hc="#C89EFF", fs=11, headfs=15),
+    R("lb-band-bg", 96, 636, 1088, 44, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.28)", radius=10),
+    T("lb-band", 112, 648, 1056, 22,
+      "一句话：端口/目录/日志随 dblet，身份与权限随 Databricks IAM，异常靠 /refresh_configuration + 看门狗自愈 —— 开源部署保持 false，这些分叉逻辑一行都不会执行。",
+      fs=11.5, color=AC, lh=1.4),
+], p, notes="这一页回答「lakebase_mode 到底是干什么用的」。结论先说：它不是某个具体功能的 feature flag，而是「本二进制正运行在 Databricks 托管环境（Databricks Lakebase）里」的总判据；置 false（默认）时所有相关分支都走 else，行为与开源上游 Neon 逐行一致。第一件要澄清的事是它有两个同名但彼此独立的开关。Rust 侧是 compute_ctl 的命令行参数 --lakebase-mode（compute_tools/src/bin/compute_ctl.rs:155-156，#[arg(long, default_value_t = false, action = clap::ArgAction::Set)]），控制 compute_ctl 进程自身的行为；PG 侧是扩展 GUC neon.lakebase_mode（pgxn/neon/neon.c:610-617，全局变量声明在 neon.c:51 / neon.h:24），级别是 PGC_POSTMASTER，即只能在启动时确定、改它必须重启 Postgres。两者默认都是 false，且没有互相同步的机制——理论上可以只开一侧，这也是读代码时容易踩的坑。这套分叉在仓库里的代号是 Hadron：45 个文件带 BEGIN_HADRON / END_HADRON（或 BEGIN HADRON）注释标记，分布上 safekeeper/src 8 个、pgxn/neon 6 个、storage_controller/src 4 个、libs/remote_storage/src 4 个、pageserver/src 及 pageserver/src/tenant 共 6 个、compute_tools/src 3 个。compute_tools/src/http/routes/refresh_configuration.rs 的文件头直接写着 This file is added by Hadron，configurator.rs:17-20 的分叉也用 /* BEGIN_HADRON */ … /* END_HADRON */ 包着。第二块是部署形态的适配，这是 lakebase_mode 最「无聊」但最实际的用途。Databricks 侧的计算单元叫 dblet，用宿主网络而非独立 Pod 网络，所以端口不能像 K8s 那样随便固定：compute_ctl.rs:196-211 在 lakebase 下做端口重映射，external HTTP 端口取 http_port.unwrap_or(external_http_port)，internal 端口取 http_port + 1，即一个参数派生出内外两个口；config.rs:360-376 在写 postgresql.conf 时额外从 connstr 里解析出端口并显式写 port = {port}，同时把 Databricks 相关 GUC 用 # Databricks settings start / end 注释块单独框出来。另外三处让步：compute.rs:1207-1213 允许 pgdata 目录已经被外部预挂载好而不强制清建（开源路径假设自己独占地创建 PGDATA）；compute.rs:1729-1734 跳过 prewarm_postgres_vm_memory，源码注释写明理由是 could run into dblet port conflicts；compute_ctl.rs:228-230 支持通过 COMPUTE_CTL_LOG_DIRECTORY 把日志落到文件而不是只写 stdout（宿主网络环境里没有 K8s 那套日志采集）。同时 compute_ctl.rs:237-240 在 lakebase 下额外初始化 installed_extensions 与 hadron_metrics 两组指标。第三块是身份、权限与 TLS，也就是 catalog 层面的 Databricks 化。spec 结构体多一个字段 libs/compute_api/src/spec.rs:214 pub databricks_settings: Option<DatabricksSettings>，结构定义在 :601-610，包含 pg_compute_tls_settings、databricks_pg_hba、databricks_pg_ident、databricks_workspace_host；pg_helpers.rs:193-222 负责把它渲染成 postgresql.conf 里的 ssl_ca_file、databricks.workspace_url、databricks.enable_databricks_identity_login = true、databricks.enable_sql_restrictions = true，pg_hba / pg_ident 则直接用 Databricks 给的内容覆盖。spec_apply.rs 里两个 phase 列表都被插入了额外阶段：第一个列表（:192-215）在 CreatePrivilegedRole 之后插 CreateDatabricksRoles、AlterDatabricksRoles，第二个列表（:291-312）在 HandleNeonExtension 之后插 HandleDatabricksAuthExtension，并在尾部追加 AddDatabricksGrants、CreateDatabricksMisc；枚举变体在 :535-556，impl 分支在 :705、:715、:1216、:1258、:1302。这五个 phase 具体做的事：CreateDatabricksRoles 调 compute.rs:449 的 create_databricks_roles()，用 DO $$ IF NOT EXISTS … CREATE ROLE 的幂等写法建三个角色——databricks_monitor（IN ROLE pg_monitor，给 prometheus_stats_exporter 用，走 local 连接 trust 认证所以无密码）、databricks_control_plane（SUPERUSER，证书认证，给 brickstore 控制面用）、databricks_gateway（给 httpgateway 用）；注释说明这些角色的认证方式配在 universe 仓库的 databricks_pg_hba.conf 里。AlterDatabricksRoles 跑 sql/alter_databricks_reader_roles_timeout.sql，给已存在的 databricks_reader_* 角色回填 statement timeout。HandleDatabricksAuthExtension 先 DROP EXTENSION IF EXISTS databricks_auth 再 CREATE EXTENSION databricks_auth（每次 apply 都重建，保证版本跟随镜像），然后 GRANT SELECT ON databricks_auth_metrics TO pg_monitor。AddDatabricksGrants 给 databricks_monitor 授 USAGE ON SCHEMA neon（才能调 neon.* 函数）、health_check 表的 SELECT/INSERT/UPDATE（读写探针用）、pg_ls_dir(text) 的 EXECUTE。CreateDatabricksMisc 跑 sql/create_databricks_misc.sql 建一个把异常转成 0/1 的函数供 databricks_monitor 用。此外两处权限差异值得注意：spec_apply.rs:695-700 的 privileged role 在 lakebase 下是 CREATEDB CREATEROLE NOLOGIN BYPASSRLS，上游是 … NOLOGIN REPLICATION BYPASSRLS——REPLICATION 被摘掉了；migration.rs:138-142 在 lakebase 下把迁移 SQL 里的 neon_superuser 字符串统一改写成 databricks_superuser（spec.rs:242-247/311 负责把 lakebase_mode 传进 MigrationRunner）。第四块是稳定性与可观测。自愈闭环就是前面几页讲过的 /refresh_configuration：触发端 pgxn/neon/libpagestore.c:1058 的 hadron_request_configuration_refresh 第一行就是 if (!lakebase_mode) return false;（:1065），所以生产上只有 lakebase 才会由 PG 主动 nudge compute_ctl 去拉新 spec；接收端和状态机其实是不分叉的（http/server.rs:73-77 无条件注册路由，responses.rs:198-201 的 RefreshConfigurationPending 状态、configurator.rs:58-187 的处理逻辑都一样），唯一分叉的是 configurator.rs:22-38 的等待谓词——lakebase 用 while 同时守 ConfigurationPending / RefreshConfigurationPending / Failed 三个状态，非 lakebase 只用一个 if 判 ConfigurationPending，因此可能丢掉在 set_status(Running) 与重新拿锁之间到达的刷新信号。看门狗：monitor.rs:363-397 把普通的条件变量等待换成 wait_timeout(5s) 轮询，配合 pg_init_timeout 超时后直接 std::process::exit(1)，把「PG 起不来」变成进程退出让上层（HCM）重调度而不是无限挂着；terminate.rs:40-52 在终止一个 Empty compute 后延迟 5s 再退进程，避免 HCM 看到连接被突然掐断。背压：walproposer_pg.c:511-525 在 lakebase 下把 max_replication_write_lag / flush_lag / apply_lag 乘上 Max(1, get_num_shards())，让阈值随租户分片数线性放大（分片越多，聚合吞吐越高，固定阈值会误刹车）；相关的 Databricks GUC 还有 databricks.max_wal_mb_per_second（walproposer_pg.c:278）、databricks.throttled_max_wal_bytes_per_second（:288）、hadron.conf_refresh_reconnect_attempt_threshold（libpagestore.c:1590）、databricks.test_hook（neon.c:622，仅测试用）。可观测：compute_tools/src/hadron_metrics.rs:1-60 定义三个指标——pg_cctl_pagestream_request_errors_total（每次收到 /refresh_configuration 就 +1，等价于统计 PG 侧 pagestream 出错次数）、pg_cctl_configure_statement_timeout_errors_total（spec_apply.rs:640-660 把 SQLSTATE 57014 ERRCODE_QUERY_CANCELED 计进来）、pg_cctl_attached（compute.rs:2828-2852 的 set_spec / update_attached_metric 维护，标记当前挂载的 tenant/timeline）。PG 侧则在 neon.c:476-479 装 emit_log_hook = DatabricksSqlErrorHookImpl，该 hook（:451-463）把 ERRCODE_DATA_CORRUPTED / ERRCODE_INDEX_CORRUPTED / ERRCODE_INTERNAL_ERROR 计入 databricks_metrics_shared 共享内存（neon.c:854-856 在 neon_shmem_startup_hook 里 DatabricksMetricsShmemInit，neon_perf_counters.c:70-72 把 DatabricksMetricsShmemSize 加进 shmem 请求）；这些计数器被 neon_perf_counters.c:435 附近搭车塞进已有的 neon perf-counters 视图，源码注释写明动机是 so that we don't need to introduce neon--1.x+1.sql to add a new view，即避免为加一个视图而升级扩展 SQL 版本。测试里打开这个开关的位置：test_sharding.py:1754、test_compaction.py:893、test_wal_acceptor.py:2767、test_hadron_ps_connectivity_metrics.py:59/108 打 GUC，test_compute_termination.py:82 给 compute_ctl 传 --lakebase-mode true。最后一个实践要点：control_plane/ 目录（neon_local）里一个 lakebase 字样都没有，但 neon_local endpoint refresh-configuration（neon_local.rs:1608-1614 → endpoint.rs:1183-1196）照样能用 /refresh_configuration，说明这条通道本身不依赖 lakebase_mode，只是生产上的自动触发被 pgxn 那一行 gate 住了。")
+
 
 # ─────── Slide 8: LFC (Local File Cache) ───────
 p += 1
@@ -2763,7 +3120,7 @@ std("s-numbers", "数字", "关键参数一览", [
 
 # ─────── log prefixes: [NEON] [NEON_SMGR] [WP] [COMMUNICATOR] ───────
 p += 1
-std("s-log-prefix", "COMPUTE", "读懂 compute 日志：[NEON] / [NEON_SMGR] / [WP] / [COMMUNICATOR]", [
+std("s-log-prefix", "COMPUTE", "读懂 compute 日志：四类方括号前缀", [
     T("lp-desc", 96, 170, 1088, 44,
       "kubectl 拉出的 compute-pod 日志里，PG 相关行都带方括号前缀 —— 各自来自不同子系统，"
       "定位问题时能一眼分辨是内核、存储、复制还是通信出了状况。",
@@ -2867,33 +3224,32 @@ std("s-sk-tasks", "SAFEKEEPER", "safekeeper 周期任务清单：以 timeline_ma
 
 # ─────── safekeeper 日志：两类常见刷屏诊断 ───────
 p += 1
-std("s-sk-logs", "SAFEKEEPER", "safekeeper 常见刷屏日志诊断：ENOENT 竞态 vs 预期 NotFound", [
+std("s-sk-logs", "SAFEKEEPER", "safekeeper 常见刷屏日志诊断：首段未初始化 vs 预期 NotFound", [
     T("skl-desc", 96, 166, 1088, 44,
-      "生产日志里最常见的两类 INFO 行——partial 上传 ENOENT、timeline NotFound——都<b>不是故障</b>，但成因完全不同，"
-      "下面给出完整调用链与自愈条件。",
+      "生产日志里最常见的两类 INFO 行——partial 上传 ENOENT、timeline NotFound——都<b>不丢数据</b>，但一个<b>不自愈</b>、"
+      "一个纯属预期，下面给出完整调用链与处置。",
       fs=14, color=DIM, lh=1.5),
     *card("skl4", 96, 218, 530, 404,
-          "① partial 上传 ENOENT —— 竞态，不是丢数据", [
-              ("term: 0 ⇒ 从未有 walproposer 选举，空闲 timeline", AC2, 700),
-              ("· get_last_log_term 返回 0（safekeeper.rs:204-210）", FAINT),
-              ("· INITIAL_TERM=0（safekeeper_api/lib.rs:17）", FAINT),
+          "① partial 上传 ENOENT —— 首段从未建过", [
+              ("term: 0 ⇒ 从未有 walproposer 选举过", AC2, 700),
+              ("&nbsp;&nbsp;get_last_log_term 返回 0（safekeeper.rs:202-209）", FAINT),
               "",
-              "调用链：main_task → do_upload(:564)",
-              "→ upload_segment(:239/246) 拼出本地路径",
-              "→ backup_partial_segment 里 File::open 失败",
-              ("&nbsp;&nbsp;(wal_backup.rs:572-580)", FAINT),
+              ("根因：本地首段从未创建，而非被删除", AC2, 700),
+              "建 timeline 只写 control file，首段留给后面补",
+              ("&nbsp;&nbsp;(timelines_global_map.rs:318 的 TODO 写明了)", FAINT),
+              "首段只在 ProposerElected 里建(safekeeper.rs:1193)",
+              "⇒ 没有 compute 连上来过，文件永远不存在",
               "",
-              ("根因：本地 .partial 已被驱逐流程删掉", AC2, 700),
-              "do_eviction → delete_offloaded_wal → remove_file",
-              ("&nbsp;&nbsp;(timeline_eviction.rs:159-193)", FAINT),
-              "但正常流程里 offloaded 后不该再跑 partial backup",
-              ("&nbsp;&nbsp;(spawn 前查 !is_offloaded，manager.rs:285；反向", FAINT),
-              ("&nbsp;&nbsp;也要求 partial_task.is_none()，eviction.rs:41)", FAINT),
-              "⇒ 驻留保护与驱逐删文件的状态分歧（低危边缘 case）",
+              ("等待保护为何没挡住：cfile commit_lsn 非零", AC2, 700),
+              "段文件缺失时 find_end_of_wal 原样返回 start_lsn",
+              ("&nbsp;&nbsp;(xlog_utils.rs:245) ⇒ flush_lsn = commit_lsn ≠ 0", FAINT),
+              "而 :482 的等待条件是 flush_lsn == Lsn(0)，穿过去了",
               "",
-              ("自愈：info! 级(:573)，非 warn/error；数据在远端", AC, 700),
-              "partial 和其他 SK 上都有，正确 offload 或反驱逐重下载",
-              "后即恢复。长期不自愈才值得深追。",
+              ("不自愈：15m 一轮，攒到 11 条再 gc 清空重来", "#FF8080", 700),
+              "do_upload 先 commit_state 落盘、再上传(:306/308)，",
+              "失败就漏一条 InProgress；&gt;10 触发 WARN+gc(:450)",
+              "且 needs_uploading 恒 true ⇒ 该 timeline 永不可驱逐",
+              ("处置：起一次 compute 建出首段，或删掉孤儿 timeline", AC, 700),
           ], hc="#FF8080", fs=11, headfs=15),
     *card("skl5", 660, 218, 524, 404,
           "② GET timeline → NotFound —— 预期行为", [
@@ -2922,7 +3278,7 @@ std("s-sk-logs", "SAFEKEEPER", "safekeeper 常见刷屏日志诊断：ENOENT 竞
       "文件名解码：&lt;segno&gt;_&lt;term&gt;_&lt;flush_lsn&gt;_&lt;commit_lsn&gt;_sk&lt;node_id&gt;.partial —— 注意 "
       "<b>flush 在 commit 之前</b>（wal_backup_partial.rs:195），容易读反。",
       fs=11, color=DIM, lh=1.5),
-], p, notes="这一页专门诊断生产日志里反复刷的那两类 safekeeper INFO 行，全部经 background agent 从源码逐条核实过 file:line。第一类：partial_backup 反复报 failed to upload ... Failed to open file 「.../000000010000000000000001.partial」 for wal backup: No such file or directory。调用链是 main_task → do_upload（:564）→ upload_segment（:239/246）拼出本地路径 → wal_backup::backup_partial_segment（wal_backup.rs:572-580）里 File::open 失败，错误文本就是那句 context。关键线索是 PartialRemoteSegment 里的 term: 0：last_log_term 由 get_last_log_term（safekeeper.rs:204-210）算，term_history 为空时返回 0，而新建 timeline 的初始 term 就是 INITIAL_TERM=0（state.rs:122-138），所以 term:0 意味着这条 timeline 从来没有 walproposer 赢过选举、提交过真实 term 下的 WAL——是个空闲/空 timeline，正好是驱逐候选。删掉本地文件的机制是 timeline 驱逐：do_eviction（timeline_eviction.rs:148）先校验本地段与远端一致，把 control file 切成 Offloaded，然后在 delete_offloaded_wal 打开时通过 delete_local_segment 直接 remove_file 掉本地 .partial（:159-161/187-193），此后只剩远端副本。但按设计，offloaded 的 timeline 不该再跑 partial backup（update_partial_backup 只在 !is_offloaded 时 spawn，timeline_manager.rs:285；反过来 ready_for_eviction 也要求 partial_backup_task.is_none()，timeline_eviction.rs:41）。所以看到 partial 任务活着、去开一个已被驱逐删掉的文件，说明 partial 任务的驻留保护与驱逐删文件之间出现了竞态或管理器状态分歧——是真实的边缘 case，但危害很低：日志级别是 info!（wal_backup_partial.rs:573）而非 warn/error，已提交的数据在远端 partial 和其他 SK 上都有，循环会继续重试，等 timeline 被正确 offload 或反驱逐（do_uneviction → redownload_partial_segment 会把 .partial 重新下载回来）就自愈。只有长期不自愈才值得深追，且修的方向是驱逐与 partial 任务的交互，不是上传代码本身。远端文件名由 remote_segment_name（wal_backup_partial.rs:195-210）格式化成 segno_term_flush_lsn_commit_lsn_sk<node>.partial，注意顺序是 flush 在 commit 前面，容易读反；本地文件名只是 segno.partial。第二类：GET /v1/tenant/{tid}/timeline/{tlid} 返回 NotFound: timeline ... not found。路由注册在 safekeeper/src/http/routes.rs:765，handler 是 timeline_status_handler（:170），它调 global_timelines.get(ttid)，timeline 不在本机内存 map 里就返回 TimelineError::NotFound（timelines_global_map.rs:92），再映射成 ApiError::NotFound(\"timeline {} not found\")（timeline.rs:429-431）；外层「Error processing HTTP request」这句以及它是 INFO 级，都来自 libs/http-utils/src/error.rs:157（NotFound 分支专门用 info! 打）。调用方：仓库内调 timeline_status 的只有 safekeeper 自己——pull_timeline.rs:512/567 在 pull/成员变更时探 donor 状态，recovery.rs:265-273 的 peer recovery 直接打这个 URL；而 storage controller 的 SafekeeperClient（storage_controller/src/safekeeper_client.rs:63-170）根本没实现 timeline_status，它的心跳走 get_utilization、间隔 5s（heartbeater.rs:341-351），所以这个 ~10 分钟的轮询不是 storcon 发的，更可能来自对端 SK 的 pull/recovery 或仓库外的控制面/巡检，探的是已删除、已迁走或已被 exclude 的 timeline。pull 路径本身就把 NOT_FOUND 当无害处理（pull_timeline.rs:571-579，日志写 no need to pull it），所以这类行属预期噪音。结论：两类行都是 INFO、都不代表可用性受损；NotFound 完全预期，partial ENOENT 是低危竞态、通常自愈。")
+], p, notes="这一页专门诊断生产日志里反复刷的那两类 safekeeper INFO 行，全部经源码逐条核实过 file:line。第一类：partial_backup 反复报 failed to upload ... Failed to open file 「/data/<tenant>/<timeline>/000000010000000000000001.partial」 for wal backup: No such file or directory，每 15 分钟一次，并且每约 2h45m 夹一条 WARN too many segments in control_file state, running gc: 11 加一批 deleting objects。注意这里的结论与早期版本相反：本地文件不是被驱逐删掉的，而是从来没有被创建过，所以这个循环不会自愈。根因链：（1）建 timeline 时只写 control file。GlobalTimelines::create（timelines_global_map.rs:289-326）里有明确 TODO「currently we create only cfile. It would be reasonable to immediately initialize first WAL segment as well.」（:318-321）；真正 materialize 第一个 WAL 段文件的只有 initialize_first_segment（wal_storage.rs:418-434），唯一调用点是 ProposerElected 处理路径 safekeeper.rs:1193-1196，且带 if flush_lsn() == Lsn::INVALID 的守卫。（2）日志里的 term: 0 就是「从未有 walproposer 选举」的铁证：get_last_log_term（safekeeper.rs:202-209）在 term_history.up_to(flush_lsn) 为空时返回 0，而 INITIAL_TERM=0（libs/safekeeper_api/src/lib.rs:17）注释也写明「wp is never elected with it」。所以这条 timeline 上从来没有 compute 连上来过，首段自然不存在。（3）partial backup 里「没数据就等着」的保护是拿 Lsn(0) 判的（wal_backup_partial.rs:482 的 while flush_lsn == Lsn(0)），但这里 flush_lsn 非零：SC 建 timeline 时发的是 commit_lsn: None + 非零 start_lsn（storage_controller/src/service/safekeeper_service.rs:87-96），routes.rs:116 做 commit_lsn.unwrap_or(start_lsn) 之后 cfile 里的 commit_lsn 就是非零的；PhysicalStorage::new（wal_storage.rs:168-240）在 commit_lsn != 0 时用 find_end_of_wal 推 flush_lsn，而 find_end_of_wal 在段文件缺失时原样返回传入的 start_lsn（libs/postgres_ffi/src/xlog_utils.rs:227-290，open_wal_segment 对 NotFound 返回 Ok(None)）。于是 flush_lsn == commit_lsn != 0，保护条件穿过去，prepare_upload 照常拼出 segno=1 的文件名，upload_segment(:246) 拼本地路径，backup_partial_segment 里 File::open 吃 ENOENT，错误文本的 context 在 wal_backup.rs:578-580。（4）为什么会攒到 11 条再清空：do_upload（:291-326）的顺序是先把 InProgress 记进 control file 并落盘（commit_state(state_1)，:306）再上传（:308），失败用 ? 直接返回，后面标 Uploaded/Deleting 的 state_2 和 gc() 都执行不到，于是每失败一轮就往 cfile 里漏一条 InProgress；主循环开头有兜底检查 MAX_SIMULTANEOUS_SEGMENTS=10、判断是 > 10（:450-462），到第 11 条时打 WARN 并强制 gc()；gc()（:343-383）只保留 status==Uploaded 的项，此处一条 Uploaded 都没有，于是把 11 条全部推进 segments_to_delete、:365-368 的 assert 侥幸通过、state.segments 清空，循环从头再来。因为 (segno, term, commit_lsn, flush_lsn, node_id) 五个量一直不变，remote_segment_name（:195-210）产出的 11 个名字完全相同，等于对同一个 S3 key 发 11 次 DELETE，10 次空转——这也是判断状态静止的好线索。（5）另外两条可能路径可以排除：驱逐删文件不成立，delete_offloaded_wal 默认 false（lib.rs:193，CLI 是无默认值的 bool flag，bin/safekeeper.rs:208），更关键的是 ready_for_eviction 要求 !needs_uploading（timeline_eviction.rs:33-64），而 partial_backup_uploaded 恒为 None ⇒ needs_uploading（:408-421）恒 true ⇒ 这条 timeline 永远不可能被驱逐，也就永远不可能走到删文件那步；WAL 回收也不成立，remote_consistent_lsn 建时被置 Lsn(0)（state.rs），calc_horizon_lsn（remove_wal.rs:17-33）取 min 后为 0，再 segment_number().saturating_sub(1) = 0，不大于 last_removed_segno，回收任务从未被 spawn（timeline_manager.rs:571-576）。危害评估：数据安全零风险，待传的 WAL 本来就不存在；但也不是纯噪音——每 15m 一条 INFO、每 2h45m 一条 WARN，每轮一次 control file 落盘 fsync（cfile 单调涨到 11 条再清空），每轮 gc 发 11 次冗余 DELETE，且该 timeline 永久占着 manager 任务、broker push 和一份驻留态无法驱逐。处置：先判断该 timeline 该不该存在——是建完从没启过 compute 的孤儿分支就走控制面删除；该存在就在这个分支上起一次 compute，walproposer 选出 term>=1、initialize_first_segment 建出段文件，下一轮上传成功后状态收敛成一条 Uploaded，main_task 直接 return（:465-479），噪音消失且 timeline 转为可驱逐；只想清已攒下的垃圾可以打 POST /v1/tenant/:tenant_id/timeline/:timeline_id/backup_partial_reset（http/routes.rs:513-528，注册在 :801-802），但它只重置 cfile 状态与远端对象，needs_uploading 仍为 true，止不住 15m 一次的重试；上游修法就写在那个 TODO 上：建 timeline 时顺手初始化首段，或把 :482 的等待条件从 flush_lsn == Lsn(0) 改成判本地段文件是否存在。远端文件名由 remote_segment_name 格式化成 segno_term_flush_lsn_commit_lsn_sk<node>.partial，注意顺序是 flush 在 commit 前面，容易读反；本地文件名只是 segno.partial。第二类：GET /v1/tenant/{tid}/timeline/{tlid} 返回 NotFound: timeline ... not found。路由注册在 safekeeper/src/http/routes.rs:765，handler 是 timeline_status_handler（:170），它调 global_timelines.get(ttid)，timeline 不在本机内存 map 里就返回 TimelineError::NotFound（timelines_global_map.rs:92），再映射成 ApiError::NotFound(\"timeline {} not found\")（timeline.rs:429-431）；外层「Error processing HTTP request」这句以及它是 INFO 级，都来自 libs/http-utils/src/error.rs:157（NotFound 分支专门用 info! 打）。调用方：仓库内调 timeline_status 的只有 safekeeper 自己——pull_timeline.rs:512/567 在 pull/成员变更时探 donor 状态，recovery.rs:265-273 的 peer recovery 直接打这个 URL；而 storage controller 的 SafekeeperClient（storage_controller/src/safekeeper_client.rs:63-170）根本没实现 timeline_status，它的心跳走 get_utilization、间隔 5s（heartbeater.rs:341-351），所以这个 ~10 分钟的轮询不是 storcon 发的，更可能来自对端 SK 的 pull/recovery 或仓库外的控制面/巡检，探的是已删除、已迁走或已被 exclude 的 timeline。pull 路径本身就把 NOT_FOUND 当无害处理（pull_timeline.rs:571-579，日志写 no need to pull it），所以这类行属预期噪音。结论：两类行都是 INFO、都不代表可用性受损，但第一类不自愈、需要人工处置，第二类完全预期、可以忽略。")
 
 # ─────── pageserver 周期任务清单 ───────
 p += 1
