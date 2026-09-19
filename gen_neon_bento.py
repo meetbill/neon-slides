@@ -606,6 +606,53 @@ std("s-conn-route", "PROXY", "连上 Neon：Proxy 怎么知道你要连哪个库
       fs=12, color=DIM, lh=1.7),
 ], p, notes="连接 Neon 的 endpoint 路由三法，统一入口 ComputeUserInfoMaybeEndpoint::parse（proxy/src/auth/credentials.rs:74-156），由 proxy/src/proxy/mod.rs:53 每连接调一次。① options 启动参数：?options=endpoint%3Dep-xxx，project= 是旧写法仍兼容；解析 options_raw()（pqproto.rs:398）拆词 + parse_endpoint_param（password_hack.rs:33）取前缀 + .at_most_one() 保证唯一，出现两个 token 或同时有 endpoint= 和 project= 都判歧义返回 None（测试 credentials.rs:317,336）。② TLS SNI：<endpoint>.<common-name>，第一个点前 label 是 endpoint_id，后半段必须在证书 CN 集合内，endpoint_sni() credentials.rs:63；保留子域 api（SERVERLESS_DRIVER_SNI）和 apiauth（AUTH_BROKER_SNI）不走 SNI 路由，见 serverless/mod.rs:60；SNI 从 stream.rs:266 sni_hostname() 取，WebSocket 客户端无 SNI 用 HTTP Host 头代替（pglb/mod.rs:190）。③ Password Hack：给不支持 SNI 的老客户端，格式 endpoint=<name>;<password> 或 endpoint=<name>$<password>，分号和美元符谁先出现按谁切（password_hack.rs:16-30）；只在①②都失败时触发，在 auth_quirks（backend/mod.rs:211）里 TryFrom 失败分支调 hacks::password_hack_no_authentication（hacks.rs:63），Proxy 先发 AuthenticationCleartextPassword（flow.rs:77），密码不在 Proxy 校验直接透传 compute。优先级：match (endpoint_option, endpoint_from_domain) credentials.rs:106，两者不一致直接 InconsistentProjectNames 拒连；一致或只有一个用 a.or(b) 即 options 优先；都没有则 None 落 Password Hack，解不出返回 MissingEndpointName 并提示升级 libpq 或加 ?options=endpoint%3D<id>（auth/mod.rs:50）。SniKind 指标区分 Sni/NoSni/PasswordHack。")
 
+# ─────── neon_proxy_params_compat：启动参数透传开关 ───────
+p += 1
+std("s-params-compat", "PROXY", "neon_proxy_params_compat：启动参数透传的兼容开关", [
+    T("pc-desc", 96, 162, 1088, 40,
+      "客户端启动包里带的 GUC（<span style=\"font-family:" + MONO + "\">IntervalStyle</span>、<span style=\"font-family:" + MONO + "\">TimeZone</span>、<span style=\"font-family:" + MONO + "\">search_path</span>…），Proxy <b>默认只放行白名单</b>，其余<b>静默丢弃</b>。"
+      "该开关<b>全量透传</b>给 compute。收口于 <span style=\"font-family:" + MONO + "\">AuthInfo::set_startup_params</span>（<span style=\"font-family:" + MONO + "\">compute/mod.rs:216-249</span>）。",
+      fs=12.5, color=DIM, lh=1.45),
+    # left card: default (allowlist)
+    R("pc1-bg", 96, 206, 534, 246, fill=PANEL, stroke=EDGE, radius=12),
+    T("pc1-n", 114, 216, 300, 18, "① 默认（flag 未设置）", fs=11, fw=800, color=AC, ff=MONO),
+    T("pc1-h", 114, 237, 500, 22, "白名单转发 + 强制 UTF8", fs=14.5, fw=800, color=AC),
+    T("pc1-b", 114, 264, 500, 182,
+      "<span style=\"font-family:" + MONO + "\">arbitrary_params=false</span>：先钉 <span style=\"font-family:" + MONO + "\">client_encoding=UTF8</span><br>"
+      "（<span style=\"font-family:" + MONO + "\">mod.rs:221</span>），再逐 key <b>match</b>，只放行：<br>"
+      "&nbsp;&nbsp;• <span style=\"font-family:" + MONO + "\">user</span> / <span style=\"font-family:" + MONO + "\">database</span>（skip_db_user 时跳）<br>"
+      "&nbsp;&nbsp;• <span style=\"font-family:" + MONO + "\">application_name</span> / <span style=\"font-family:" + MONO + "\">replication</span><br>"
+      "&nbsp;&nbsp;• <span style=\"font-family:" + MONO + "\">options</span> → <span style=\"font-family:" + MONO + "\">filtered_options()</span> 洗掉<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;neon_*/endpoint token（<span style=\"font-family:" + MONO + "\">mod.rs:380</span>）<br>"
+      "其余 key → <span style=\"font-family:" + MONO + "\">_ =&gt; {}</span> <b>直接丢弃</b>",
+      fs=11.5, color=DIM, lh=1.72),
+    # right card: params_compat=true + why not long-term
+    R("pc2-bg", 650, 206, 534, 246, fill=PANEL, stroke=EDGE, radius=12),
+    T("pc2-n", 668, 216, 300, 18, "② neon_proxy_params_compat:true", fs=11, fw=800, color=AC2, ff=MONO),
+    T("pc2-h", 668, 237, 500, 22, "全量透传 —— 迁移期逃生舱", fs=14.5, fw=800, color=AC2),
+    T("pc2-b", 668, 264, 500, 182,
+      "<span style=\"font-family:" + MONO + "\">arbitrary_params=true</span>：不塞 client_encoding，<br>"
+      "多一条兜底 match 分支 <span style=\"font-family:" + MONO + "\">k if arbitrary_params =&gt; insert</span><br>"
+      "（<span style=\"font-family:" + MONO + "\">mod.rs:240</span>）→ 任意 GUC 原样进 compute<br>"
+      "注释直言 <i>“a flag for a period of backwards<br>compatibility”</i>（<span style=\"font-family:" + MONO + "\">mod.rs:238</span>）<br>"
+      "<b>别长期开</b>：② 放弃白名单防护、丢掉强制 UTF8；<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">.is_some()</span> 只判存在（<span style=\"font-family:" + MONO + "\">proxy/mod.rs:91</span>），<br>"
+      "&nbsp;&nbsp;写 <span style=\"font-family:" + MONO + "\">:false</span> 也算开；透传是隐式行为易踩坑",
+      fs=11.5, color=DIM, lh=1.72),
+    # bottom band: recommendation + search_path trap + example
+    R("pc3-bg", 96, 466, 1088, 196, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("pc3-h", 116, 476, 1000, 20, "结论：当「迁移期临时补丁」用，能 SET / 会话级解决的就别开", fs=13, fw=800, color=AC),
+    T("pc3-b", 116, 502, 1048, 156,
+      "<b>推荐替代（按优先级）</b>：① <span style=\"font-family:" + MONO + "\">ALTER ROLE app SET search_path=custom</span> / <span style=\"font-family:" + MONO + "\">ALTER DATABASE db SET ...</span>（持久，连接自动生效，不碰 proxy 透传）"
+      "　② 会话级 <span style=\"font-family:" + MONO + "\">SET search_path=custom, public</span>　③ <span style=\"font-family:" + MONO + "\">options=-csearch_path=custom</span>（走 options 白名单分支，免开关）<br>"
+      "<b>典型反例 search_path</b>：<span style=\"font-family:" + MONO + "\">search_path=custom</span> 作独立启动参数 → 命中 <span style=\"font-family:" + MONO + "\">_ =&gt; {}</span> <b>默认被丢，必须开开关</b>；"
+      "而 <span style=\"font-family:" + MONO + "\">options=-csearch_path=custom</span> 走 options 分支经 <span style=\"font-family:" + MONO + "\">filtered_options()</span> 转发 <b>默认就生效</b><br>"
+      "<b>怎么开 &amp; 验证例</b>：塞 <span style=\"font-family:" + MONO + "\">options=neon_proxy_params_compat:true</span>，由正则 <span style=\"font-family:" + MONO + "\">^neon_(\\w+):(.+)</span> 剥前缀得 key <span style=\"font-family:" + MONO + "\">proxy_params_compat</span>（<span style=\"font-family:" + MONO + "\">proxy/mod.rs:255,328</span>）；"
+      "<span style=\"font-family:" + MONO + "\">is_ephemeral()=false</span> 不建临时 compute（<span style=\"font-family:" + MONO + "\">proxy/mod.rs:287</span>）—— "
+      "<span style=\"font-family:" + MONO + "\">IntervalStyle=iso_8601</span> 下 <span style=\"font-family:" + MONO + "\">to_json('0s'::interval)</span>：默认得 <span style=\"font-family:" + MONO + "\">\"00:00:00\"</span>，开后得 <span style=\"font-family:" + MONO + "\">\"PT0S\"</span>（<span style=\"font-family:" + MONO + "\">test_proxy.py:133</span>）",
+      fs=11.5, color=DIM, lh=1.7),
+], p, notes="neon_proxy_params_compat 是 proxy 侧的启动参数透传开关。核心 AuthInfo::set_startup_params(params, arbitrary_params)（proxy/src/compute/mod.rs:216-249）。arbitrary_params=false（默认）：先 server_params.insert(client_encoding, UTF8)（mod.rs:221），再逐 key match，只放行 user/database（skip_db_user 时跳）、application_name、replication，options 经 filtered_options() 洗掉 neon_*/endpoint token（mod.rs:380-394），其余 key 命中 _ => {} 被丢弃。arbitrary_params=true：不塞 client_encoding，另有一条 k if arbitrary_params => self.server_params.insert(k, v)（mod.rs:240）把任意 GUC 原样透传。注释 mod.rs:238-239 明说是 'a flag for a period of backwards compatibility'，即迁移期逃生舱。开启：startup options 串放 neon_proxy_params_compat:true，neon_option 正则 ^neon_(\\w+):(.+)（proxy/src/proxy/mod.rs:328-335）剥 neon_ 前缀得 key=proxy_params_compat（常量 PARAMS_COMPAT proxy/mod.rs:255-256）。判定 creds.info.options.get(NeonOptions::PARAMS_COMPAT).is_some()（proxy/mod.rs:91-93）只判存在不看值，写 :false 也算开。is_ephemeral() 对 PARAMS_COMPAT 返回 false（proxy/mod.rs:287-298），区别于 lsn/timestamp/endpoint_type 会建 ephemeral compute 的 cplane 选项。serverless backend.rs:191 与 console_redirect_proxy.rs:217 调 set_startup_params(&params, true) 恒开。为什么别长期开：过渡机制上游可能移除；放弃白名单过滤防护，客户端任意 GUC 直入 compute；丢掉强制 UTF8 跨端编码风险；presence-based 易误开且固化后易遗忘；透传是隐式行为换驱动结果可能变。推荐替代：① ALTER ROLE/DATABASE ... SET（持久，不碰 proxy 透传）② 会话级 SET search_path=custom, public / SET IntervalStyle='iso_8601' ③ options=-csearch_path=custom 走 options 白名单分支经 filtered_options()（compute/mod.rs:380-394）转发免开关。search_path 反例：search_path=custom 作独立 startup 参数命中 _ => {} 默认被丢必须开开关；options=-csearch_path=custom 走 options 分支默认生效。验证例 test_runner/regress/test_proxy.py:133-147：IntervalStyle=iso_8601，select to_json('0 seconds'::interval)，默认 \"00:00:00\"，加 options=neon_proxy_params_compat:true 后 \"PT0S\"。")
+
 # ─────── TLS 机制：两跳加密 ───────
 p += 1
 std("s-tls-overview", "PROXY · TLS", "Neon 的 TLS：两跳加密，两套证书", [
@@ -3133,6 +3180,56 @@ std("s-schema-diff", "BRANCHING", "分支 Schema Diff：Butterfly 的实现（Ne
 # ─────── Slide 22: Proxy ───────
 
 p += 1
+std("s-time-travel", "BRANCHING", "Time Travel：查询「过去某一刻」的数据库", [
+    T("tt-desc", 96, 166, 1088, 44,
+      "对<b>历史某个时间点/LSN</b> 跑<b>只读</b>查询，不动生产数据。本质是 <b>instant restore + 瞬时分支</b>的组合："
+      "选定时刻 → Neon 用 CoW 在那个 LSN 拉起一个<b>临时分支 + 临时 compute</b> → 查完即焚。"
+      "依赖的正是 proxy 侧 <span style=\"font-family:" + MONO + "\">neon_lsn</span> / <span style=\"font-family:" + MONO + "\">neon_timestamp</span> 这类 <span style=\"font-family:" + MONO + "\">is_ephemeral</span> 选项。",
+      fs=13, color=DIM, lh=1.5),
+    # left card: how it works
+    R("tt1-bg", 96, 220, 534, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("tt1-n", 114, 232, 300, 18, "怎么工作", fs=11, fw=800, color=AC, ff=MONO),
+    T("tt1-h", 114, 254, 500, 22, "临时分支 + 临时 compute，查完即焚", fs=15, fw=800, color=AC),
+    T("tt1-b", 114, 284, 500, 228,
+      "① 选定时间点 / LSN（必须落在 <b>history window</b> 内）<br>"
+      "② Neon 在该 LSN 处<b>瞬时建分支</b>（CoW，秒级）<br>"
+      "③ 拉起一个 <b>ephemeral compute</b>（<span style=\"font-family:" + MONO + "\">.50 CU / 2GB</span>）<br>"
+      "④ 你的只读查询打到这台临时 PG<br>"
+      "⑤ <b>停止查询 30s 后</b>：<span style=\"font-family:" + MONO + "\">suspend_compute</span> →<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">delete_timeline</span>，临时分支与 endpoint 一并回收<br><br>"
+      "临时分支<b>不出现在 Branches 页 / list 接口</b>，<br>"
+      "只在 <b>Operations 页</b>留痕：<span style=\"font-family:" + MONO + "\">create_branch</span> /<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">start_compute</span> / <span style=\"font-family:" + MONO + "\">suspend_compute</span> / <span style=\"font-family:" + MONO + "\">delete_timeline</span>",
+      fs=11.5, color=DIM, lh=1.72),
+    # right card: how to use
+    R("tt2-bg", 650, 220, 534, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("tt2-n", 668, 232, 300, 18, "怎么用（三个入口）", fs=11, fw=800, color=AC2, ff=MONO),
+    T("tt2-h", 668, 254, 500, 22, "连接串锚定 branch@时刻", fs=15, fw=800, color=AC2),
+    T("tt2-b", 668, 284, 500, 228,
+      "<b>① CLI</b>　<span style=\"font-family:" + MONO + "\">&lt;branch&gt;@&lt;timestamp|LSN&gt;</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">neon cs main@2024-04-21T00:00:00Z</span>（RFC3339）<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">neon cs main@0/234235</span>（LSN 更精细）<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">--psql</span> 直连；省略 branch = 默认分支<br>"
+      "<b>② SQL Editor</b>：Time Travel 开关，在<br>"
+      "&nbsp;&nbsp;「当前」与「历史」数据间切换<br>"
+      "<b>③ Backup &amp; Restore</b>：Time Travel Assist —<br>"
+      "&nbsp;&nbsp;正式 restore 前<b>先验证恢复点</b>是否正确<br><br>"
+      "<b>用途</b>：查异常/事故根因、评估变更影响、<br>"
+      "&nbsp;&nbsp;合规审计、restore 前预演",
+      fs=11.5, color=DIM, lh=1.72),
+    # bottom band: limits
+    R("tt3-bg", 96, 534, 1088, 128, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.32)", radius=10),
+    T("tt3-h", 116, 546, 1000, 20, "边界与限制", fs=13, fw=800, color=AC2),
+    T("tt3-b", 116, 572, 1048, 84,
+      "• <b>只读</b>：仅允许<b>非破坏性只读查询</b>，任何试图改历史数据的语句直接报错（历史是不可变的 layer，本就写不进去）<br>"
+      "• <b>受 history window 约束</b>：只能查保留窗口内的时间点（与 instant restore 同一份 PITR 配置），窗口外不允许 —— 见 <span style=\"font-family:" + MONO + "\">s-pitr-cfg</span> / <span style=\"font-family:" + MONO + "\">s-gc</span><br>"
+      "• <b>范围仅数据库时间线</b>：覆盖 Postgres 状态（含 <span style=\"font-family:" + MONO + "\">neon_auth</span> schema）；对象存储桶 / Functions / AI Gateway 配置<b>不在</b>时间线内<br>"
+      "• <b>计费</b>：临时 endpoint 与普通 active endpoint 一样计入用量，但生命周期极短（停查 30s 即挂起回收）",
+      fs=11.5, color=DIM, lh=1.72),
+], p, notes="Time Travel（Neon 官网 instant restore 特性）：对历史时间点/LSN 跑只读查询，不改生产数据，通过 WAL 记录追踪变更。工作机制：选定时间点后 Neon 用 instant branching 在该 LSN 处建临时分支 + 临时 compute（ephemeral），这些 compute 不显示在 Branches 页或 list 请求，但创建/删除会在 Operations 页留痕（start_compute/create_branch/delete_timeline/suspend_compute）。ephemeral endpoint 查询期间保持 active，停止查询 30 秒后 timeline 被删、endpoint 被移除。endpoint 用 .50 CU（2GB RAM）。底层与 proxy 的 cplane 选项呼应：neon_lsn/neon_timestamp/neon_endpoint_type 的 is_ephemeral() 返回 true（proxy/src/proxy/mod.rs:287-298），正是拉起 ephemeral compute 的入口，区别于 neon_proxy_params_compat（返回 false，纯 proxy flag）。history window：只能查项目 history window（与 instant restore 同一 PITR 保留配置）内的时间点，窗口外不允许，配置链路见 s-pitr-cfg / GC 见 s-gc。访问入口三种：SQL Editor（Time Travel 开关切换当前/历史数据）、Backup & Restore（Restore from history 下的 Time Travel Assist，正式 branch restore 前验证恢复点）、Neon CLI（point-in-time 连接串，脚本/分析用）。CLI 语法：neon connection-string <branch>@<timestamp|LSN>；timestamp 用 RFC3339，如 neon connection-string main@2024-04-21T00:00:00Z；直连 psql：neon cs main@2024-01-01T00:00:00Z --psql；LSN 更精细：neon cs main@0/234235；多 project 用 --project-id 或 neon set-context --project-id；省略 branch 连默认分支。用途：调查异常、评估新特性影响、排障、合规审计。限制：只读，仅允许非破坏性只读查询，改历史数据的语句报错（历史 layer 不可变）；覆盖 Postgres 状态含 neon_auth schema，但对象存储桶/Functions/AI Gateway 配置不在数据库时间线内。计费：ephemeral endpoint 与普通 active endpoint 一样计入 consumption，但短命，停查 30s 后挂起。文档来源 https://neon.com/docs/guides/time-travel-assist。")
+
+
+p += 1
 std("s-wake", "PROXY", "wake_compute：从「连接请求」到「一台活着的 Postgres」", [
     T("wk-desc", 96, 166, 1088, 38,
       "Proxy <b>每次连接前都会调一次</b> wake_compute（<span style=\"font-family:" + MONO + "\">connect_compute.rs:114</span>）；"
@@ -3212,36 +3309,115 @@ std("s-s2z", "核心卖点", "Scale-to-Zero：闲置即销毁", [
           ], hc=AC2, fs=14, headfs=16),
 ], p, notes="Scale-to-Zero: 闲置销毁 compute pod，唤醒重建 PGDATA，Prewarm 加速")
 
-# ─────── Slide 24: Autoscaling ───────
+# ─────── Slide 24a: Autoscaling 总览 + NeonVM 热插拔 + goal-CU ───────
 p += 1
-std("s-auto", "核心卖点", "Autoscaling：CPU & Memory 弹性伸缩", [
-    T("auto-desc", 96, 175, 1088, 50,
-      "Neon 可以<b>秒级调整 Compute 的 CPU 和内存</b>，无需重启 Postgres。",
-      fs=16, color=DIM, lh=1.6),
-    *card("au1", 96, 240, 528, 280,
-          "NeonVM + K8s", [
-              "• NeonVM：基于 QEMU 的轻量虚拟化，K8s 管理",
-              "• 支持 CPU 热插拔 + 内存热加/减",
-              "• autoscaler-agent：集群级调度器",
-              "• vm_monitor（compute 内部）：",
-              "&nbsp;&nbsp;— 通过 axum WebSocket 双向通信",
-              "&nbsp;&nbsp;— 管理 neon-postgres cgroup",
-              "&nbsp;&nbsp;— memory.max / memory.high 动态调整",
-              "&nbsp;&nbsp;— 联动 LFC file_cache_size_limit",
-          ], fs=14, headfs=16),
-    *card("au2", 656, 240, 528, 280,
-          "弹性策略", [
-              "• 根据 CPU 利用率 + 内存压力 + 连接数",
-              "• 扩容：立即生效（无需重启）",
-              "• 缩容：优雅释放，等事务完成",
-              "• 最小→最大 CU 范围由用户配置",
-              "",
-              "与 Scale-to-Zero 互补：",
-              "• 完全闲置 → Zero（销毁 VM）",
-              "• 有负载 → 在 min~max 间自动伸缩",
-              "• 峰值 → 自动扩到 max CU",
-          ], hc=AC2, fs=14, headfs=16),
-], p, notes="Autoscaling: NeonVM + autoscaler-agent + vm_monitor，CPU 热插拔 + 内存弹性，无需重启")
+std("s-auto", "核心卖点", "Autoscaling：三个组件，一套 goal-CU 算法", [
+    T("auto-desc", 96, 168, 1088, 36,
+      "Neon 可以<b>秒级调整 Compute 的 CPU 和内存</b>，无需重启 Postgres。三个进程各司一职："
+      "<span style=\"font-family:" + MONO + "\">autoscaler-agent</span>（决策）"
+      "→ <span style=\"font-family:" + MONO + "\">NeonVM</span>（QEMU 热插拔）"
+      "→ <span style=\"font-family:" + MONO + "\">vm-monitor</span>（compute 内安全阀）。",
+      fs=13.5, color=DIM, lh=1.5),
+    # left: NeonVM QEMU hotplug
+    R("au1-bg", 96, 216, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("au1-n", 116, 228, 260, 18, "NEONVM（K8S CONTROLLER + QEMU）", fs=11, fw=800, color=AC, ff=MONO),
+    T("au1-h", 116, 250, 500, 22, "CPU/内存热插拔：QMP 命令", fs=15, fw=800, color=AC),
+    T("au1-b", 116, 278, 500, 230,
+      "<b>CPU</b>：默认走 QMP 逐核 <span style=\"font-family:" + MONO + "\">device_add</span> / "
+      "<span style=\"font-family:" + MONO + "\">device_del</span> 热插拔<br>"
+      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">vm_qmp_queries.go:159/202</span>），"
+      "每次 reconcile 只增/减<b>一颗</b><br>"
+      "&nbsp;&nbsp;可选 <span style=\"font-family:" + MONO + "\">CpuScalingModeSysfs</span>：改宿主机 cgroup + "
+      "guest sysfs 在线/离线核，不动 QEMU<br><br>"
+      "<b>内存</b>：virtio-mem 设备，"
+      "<span style=\"font-family:" + MONO + "\">qom-set requested-size</span><br>"
+      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">vm_qmp_queries.go:310</span>），"
+      "guest 内核在线增减物理页，<b>PG 无需重启</b><br>"
+      "&nbsp;&nbsp;仅当 max mem ≠ min mem 时才存在该设备<br><br>"
+      "两者都由 <span style=\"font-family:" + MONO + "\">VMReconciler</span> 驱动，"
+      "对齐 <span style=\"font-family:" + MONO + "\">vm.Spec.Guest</span> 期望态",
+      fs=11.5, color=DIM, lh=1.66),
+    # right: goal-CU algorithm
+    R("au2-bg", 656, 216, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("au2-n", 676, 228, 260, 18, "AUTOSCALER-AGENT（PER-VM）", fs=11, fw=800, color=AC2, ff=MONO),
+    T("au2-h", 676, 250, 490, 22, "goal-CU = 三路目标的最大值", fs=15, fw=800, color=AC2),
+    T("au2-b", 676, 278, 490, 230,
+      "<span style=\"font-family:" + MONO + "\">GoalCU() = ceil(max(CPU, Mem, LFC))</span>"
+      "（<span style=\"font-family:" + MONO + "\">goalcu.go:27</span>）<br><br>"
+      "<b>① CPU</b>：load1/load5 按<b>稳定区/混合区</b>比例混合<br>"
+      "&nbsp;&nbsp;算出目标 vCPU，再 ÷ 每 CU 的 vCPU 数<br>"
+      "<b>② Mem</b>：已分配内存 ÷ 目标使用率<br>"
+      "&nbsp;&nbsp;（含 page-cache/LFC 命中率的第二路 memTotal 变体，取更大值）<br>"
+      "<b>③ LFC</b>：working-set-size 分桶历史 → 估算真实工作集<br>"
+      "&nbsp;&nbsp;→ 预测下一分钟峰值 → 折算所需内存 → CU<br><br>"
+      "三路目标各自独立计算，取<b>最大者</b>决定最终 goal-CU，"
+      "任一维度吃紧都会触发扩容",
+      fs=11.5, color=DIM, lh=1.66),
+    # bottom band
+    R("au3-bg", 96, 530, 1088, 132, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("au3-h", 116, 542, 900, 20, "与 Scale-to-Zero 的关系", fs=13, fw=800, color=AC),
+    T("au3-b", 116, 568, 1048, 88,
+      "• 完全闲置 → Scale-to-Zero 直接销毁整台 VM；有负载 → autoscaler-agent 在 <b>min~max CU</b> 区间内持续调 goal-CU<br>"
+      "• goal-CU 算出后不是直接下发：还要过<b>调度器插槽协商</b>（下一页）和 <b>vm-monitor 安全阀</b>（下下页）两道关卡才真正落地<br>"
+      "• 扩容路径优先级：agent 认为需要 → 先问调度器有没有位子 → 有位子先扩 NeonVM/QEMU → 再通知 vm-monitor 放行；"
+      "缩容则反过来，<b>先问 vm-monitor 安全再收缩</b>",
+      fs=12, color=DIM, lh=1.7),
+], p, notes="Autoscaling 由三个独立进程构成：autoscaler-agent（K8s 集群里每台 VM 一个 goroutine，做决策）、NeonVM controller（K8s controller，用 QEMU QMP 做热插拔）、vm-monitor（compute VM 内部，rust，做安全阀）。NeonVM 热插拔：CPU 默认走 handleCPUScalingQMP（vm_controller_cpu_scaling.go:38），QMP device_add/device_del 逐核热插拔（vm_qmp_queries.go:159 QmpPlugCpu, :202 QmpUnplugCpu），每次 reconcile 只处理一颗核的差量；也可用 CpuScalingModeSysfs 走 guest sysfs cpu online/offline + runner pod cgroup 更新（handleCPUScalingSysfs:89，cgroup 更新走 setRunnerCPULimits，注释里说明daemon里cgroup还未实现所以目前是QMP或sysfs二选一）。内存用 virtio-mem，QmpSetVirtioMem 调 qom-set path=vm0 property=requested-size（vm_qmp_queries.go:262-310），guest 内核在线上报/回收内存页，只有 min mem != max mem 时才有这个设备（vm_qmp_queries.go:267注释）。goal-CU 算法在 pkg/agent/core/goalcu.go：calculateGoalCU (35) 汇总 CPU/Mem/LFC 三路，GoalCU() (27) = ceil(max(round(CPU), Mem, LFC))，注释说明 CPU 用 round 是历史兼容原因，其余用 ceil。CPU路（calculateCPUGoalCU:81）：stableThreshold=CPUStableZoneRatio*load5，mixedThreshold=stableThreshold+CPUMixedZoneRatio*load5，diff=|load1-load5|，用 blendingFactor(diff,stable,mixed) 在0~1间插值混合load1/load5得到blendedLoadAverage，除以LoadAverageFractionTarget得目标vCPU数再除以每CU的vCPU数。CPUStableZoneRatio=0.25,CPUMixedZoneRatio=0.15的例子（vminfo.go:409-417）：稳定区是0.75~1.25倍load5，混合区是0.6~0.75和1.25~1.4倍load5。Mem路（calculateMemGoalCU:116）：MemoryUsageBytes/MemoryUsageFractionTarget再换算CU；还有calculateMemTotalGoalCU(128)把LFC working-set-size和page cache一起考虑，取两者较大值。LFC路（calculateLFCGoalCU:140）：wssValues是过去N分钟working-set-size分桶（1分钟一个点），用EstimateTrueWorkingSetSize或直接取最大窗口，再用ProjectNextHighest外推下一分钟峰值，8KiB页转字节再除LFCToMemoryRatio和computeUnit.Mem得所需CU。三路各自算完取max决定最终goal-CU。")
+
+# ─────── Slide 24b: 调度器插槽协商 + vm-monitor 安全阀 ───────
+p += 1
+std("s-auto-nego", "核心卖点", "扩缩容前的两道关卡：调度器插槽 & vm-monitor 安全阀", [
+    T("an-desc", 96, 150, 1088, 26,
+      "goal-CU 算出来之后，agent <b>不能直接改 VM</b>：扩容要先问调度器有没有资源位，"
+      "缩容要先问 vm-monitor 会不会把 Postgres 挤爆。",
+      fs=12, color=DIM, lh=1.5),
+    # lane headers
+    T("an-lh0", 104, 180, 68, 20, "阶段", fs=10, fw=700, color=FAINT),
+    T("an-lh1", 176, 180, 480, 20, "autoscaler-agent ↔ scheduler-plugin（HTTP :10299）", fs=12, fw=800, color=AC),
+    T("an-lh2", 668, 180, 508, 20, "autoscaler-agent ↔ vm-monitor（WebSocket :10301）", fs=12, fw=800, color="#7CB3F4"),
+    # ── Row 1: scale up
+    R("an-r1", 96, 204, 1088, 108, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.28)", radius=10),
+    T("an-r1-t", 104, 214, 66, 90, "<b>扩容</b><br>Upscale", fs=11, fw=700, color=AC, lh=1.5),
+    T("an-r1-c", 176, 212, 480, 92,
+      "agent 定期 <span style=\"font-family:" + MONO + "\">PluginRequestTick</span>"
+      "（<span style=\"font-family:" + MONO + "\">Scheduler.RequestAtLeastEverySeconds</span> 减抖动）"
+      "带 goal-CU 请求调度器<br>"
+      "→ 调度器走 K8s Scheduler Framework 扩展点：<b>Filter</b>（容量够不够，纯判断不改状态）"
+      "→ <b>Score</b>（打分挑节点）→ <b>Reserve</b>（临时占位）<br>"
+      "→ 全程用 <span style=\"font-family:" + MONO + "\">Speculatively()</span> 在临时 Node 副本上试算，"
+      "确认不 <span style=\"font-family:" + MONO + "\">OverBudget()</span> 才提交<br>"
+      "→ <b>从不实现 Bind/Permit</b>：真正的 Pod 绑定是 K8s 默认调度器做的，"
+      "本插件只影响 Filter/Score/Reserve",
+      fs=10.5, color=DIM, lh=1.55),
+    T("an-r1-p", 668, 212, 508, 92,
+      "调度器批准的资源额度回传给 agent 后，agent 才调 <b>NeonVM</b>（上一页 QMP）真正扩容，"
+      "扩完再通过 WebSocket 发 "
+      "<span style=\"font-family:" + MONO + "\">UpscaleNotification&#123;granted&#125;</span> 告知 vm-monitor，"
+      "&nbsp;<span style='color:" + FAINT + "'>vm-monitor 收到后调高 cgroup 内存阈值 / LFC 上限，此前一直用旧阈值运行。</span>",
+      fs=10.5, color=DIM, lh=1.55),
+    # ── Row 2: scale down safety check
+    R("an-r2", 96, 322, 1088, 130, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=10),
+    T("an-r2-t", 104, 332, 66, 110, "<b>缩容</b><br>Downscale<br>安全阀", fs=11, fw=700, color=AC2, lh=1.5),
+    T("an-r2-h", 176, 330, 490, 17, "vm-monitor 说不安全，缩容就不会发生", fs=13, fw=800, color=HL, lh=1.25),
+    T("an-r2-c", 176, 347, 480, 96,
+      "agent 想缩容前，<b>先</b>发 WebSocket "
+      "<span style=\"font-family:" + MONO + "\">DownscaleRequest&#123;target&#125;</span> 问 vm-monitor<br>"
+      "vm-monitor 检查最近 cgroup <span style=\"font-family:" + MONO + "\">memory.stat</span> 采样：<br>"
+      "&nbsp;&nbsp;新阈值 &lt; 当前用量 + 安全缓冲(100MiB) → <b>拒绝</b>，返回原因文本<br>"
+      "&nbsp;&nbsp;采样太少 / 太旧（&gt;5s 无新数据）→ 同样拒绝或报错<br>"
+      "只有<b>批准</b>后，agent 才敢真的调小 NeonVM（QMP unplug / virtio-mem 收缩）",
+      fs=10.5, color=DIM, lh=1.5),
+    T("an-r2-p", 668, 347, 508, 96,
+      "批准后 vm-monitor 才真正执行：<br>"
+      "① <b>先调小 LFC</b>：SQL "
+      "<span style=\"font-family:" + MONO + "\">ALTER SYSTEM SET neon.file_cache_size_limit=…</span>"
+      "（<span style=\"font-family:" + MONO + "\">filecache.rs:250</span>）<br>"
+      "② <b>再调低 cgroup 内存阈值</b>——但这只是 vm-monitor 自己用来判断「下次还能不能再降」的<b>内部水位线</b>，"
+      "<span style='color:" + AC2 + "'>从不写 <span style=\"font-family:" + MONO + "\">memory.max</span> / "
+      "<span style=\"font-family:" + MONO + "\">memory.high</span></span>，"
+      "cgroup 侧真正的物理内存收缩由 QEMU virtio-mem 完成",
+      fs=10.5, color=DIM, lh=1.5),
+], p, notes="扩容路径：autoscaler-agent 周期性向 scheduler-plugin 发资源请求，PluginRequestTick = Scheduler.RequestAtLeastEverySeconds 减一个随机抖动（runner.go:209，避免所有VM同时请求造成惊群）。scheduler-plugin 监听 0.0.0.0:10299（run.go:120），实现 K8s Scheduler Framework 的 Filter/Score/Reserve/PostFilter 扩展点（framework_methods.go），但从不实现 Bind 或 Permit —— 真正把 Pod 绑到 Node 这件事仍由 K8s 默认调度器完成，本插件只在决策阶段插入资源感知。Filter(:104)/Score(:279)/Reserve(:468) 都通过 ns.node.Speculatively(func(tmp) {...; return false}) 在一个临时 Node 副本上先跑一遍 AddPod + OverBudget() 检查，不提交(commit=false)真实状态，只用来判断'如果这个pod放这个节点会不会超预算'。Score 用 calculateScore（:366）按 reserved/total 相对 ScorePeak 分段线性打分再乘 scale=total/maxTotalSeen。Reserve（:468）有意不做真正的容量拒绝：代码注释原文'we always allow the change to go through, even though we could deny the Reserve() if there isn't room. We don't deny, because that's ultimately less reliable' 并链接 issue #869，用 tentativelyScheduled map[pod.UID] 记录临时占位，只在重复UID或节点不存在时报错。调度器批准后，agent 调 NeonVM controller 走 QMP 完成真正扩容（见上一页），扩容成功后才通过 WebSocket 向 vm-monitor 发 UpscaleNotification{granted: Resources}（protocol.rs InboundMsgKind），vm-monitor 收到后调高 cgroup.threshold 和 filecache 上限，见 runner.go handle_upscale(:300)。缩容路径完全反过来：agent 先发 DownscaleRequest{target} 给 vm-monitor（走 WebSocket，vm-monitor 监听 0.0.0.0:10301，非文档中过时的10369，config_map.yaml:39 serverPort=10301），vm-monitor.try_downscale()（runner.go:205）做安全检查：若 cgroup watcher 最近5秒没有新采样(last_time.elapsed()>5s)则报错拒绝；若采样数<=1（刚启动）则拒绝但不报错；计算 new_threshold = cgroup_threshold(usable_system_memory)，若 new_threshold < current_usage + cgroup_downscale_threshold_buffer_bytes(100MiB) 则拒绝，返回status文本说明原因（:249-261）。批准后才真正执行：先调用 file_cache.set_file_cache_size() 通过 SQL ALTER SYSTEM SET neon.file_cache_size_limit=... 加 pg_reload_conf 缩小LFC上限（filecache.rs:250-290），再更新 cgroup.threshold 这个内部字段（:288，只是vm-monitor自己下次判断安全性时用的水位线数值，从未调用任何 cgroup 文件系统写入，cgroup.rs 全文没有对 memory.max/memory.high 的写操作，只有 memory_stat() 只读轮询）。真正的内存物理收缩是 QEMU virtio-mem 通过 qom-set requested-size 完成（上一页），vm-monitor 只是那个'batch决定能不能收缩'的安全阀。WebSocket wire协议见 protocol.rs：OutboundMsgKind{UpscaleRequest,DownscaleResult{ok,status},HealthCheck,...} tag=type；InboundMsgKind{UpscaleNotification{granted},DownscaleRequest{target},HealthCheck} tag=type,content=content；Resources{cpu:f64,mem:u64} 序列化成 \"Allocation\"（向后兼容旧 informant 协议的重命名）。PROTOCOL_MIN/MAX_VERSION 都是 V1_0。")
 
 # ─────── Slide 25: 多云存储 ───────
 p += 1
