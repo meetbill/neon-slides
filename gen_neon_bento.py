@@ -653,6 +653,52 @@ std("s-params-compat", "PROXY", "neon_proxy_params_compat：启动参数透传�
       fs=11.5, color=DIM, lh=1.7),
 ], p, notes="neon_proxy_params_compat 是 proxy 侧的启动参数透传开关。核心 AuthInfo::set_startup_params(params, arbitrary_params)（proxy/src/compute/mod.rs:216-249）。arbitrary_params=false（默认）：先 server_params.insert(client_encoding, UTF8)（mod.rs:221），再逐 key match，只放行 user/database（skip_db_user 时跳）、application_name、replication，options 经 filtered_options() 洗掉 neon_*/endpoint token（mod.rs:380-394），其余 key 命中 _ => {} 被丢弃。arbitrary_params=true：不塞 client_encoding，另有一条 k if arbitrary_params => self.server_params.insert(k, v)（mod.rs:240）把任意 GUC 原样透传。注释 mod.rs:238-239 明说是 'a flag for a period of backwards compatibility'，即迁移期逃生舱。开启：startup options 串放 neon_proxy_params_compat:true，neon_option 正则 ^neon_(\\w+):(.+)（proxy/src/proxy/mod.rs:328-335）剥 neon_ 前缀得 key=proxy_params_compat（常量 PARAMS_COMPAT proxy/mod.rs:255-256）。判定 creds.info.options.get(NeonOptions::PARAMS_COMPAT).is_some()（proxy/mod.rs:91-93）只判存在不看值，写 :false 也算开。is_ephemeral() 对 PARAMS_COMPAT 返回 false（proxy/mod.rs:287-298），区别于 lsn/timestamp/endpoint_type 会建 ephemeral compute 的 cplane 选项。serverless backend.rs:191 与 console_redirect_proxy.rs:217 调 set_startup_params(&params, true) 恒开。为什么别长期开：过渡机制上游可能移除；放弃白名单过滤防护，客户端任意 GUC 直入 compute；丢掉强制 UTF8 跨端编码风险；presence-based 易误开且固化后易遗忘；透传是隐式行为换驱动结果可能变。推荐替代：① ALTER ROLE/DATABASE ... SET（持久，不碰 proxy 透传）② 会话级 SET search_path=custom, public / SET IntervalStyle='iso_8601' ③ options=-csearch_path=custom 走 options 白名单分支经 filtered_options()（compute/mod.rs:380-394）转发免开关。search_path 反例：search_path=custom 作独立 startup 参数命中 _ => {} 默认被丢必须开开关；options=-csearch_path=custom 走 options 分支默认生效。验证例 test_runner/regress/test_proxy.py:133-147：IntervalStyle=iso_8601，select to_json('0 seconds'::interval)，默认 \"00:00:00\"，加 options=neon_proxy_params_compat:true 后 \"PT0S\"。")
 
+# ─────── Proxy 为什么依赖 Redis ───────
+p += 1
+std("s-proxy-redis", "PROXY", "Proxy 为什么依赖 Redis：无状态集群的共享短时状态层", [
+    T("pr-desc", 96, 166, 1088, 44,
+      "Proxy 是<b>一群无状态实例</b>，一个客户端的两条 TCP 可能落到<b>不同 proxy</b>。Redis 不是核心链路，而是集群的"
+      "<b>共享短时状态层</b>——放两类「必须跨实例可见、且可过期」的数据。未配置时相关能力降级（如取消不跨实例、缓存靠自然过期）。",
+      fs=12.5, color=DIM, lh=1.5),
+    # left card: query cancellation
+    R("pr1-bg", 96, 220, 534, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("pr1-n", 114, 232, 300, 18, "① 用途一 · KV（带 TTL）", fs=11, fw=800, color=AC, ff=MONO),
+    T("pr1-h", 114, 254, 500, 22, "跨 proxy 路由「查询取消」请求", fs=14.5, fw=800, color=AC),
+    T("pr1-b", 114, 282, 500, 234,
+      "<b>难题</b>：取消走 PG 的 <span style=\"font-family:" + MONO + "\">CancelRequest</span> 特殊首包（<span style=\"font-family:" + MONO + "\">pqproto.rs:156</span>），<br>"
+      "&nbsp;&nbsp;是一条<b>孤儿连接</b>——仅 8 字节 <span style=\"font-family:" + MONO + "\">CancelKeyData</span>(PID+secret)，<br>"
+      "&nbsp;&nbsp;<b>不带 endpoint / user / 密码</b>，proxy 没法像普通连接那样路由；<br>"
+      "&nbsp;&nbsp;且 key 是 proxy <span style=\"font-family:" + MONO + "\">rand::random()</span> 造的查找 ID，非真实令牌（<span style=\"font-family:" + MONO + "\">:271</span>）<br>"
+      "<b>解法</b>：把 <span style=\"font-family:" + MONO + "\">CancelKeyData→CancelClosure</span> 映射存 Redis<br>"
+      "&nbsp;&nbsp;• 建连时 <span style=\"font-family:" + MONO + "\">Store</span> 写 <span style=\"font-family:" + MONO + "\">cancel:&lt;id&gt;</span>（TTL）+ <span style=\"font-family:" + MONO + "\">Refresh</span> 续期<br>"
+      "&nbsp;&nbsp;• 取消落到任意 proxy → <span style=\"font-family:" + MONO + "\">Get</span> 查出真实 compute 地址 + <span style=\"font-family:" + MONO + "\">RawCancelToken</span>，<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;再 <span style=\"font-family:" + MONO + "\">try_cancel_query</span> 发出；写入走 <span style=\"font-family:" + MONO + "\">BatchQueue</span> 批量 pipeline（<span style=\"font-family:" + MONO + "\">:160</span>）",
+      fs=11, color=DIM, lh=1.66),
+    # right card: cache invalidation pub/sub
+    R("pr2-bg", 650, 220, 534, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("pr2-n", 668, 232, 320, 18, "② 用途二 · Pub/Sub", fs=11, fw=800, color=AC2, ff=MONO),
+    T("pr2-h", 668, 254, 500, 22, "控制面配置变更实时失效缓存", fs=14.5, fw=800, color=AC2),
+    T("pr2-b", 668, 284, 500, 232,
+      "<b>背景</b>：proxy 本地缓存 endpoint/project/role 元数据<br>"
+      "&nbsp;&nbsp;（认证、allowed_ips、VPC、密码…）<br>"
+      "<b>机制</b>：控制面改配置后经 Redis 频道 <span style=\"font-family:" + MONO + "\">neondb-<br>"
+      "&nbsp;&nbsp;proxy-ws-updates</span> 广播失效消息，proxy 订阅后清<br>"
+      "&nbsp;&nbsp;本地缓存（<span style=\"font-family:" + MONO + "\">notifications.rs:15</span>）<br>"
+      "<b>topic</b>：<span style=\"font-family:" + MONO + "\">/password_updated</span>、<span style=\"font-family:" + MONO + "\">/allowed_ips_updated</span>、<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">/project_settings_update</span>、<span style=\"font-family:" + MONO + "\">/role_setting_update</span>、VPC/account 等<br>"
+      "为防丢失，<span style=\"font-family:" + MONO + "\">INVALIDATION_LAG=20s</span> 后<b>再失效一次</b><br>"
+      "→ <b>改密码 / 改 IP 白名单近实时全集群生效</b>",
+      fs=11.5, color=DIM, lh=1.72),
+    # bottom band
+    R("pr3-bg", 96, 534, 1088, 128, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("pr3-h", 116, 546, 1000, 20, "一句话 & 接入细节", fs=13, fw=800, color=AC),
+    T("pr3-b", 116, 572, 1048, 84,
+      "• <b>为何取消特殊</b>：普通建连发 <span style=\"font-family:" + MONO + "\">StartupMessage</span> 带 endpoint/user/密码，proxy 直接路由；<span style=\"font-family:" + MONO + "\">CancelRequest</span> 只有 8 字节 key、无路由信息，<b>必须查表定位 compute</b>（表在原 proxy，跨实例即查 Redis）<br>"
+      "• <b>本质</b>：Redis = 无状态 proxy 集群的<b>共享短时状态层</b> —— 一是跨实例路由查询取消，二是 Pub/Sub 广播配置失效；两者都<b>可过期、非权威</b>，权威源仍是控制面 / compute<br>"
+      "• <b>接入 &amp; 非强依赖</b>：支持 AWS ElastiCache/MemoryDB 的 IAM(IRSA) 签名认证（<span style=\"font-family:" + MONO + "\">elasticache.rs</span>，token 15min）；Redis 挂了不影响建连查询，只是取消不跨实例、缓存退化为按 TTL 过期",
+      fs=11, color=DIM, lh=1.66),
+], p, notes="Proxy 依赖 Redis 做无状态集群的共享短时状态层，两个明确用途。用途一 Query Cancellation（proxy/src/cancellation.rs + redis/keys.rs + redis/kv_ops.rs）：取消走 PG 协议的 CancelRequest 特殊首包（不是普通 StartupMessage），pqproto.rs:154-166 按 CANCEL_REQUEST_CODE 魔数分支解析，报文长度固定 8 字节（len != 8 报 malformed），内容仅 CancelKeyData = 4 字节 backend PID + 4 字节 secret key，不带 endpoint/user/database/password，因此 proxy 无法像普通连接那样从 params/SNI 路由到 compute。而且这对 PID/secret 不是 compute 真实值，是 proxy 用 rand::random() 随机生成的查找 ID（get_key cancellation.rs:263-278，注释说明真实 backend_pid 太小跨 compute 会大量重复，故做一层间接）。要把 key 翻译成真实 compute 地址+令牌，需查 CancelKeyData→CancelClosure 映射（CancelClosure 含 socket_addr/cancel_token: RawCancelToken/hostname/user_info，cancellation.rs:430-436），该映射由原查询那台 proxy 在建连时持有。无状态 proxy 集群里取消请求可能落到别的 proxy，故把映射以 cancel:<id> 为 key（KeyPrefix::Cancel build_redis_key keys.rs:12-20，格式 cancel:{id:x}）写进 Redis：建连 Store 带 TTL（SetExpiry），Refresh 续期（maintain_cancel_key cancellation.rs:474），收取消时任意 proxy 用 get_cancel_key（cancellation.rs:281）Get 查出 CancelClosure，反序列化后 cancel_session（cancellation.rs:362）校验 IP/VPC allowlist 再 try_cancel_query（cancellation.rs:440：TcpStream::connect socket_addr + TLS + cancel_query_raw）发出取消；key 查不到返回 NotFound（:397）取消静默失败。写入经 BatchQueue 批量 pipeline（CancellationProcessor cancellation.rs:160-200，QueueProcessing::apply 组 redis::Pipeline）。CancelKeyOp 有 Store/Refresh/Get/GetOld 四种（cancellation.rs:42-66），对应 Set/Expire/Get/HGet。对比普通建连（如 postgresql://user:endpoint=ep-xxx;pwd@host/db）：发 StartupMessage 带 endpoint/user/db/password，proxy 从 params 或 SNI 挖出 endpoint 直接路由，连接上下文天生在本地，不需要 Redis；取消请求是无上下文孤儿连接只带 8 字节 key，才必须查表（跨实例即查 Redis）。用途二 Cache Invalidation（proxy/src/redis/notifications.rs）：proxy 本地缓存 endpoint/project/role 元数据（ProjectInfoCache，含认证、allowed_ips、VPC endpoints、密码），控制面改配置后经 Redis Pub/Sub 频道 neondb-proxy-ws-updates（notifications.rs:15）广播失效，proxy 订阅清缓存。Notification topic：/account_settings_update（alias /allowed_vpc_endpoints_updated_for_org）、/endpoint_settings_update、/project_settings_update（alias /allowed_ips_updated、/block_public_or_vpc_access_updated、/allowed_vpc_endpoints_updated_for_projects）、/role_setting_update（alias /password_updated），未知 topic 忽略（notifications.rs:33-68）。RECONNECT_TIMEOUT=20s、INVALIDATION_LAG=20s（notifications.rs:16-17）：handle_message 收到后先失效一次，再 sleep INVALIDATION_LAG 重复失效一次防丢（notifications.rs:189-215）。效果：改密码/改 IP 白名单/改 VPC 策略近实时在所有 proxy 生效，不用等缓存自然过期。接入：redis/elasticache.rs 支持 AWS ElastiCache/MemoryDB 的 IAM IRSA sigv4 签名认证（AWSIRSAConfig，token_ttl 15min，service elasticache action connect），connection_with_credentials_provider.rs 统一封装凭证刷新。Redis 非强依赖：挂了不影响正常建连查询，只是取消无法跨实例、缓存失效退化为按 TTL 自然过期。")
+
 # ─────── TLS 机制：两跳加密 ───────
 p += 1
 std("s-tls-overview", "PROXY · TLS", "Neon 的 TLS：两跳加密，两套证书", [
@@ -916,15 +962,16 @@ std("s-tls-router", "PROXY · TLS", "pg-sni-router：嵌进主 Proxy 的运维�
       "逻辑仍在 <span style=\"font-family:" + MONO + "\">binary/pg_sni_router.rs</span>；独立 bin 只是薄封装。",
       fs=13, color=DIM, lh=1.5),
     *card("tr1", 96, 214, 540, 250,
-          "同进程 · 两端口", [
+          "同进程 · 两端口（默认关）", [
+              "总开关 <span style=\"font-family:" + MONO + "\">--sni-router-destination</span>，未给则整组失效",
+              "&nbsp;&nbsp;（两个 default 端口也不 bind、task 不 spawn）",
               "SNI：<span style=\"font-family:" + MONO + "\">{svc}--{ns}--{port}.external</span>",
               "→ <span style=\"font-family:" + MONO + "\">{svc}.{ns}.&lt;dest&gt;:{port}</span>",
+              "<span style=\"font-family:" + MONO + "\">--sni-router-listen</span> 4432：终结客户端 TLS，后端明文",
+              "<span style=\"font-family:" + MONO + "\">--sni-router-listen-tls</span> 4433：再对 compute 发 SSLRequest",
+              "<span style=\"font-family:" + MONO + "\">--sni-router-tls-{key,cert}</span>：dest 给了则必填",
               "",
-              "<span style=\"font-family:" + MONO + "\">--sni-router-listen</span>　4432",
-              "&nbsp;&nbsp;只终结客户端 TLS，后端明文",
-              "<span style=\"font-family:" + MONO + "\">--sni-router-listen-tls</span>　4433",
-              "&nbsp;&nbsp;再对 compute 发 SSLRequest，内部 CA 升第二跳",
-              "证书：<span style=\"font-family:" + MONO + "\">--sni-router-tls-{key,cert}</span>",
+              "主 proxy 客户端 TLS <b>另用</b> <span style=\"font-family:" + MONO + "\">-k/--tls-key</span> + <span style=\"font-family:" + MONO + "\">-c/--tls-cert</span>",
           ], hc=AC, fs=13, headfs=15),
     *card("tr2", 656, 214, 528, 250,
           "sslmode 对照（用户侧）", [
@@ -947,7 +994,7 @@ std("s-tls-router", "PROXY · TLS", "pg-sni-router：嵌进主 Proxy 的运维�
       "→ compute_ctl 早已把 P-256 证放进 PGDATA，Postgres ssl=on 接住<br>"
       "运维通道：同一进程的 4432/4433，SNI 是 <span style=\"font-family:" + MONO + "\">svc--ns--port</span>，不走认证/唤醒，只按 SNI 转发。",
       fs=13.5, color=DIM, lh=1.5),
-], p, notes="PR #11882 把 pg-sni-router 嵌进主 proxy：#[clap(flatten)] PgSniRouterArgs，--sni-router-destination 有值才 spawn 两路 task_main（listen 4432 只终结客户端 TLS；listen-tls 4433 再 SSLRequest 升到 compute）。独立 bin/pg_sni_router.rs 只是调 binary::pg_sni_router::run()。SNI {svc}--{ns}--{port}.external → {svc}.{ns}.{dest}:{port}。用户 sslmode：disable 拒，require 不校名，verify-full 依赖 SNI 对通配 CN。无 SNI 走 options/password hack。")
+], p, notes="PR #11882 把 pg-sni-router 嵌进主 proxy：#[clap(flatten)] PgSniRouterArgs，--sni-router-destination 有值才 spawn 两路 task_main（listen 4432 只终结客户端 TLS；listen-tls 4433 再 SSLRequest 升到 compute）。独立 bin/pg_sni_router.rs 只是调 binary::pg_sni_router::run()。SNI {svc}--{ns}--{port}.external → {svc}.{ns}.{dest}:{port}。用户 sslmode：disable 拒，require 不校名，verify-full 依赖 SNI 对通配 CN。无 SNI 走 options/password hack。\n\nTLS 启动参数怎么选（proxy.rs:382-406/627-635）：主 proxy 面向客户端的第一跳 TLS 只用 -k/--tls-key(alias ssl-key) + -c/--tls-cert(alias ssl-cert)，二者必须同时给否则 bail 'either both or neither tls-key and tls-cert must be specified'；--allow-tls-keylogfile 仅调试抓包用（导出 SSLKEYLOGFILE），生产别开；也可用 --certs-dir 指证书目录代替单对 key/cert。sni-router-* 那组（--sni-router-listen[默认 4432]/--sni-router-listen-tls[默认 4433]/--sni-router-tls-key/--sni-router-tls-cert）只属于 pg-sni-router 形态，唯一开关是 --sni-router-destination：if args.dest.is_some() 才 ensure tls-key/tls-cert 已给并 bind 两个 listener（proxy.rs:384-402），dest 未给则 sni_router_listeners=None，两个带 default 的 listen 地址只是摆设、不会 bind、task 不 spawn。所以普通 serverless proxy 网关开 TLS 用 -k/-c 即可，sni-router-* 除非专门起 pg-sni-router 否则全部无效。")
 
 
 # ─────── Slide 5: Compute 层概述 ───────
