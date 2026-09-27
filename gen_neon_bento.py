@@ -1055,6 +1055,170 @@ std("s-comp1", "COMPUTE", "Compute Node — patched PostgreSQL 的四点关键�
           ], hc="#7CB3F4", fs=11.5, headfs=15),
 ], p, notes="讲这页时先立设计原则：docs/core_changes.md:14-17 明确 'Most of the Neon-specific code is in the extensions, and for any new features, that is preferred over modifying core PostgreSQL code' —— 绝大多数改造在 pgxn/neon 扩展（shared_preload_libraries 加载），内核 patch 只在扩展够不到的地方动刀，且 core_changes.md 每条 patch 都带一节 'How to get rid of the patch'，长期目标是全部推上游、让未修改的 PG 也能跑 Neon 存储（:4-7）。徽章含义：[EXT]=纯扩展；[PATCH]=纯内核 patch；[EXT + PATCH]=扩展是主体但依赖内核 patch 凿出 hook 点。① 替换 smgr [EXT + PATCH]：主体是扩展——pagestore_smgr.c:2220 定义 neon_smgr 结构体（smgr_read=neon_read/smgr_write=neon_write），libpagestore.c:1649-1651 装 smgr_hook=smgr_neon / smgr_init_hook / dbsize_hook；permanent 关系 read 走 LFC→GetPage@LSN（:1367-1471），write 走 LFC+补 WAL-log（:1596-1675），临时/unlogged 表 fallback md。依赖三个内核 patch：core_changes.md:179-191 'Make smgr interface available to extensions'（改 smgr.c/smgr.h 共 275 行，凿出 smgr_hook，已提上游 commitfest 47/4428 但推进极慢）、:193-211 'Added relpersistence argument to smgropen()'（让 smgr 实现能区分 permanent/unlogged/temp，否则无法差异化处理 unlogged 表）、:221-232 'Use smgr and dbsize_hook for size calculations'（原生 dbsize.c 直接扫 data directory 算大小，在 Neon 下不成立）。② WAL→SK [EXT + PATCH]：主体是扩展——walproposer_pg.c:689 walprop_register_bgworker 注册 bgworker（bgw_library_name='neon', BgWorkerStart_RecoveryFinished），:180 WalProposerMain，:1566 XLogBroadcastWalProposer 读 GetFlushRecPtr()（本地已 fsync 的 pg_wal）广播给 3 台 SK，quorum=2 达成即 commit。依赖两个辅助 patch：core_changes.md:325-354 'Backpressure if pageserver doesn't ingest WAL fast enough'（在 ProcessInterrupts 里加 ProcessInterruptsCallback + retry label，让 PS 消费 WAL 落后时能在 compute 侧反压）、:388-395 'Shut down walproposer after checkpointer'（调整关停顺序，确保 checkpointer 最后一条 CheckPoint WAL record 也能推给 SK）。③ checkpoint 掏空 [EXT]：没有独立 patch，checkpointer 进程和 CheckPoint WAL record 都是 PG 原生行为、照常跑；扩展只是把 smgr 的刷盘方法做成 no-op——neon_writeback (pagestore_smgr.c:1230)/neon_immedsync (1888)/neon_registersync (1922) 对 permanent 关系全空转（日志打 'writeback noop'/'immedsync noop'），BufferSync 遍历脏页调下来时底层 fsync 被架空。这条能纯扩展实现，正是因为 ① 已经把整个 smgr 表换掉了。持久化真正靠 AM 层 XLogInsert → 本地 pg_wal fsync → walproposer → SK quorum。④ 启动跳过 crash recovery [PATCH]：这是真·内核 patch，启动流程和 pg_control 语义扩展拦不到——core_changes.md:119-135 'Allow startup without reading checkpoint record' 改 xlog.c，读 neon.signal（也兼容 zenith.signal）里的 LSN 作为起点、直接认定该 LSN 一致，不读最后的 checkpoint record、不做 WAL redo；'How to get rid of the patch' 一栏写的是 '???'，说明连 Neon 自己都还没想好怎么消掉。配套的不是插件也不是 patch，而是 Rust 侧：libs/postgres_ffi/src/xlog_utils.rs:159-176 generate_pg_control 造出 checkPoint=0 / state=DB_SHUTDOWNED 的假 pg_control 塞进 basebackup tarball；compute_tools/src/compute.rs:1201 create_pgdata 清空目录、:1601-1650 prepare_pgdata 拉 tarball 解压（pageserver/src/basebackup.rs:1-11：只含 non-relational data——pg_control/SLRU/filenodemap/twophase/neon.signal/dummy WAL segment，关系文件是占位空文件）。注意 core_changes.md:145-146 记了备选方案是往 tarball 里塞假 checkpoint record，但被否了——怕假 WAL 意外流到 safekeeper 覆盖真 WAL。")
 
+# ─────── 内核 patch · Compute 侧 ───────
+p += 1
+std("s-core-compute", "COMPUTE", "内核存算分离改动 · Compute 侧（改 PG 源码）", [
+    T("cc0-desc", 96, 160, 1088, 44,
+      "改动记录在 <span style=\"font-family:" + MONO + "\">postgres REL_17_STABLE_neon</span> 分支 + "
+      "<span style=\"font-family:" + MONO + "\">neon/docs/core_changes.md</span>。"
+      "共 <b style='color:" + AC2 + "'>15 个 NEON: 提交</b>，长期目标是全部推上游、让未改的 PG 也能跑 Neon 存储。"
+      "<b style='color:" + AC + "'>绿=SMGR/存储</b> · <b style='color:" + AC2 + "'>橙=WAL/启动/序列</b>。",
+      fs=12, color=DIM, lh=1.6),
+    # Left panel — SMGR / storage
+    R("cc0-l-bg", 96, 210, 530, 446, fill=PANEL, stroke=EDGE, radius=12),
+    T("cc0-l-h", 116, 222, 494, 22, "■ SMGR / 存储接口（把整张 smgr 表交给扩展）", fs=13.5, fw=800, color=AC),
+    *TL("cc0-l-b", 116, 252, 494, 396, [
+        ("Make smgr interface available to extensions", FG, 700),
+        ("&nbsp;smgr.c ~203 / smgr.h ~72 行；凿出 smgr_hook", DIM),
+        ("&nbsp;已提上游 commitfest 47/4428，推进极慢", FAINT),
+        "",
+        ("Added relpersistence argument to smgropen()", FG, 700),
+        ("&nbsp;heapam_handler.c / storage.c / tablecmds.c /", DIM),
+        ("&nbsp;md.c / rel.h —— 让 smgr 能区分 permanent/unlogged/temp", DIM),
+        "",
+        ("Use smgr & dbsize_hook for size calc", FG, 700),
+        ("&nbsp;dbsize.c ~61 行；原生直接扫 data dir，Neon 下不成立", DIM),
+        "",
+        ("Mark index builds w/o logging explicitly", FG, 700),
+        ("&nbsp;gininsert.c / gistbuild.c / spginsert.c + smgr.c", DIM),
+        ("&nbsp;显式标注 unlogged build（否则 evict 丢页触发 PANIC）", DIM),
+        "",
+        ("提交：bd09a752 Adapt SMGR for extensibility", AC, 700),
+        ("&nbsp;&nbsp;&nbsp;&nbsp;2ea6455a Unlogged build delineation", AC),
+    ], fs=11, lh=1.5),
+    # Right panel — WAL / startup / sequence
+    R("cc0-r-bg", 656, 210, 530, 446, fill=PANEL, stroke=EDGE, radius=12),
+    T("cc0-r-h", 676, 222, 494, 22, "■ WAL 格式 / 启动 / 序列（凿 hook 或改语义）", fs=13.5, fw=800, color=AC2),
+    *TL("cc0-r-b", 676, 252, 494, 396, [
+        ("Add t_cid to heap WAL records", FG, 700),
+        ("&nbsp;heapam.c / neon_xlog.h —— WAL 格式与原生 PG 不兼容！", "#FF9E8A"),
+        ("&nbsp;replica 靠 WAL 重建页面时需要 cmin", DIM),
+        "",
+        ("Track last-written page LSN（LwLsnCache）", FG, 700),
+        ("&nbsp;dbcommands.c / xlog.c(+243) / guc_tables.c", DIM),
+        ("&nbsp;记住 evict 时的 LSN，供 GetPage@LSN 复用", DIM),
+        "",
+        ("Allow startup without checkpoint record", FG, 700),
+        ("&nbsp;xlog.c —— 读 neon.signal 里的 LSN 直接进 running", DIM),
+        ("&nbsp;不读 checkpoint、不做 WAL redo（去除路径写的是 ???）", FAINT),
+        "",
+        ("Disable sequence caching（SEQ_LOG_VALS 0）", FG, 700),
+        ("&nbsp;sequence.c —— 每次取值都 WAL-log，避免 evict 产生跳号", DIM),
+        "",
+        ("提交：e1b32d73 t_cid custom records", AC2, 700),
+        ("&nbsp;&nbsp;&nbsp;&nbsp;379ee5fd LwLsnCache · 849463 Sequence log 0", AC2),
+    ], fs=11, lh=1.5),
+], p, notes="本页记录 postgres REL_17_STABLE_neon 分支（/Users/wangbin34/meetbill/git/postgres）针对 Compute 节点的内核层存算分离改动，权威清单在 neon/docs/core_changes.md『Changes for Compute node』一节。git log 里带 'NEON:' 前缀的提交共 15 个。SMGR/存储侧四项：① Make smgr interface available to extensions（改 smgr.c ~203 行 + smgr.h ~72 行，凿出 smgr_hook/smgr_init_hook，已提上游 commitfest 47/4428 但推进 glacial）；② Added relpersistence argument to smgropen()（heapam_handler.c/storage.c/tablecmds.c/md.c/rel.h，让 smgr 实现能区分 permanent/unlogged/temp，否则无法差异化处理 unlogged 表）；③ Use smgr & dbsize_hook（dbsize.c ~61 行，原生 rel/db-size 函数直接扫 data directory，Neon 下不成立）；④ Mark index builds that use buffer manager without logging explicitly（gininsert.c/gistbuild.c/spginsert.c + smgr.c，新增 smgr_start_unlogged_build/smgr_finish_unlogged_build_phase_1/smgr_end_unlogged_build，pgvector 0.6.0 也需要类似改动）。WAL/启动/序列侧四项：① Add t_cid to heap WAL records（heapam.c/neon_xlog.h，给 XLOG_HEAP_INSERT/UPDATE/DELETE 加 command id，导致 Neon WAL 格式与原生 PG 不兼容——因为 replica 在原事务仍运行时就靠 WAL 重放重建页面，需要 cmin）；② Track last-written page LSN（dbcommands.c/xlog.c，evict 页面时记住其 LSN 供 GetPage@LSN 复用，避免 pageserver 等最新 WAL，主要靠 smgrwrite() 里跟踪但少数地方需显式 SetLastWrittenPageLSN()）；③ Allow startup without reading checkpoint record（xlog.c，读 neon.signal/zenith.signal 里的 LSN 作起点直接认定一致，不读最后 checkpoint record、不做 WAL redo，去除路径栏写 ???）；④ Disable sequence caching（sequence.c 把 SEQ_LOG_VALS 从 32 改成 0，每次取值都 WAL-log，避免 sequence 页被 evict 后即使不崩溃也跳号）。对应提交 bd09a752 Adapt SMGR / 2ea6455a Unlogged build / e1b32d73 t_cid custom records / 379ee5fd LwLsnCache / 849463 Sequence log 0。docs/core_changes.md 每条都带一节『How to get rid of the patch』，长期目标是消掉全部 patch。")
+
+# ─────── 内核 patch · WAL redo & 其它兼容 ───────
+p += 1
+std("s-core-walredo", "COMPUTE", "内核存算分离改动 · WAL redo 进程 & 其它兼容", [
+    T("cc1-desc", 96, 160, 1088, 44,
+      "Pageserver 把复杂 WAL 解码交给一个 <b>seccomp 沙箱里的 Postgres</b>（--wal-redo），"
+      "这批 patch 让它安全、高效、只重放目标页面。加上一批零散的<b>兼容性改动</b>。"
+      "<span style=\"font-family:" + MONO + "\">core_changes.md『WAL redo process changes』</span>",
+      fs=12, color=DIM, lh=1.6),
+    # Left panel — WAL redo process
+    R("cc1-l-bg", 96, 210, 530, 446, fill=PANEL, stroke=EDGE, radius=12),
+    T("cc1-l-h", 116, 222, 494, 22, "■ WAL redo 沙箱进程（page server 侧）", fs=13.5, fw=800, color="#7CB3F4"),
+    *TL("cc1-l-b", 116, 252, 494, 396, [
+        ("Skip non-target page in XLogReadBufferForRedo", FG, 700),
+        ("&nbsp;ginxlog.c / xlog.c / xlogutils.c", DIM),
+        ("&nbsp;只关心正在重放的那一页，其余返回 BLK_DONE 省 CPU", DIM),
+        "",
+        ("predefined_sysidentifier flag to initdb", FG, 700),
+        ("&nbsp;bootstrap.c / initdb.c / xlog.c", DIM),
+        ("&nbsp;灾备：有全量 WAL 无备份时，同 sysid 重跑 initdb 重建", DIM),
+        "",
+        ("pg_waldump flags to ignore errors", FG, 700),
+        ("&nbsp;首个 timeline 可能起于 WAL segment 中段，需容错", DIM),
+        "",
+        ("WAL-log all-zeros page as one large hole", FG, 700),
+        ("&nbsp;xloginsert.c(XLogRecordAssemble) —— v16 起扩展关系补零", DIM),
+        ("&nbsp;避免 8KB 全零进 WAL；也导致原生 PG 无法重放 Neon WAL", "#FF9E8A"),
+        "",
+        ("Backpressure（ProcessInterruptsCallback）", FG, 700),
+        ("&nbsp;postgres.c / guc_tables.c —— PS 消费 WAL 落后即反压 compute", DIM),
+    ], fs=11, lh=1.5),
+    # Right panel — misc compatibility
+    R("cc1-r-bg", 656, 210, 530, 446, fill=PANEL, stroke=EDGE, radius=12),
+    T("cc1-r-h", 676, 222, 494, 22, "■ 下载 / 复制 / 关停 等兼容改动", fs=13.5, fw=800, color="#C89EFF"),
+    *TL("cc1-r-b", 676, 252, 494, 396, [
+        ("SLRU on-demand download —— slru.c ~92 行", FG, 700),
+        ("&nbsp;SLRU 几个 GB 全塞 basebackup 会拖慢启动，改按需拉", DIM),
+        ("On-demand download of extensions", FG, 700),
+        ("&nbsp;dfmgr.c / extension.c —— 扩展文件按需从 compute_ctl 拉", DIM),
+        ("Shut down walproposer after checkpointer", FG, 700),
+        ("&nbsp;postmaster.c —— 保最后一条 CheckPoint WAL 能推到 SK", DIM),
+        ("Publication superuser checks", FG, 700),
+        ("&nbsp;publicationcmds.c —— 放行 neon_superuser 建 publication", DIM),
+        ("WAL-log slots / snapshots / relmapper", FG, 700),
+        ("&nbsp;slot.c / snapbuild.c / origin.c / rewriteheap.c", DIM),
+        ("&nbsp;把这些本地文件也 WAL-log，才能随存储重建", DIM),
+        ("EXPLAIN changes for prefetch & LFC", FG, 700),
+        ("&nbsp;explain.c / instrument.c —— 已提 commitfest 47/4643", DIM),
+        "",
+        ("未提交仅提案：禁 ring buffer 策略 / 禁 hint-bit", AC2, 700),
+        ("&nbsp;标脏 / Prewarming 预热 buffer cache", AC2),
+    ], fs=11, lh=1.5),
+], p, notes="本页记录 WAL redo 进程侧及零散兼容性内核改动，见 neon/docs/core_changes.md『WAL redo process changes』与『Not currently committed but proposed』两节。背景：pageserver 把复杂 WAL 解码委托给一个用 Linux seccomp 沙箱包住的 Postgres（同一 binary 加 --wal-redo flag），因为可能遭遇恶意构造的 WAL，也因为用 Rust 重写全部 redo handler 或硬化所有 redo 函数都不现实。WAL redo 侧：① Don't replay change in XLogReadBufferForRedo that are not for the target page（ginxlog.c/xlog.c/xlogutils.c，WAL redo 只关心正重放的单页，其余页返回 BLK_DONE 省 CPU，但像 ginRedoSplit 那种期望 BLK_RESTORED 的代码要相应改 action != BLK_RESTORED && action != BLK_DONE）；② Add predefined_sysidentifier flag to initdb（bootstrap.c/initdb.c/xlog.c，灾备场景：有一路到 initdb 的全量 WAL 但无备份时，用同 sysidentifier 重跑 initdb 重建缺失的 backup）；③ pg_waldump flags to ignore errors（Neon 建 project/branch 后首个 timeline 可能起于某个 WAL segment 中段，pg_waldump 会 choke，加 flag 容错）；④ WAL-log an all-zeros page as one large hole（XLogRecordAssemble，v16 起 PG 扩展关系时先补零且一次可扩多块，全零页 WAL-log 很浪费，改成紧凑 hole 记录，但 PG 有断言禁止重放这种记录，导致原生 PG 无法处理 Neon WAL）；⑤ Backpressure（postgres.c 的 ProcessInterrupts 加 retry label + ProcessInterruptsCallback，guc_tables.c 加 GUC，PS 消费 WAL 落后时在 compute 侧反压）。兼容改动：SLRU on-demand download（slru.c +92 行，SLRU 可能几个 GB，全放 basebackup 拖慢启动，改按需下载）；On-demand download of extensions（dfmgr.c/extension.c）；Shut down walproposer after checkpointer（postmaster.c，把 walproposer bgworker 当 WAL sender 最后关停，确保 shutdown checkpoint record 能到 safekeeper）；Publication superuser checks（publicationcmds.c，让 neon_superuser 也能 CreatePublication）；WAL log replication slots / WAL-log replication snapshots / WAL-log relmapper files（slot.c/snapbuild.c/origin.c/rewriteheap.c，把这些本地状态文件也 WAL-log 才能随存储重建）；EXPLAIN changes for prefetch and LFC（explain.c/instrument.c，已提 commitfest 47/4643）；还有 XLogWaitForReplayOf()。『Not currently committed but proposed』三项：Disable ring buffer buffer manager strategies（bulk 操作的环形缓冲策略在 Neon 下代价高）、Disable marking page as dirty when hint bits are set（避免 hint bit 触发 FPI 撑大 WAL）、Prewarming（捕获 buffer cache 状态、启动时批量预取以缩短冷启动）。对应提交 a4e665a WalRedo & startup / feb6c004 Expose lag tracker+backpressure / 700e77eb Dynamic loading of extension libs / 14d522d1 EXPLAIN LFC+Prefetch / b4357e32 & 5eb05c85 Various compatibility。")
+
+# ─────── 扩展打包 patch ───────
+p += 1
+std("s-ext-patches", "COMPUTE", "扩展打包 patch（compute/patches/ · 构建期打）", [
+    T("ep-desc", 96, 160, 1088, 44,
+      "与内核 patch 不同，这批是给 <b>第三方扩展 / contrib 模块</b>打的补丁，"
+      "构建 compute 镜像时由 <span style=\"font-family:" + MONO + "\">compute/compute-node.Dockerfile</span> "
+      "<span style=\"font-family:" + MONO + "\">COPY compute/patches/xxx.patch</span> 引入。共 <b style='color:" + AC + "'>25 个</b>。",
+      fs=12, color=DIM, lh=1.6),
+    *card("ep1", 96, 210, 350, 218,
+          "内置 / contrib 兼容", [
+              ("在 Neon 存储/权限模型下适配", DIM),
+              "· postgres_fdw.patch",
+              "· pg_stat_statements_pg14-16 / _pg17",
+              "· contrib_pg16 / contrib_pg17",
+              "· cloud_regress_pg16 / _pg17",
+              ("&nbsp;&nbsp;（云端回归测试，各 ~240KB）", FAINT),
+          ], hc=AC, fs=11.5, headfs=14),
+    *card("ep2", 462, 210, 350, 218,
+          "检索 / 向量 / 计划", [
+              ("索引与查询计划类扩展", DIM),
+              "· pgvector.patch",
+              "· rum.patch",
+              "· pg_hint_plan_v16 / _v17",
+              "· pg_graphql.patch",
+          ], hc="#7CB3F4", fs=11.5, headfs=14),
+    *card("ep3", 828, 210, 358, 218,
+          "分析 / OLAP / ML", [
+              ("嵌入式引擎与推理", DIM),
+              "· duckdb_v113 / duckdb_v120",
+              "· pg_duckdb_v031.patch",
+              "· onnxruntime.patch",
+          ], hc="#C89EFF", fs=11.5, headfs=14),
+    *card("ep4", 96, 440, 350, 216,
+          "运维 / 审计 / 任务", [
+              ("后台任务与合规", DIM),
+              "· pg_cron.patch",
+              "· pg_repack.patch",
+              "· pgaudit-parallel_workers-v14…v17",
+              ("&nbsp;&nbsp;（四个 PG 大版本各一份）", FAINT),
+          ], hc=AC2, fs=11.5, headfs=14),
+    *card("ep5", 462, 440, 350, 216,
+          "语言 / 脱敏 / 其它", [
+              ("过程语言与数据脱敏", DIM),
+              "· plv8_v3.1.10 / plv8_v3.2.3",
+              "· anon_v2.patch",
+          ], hc="#F4C77C", fs=11.5, headfs=14),
+    *card("ep6", 828, 440, 358, 216,
+          "构建工具（另一目录）", [
+              ("build-tools/patches/", DIM),
+              "· pgcopydbv017.patch",
+              "",
+              ("扩展本体不在本仓，多为 git submodule /", FAINT),
+              ("下载源码后于构建期 apply。", FAINT),
+          ], hc=DIM, fs=11.5, headfs=14),
+], p, notes="本页记录扩展打包 patch，位于 neon/compute/patches/（25 个）与 neon/build-tools/patches/（1 个）。与内核 patch 的区别：内核 patch 改的是 PostgreSQL 源码本体（在 postgres REL_17_STABLE_neon 分支），而这批是给第三方扩展/contrib 模块打的补丁，在构建 compute 镜像时由 compute/compute-node.Dockerfile 用 COPY compute/patches/xxx.patch 引入后 apply（可 grep Dockerfile 里的 COPY compute/patches 确认引用点，如 :173 postgres_fdw、:518 pgvector、:650 rum、:876 pg_cron、:1156 onnxruntime、:1247 pg_graphql、:1392 anon_v2、:1494/1517/1518 duckdb 系、:1568 pgaudit、:1890 pg_hint_plan、:1906 pg_repack、:372 plv8、:174/175 pg_stat_statements）。清单：内置/contrib 兼容——postgres_fdw、pg_stat_statements_pg14-16/_pg17、contrib_pg16/_pg17、cloud_regress_pg16/_pg17（云端回归测试补丁，各约 240KB，最大的两个）；检索/向量/计划——pgvector、rum、pg_hint_plan_v16/_v17、pg_graphql；分析/OLAP/ML——duckdb_v113/_v120、pg_duckdb_v031、onnxruntime；运维/审计/任务——pg_cron、pg_repack、pgaudit-parallel_workers-v14/v15/v16/v17（四个 PG 大版本各一份，让 pgaudit 兼容并行 worker）；语言/脱敏——plv8_v3.1.10/_v3.2.3、anon_v2（PostgreSQL Anonymizer）；build-tools/patches/ 里另有 pgcopydbv017.patch。扩展本体大多不在本仓，而是 submodule 或构建期下载源码后再 apply 这些 patch。")
+
 # ─────── compute_ctl 总览 ───────
 p += 1
 std("s-computectl", "COMPUTE", "compute_ctl —— compute 容器里的 PostgreSQL 监护进程", [
@@ -4035,6 +4199,294 @@ std("s-failure", "故障演练", "两个典型故障：SK 单点宕机 / PS 实�
       "（RFC 025:718-724，留了手动「逃生」generation 兜底）。这换来的是<b>迁移 / 重启永不脑裂丢数据</b>。",
       fs=12.5, color=DIM, lh=1.7),
 ], p, notes="SK 单点：quorum=2，1 挂仍可写，commit_lsn=GetAcknowledgedByQuorumWALPosition（walproposer.c:1994-2026），term-gated 提交（未追上 propTermStartLsn 的 SK 贡献按 0 算）。恢复两条路：walproposer 重选（safekeeper.rs:1052-1220 handle_vote/handle_elected + truncate_wal）或 peer recovery（recovery.rs:38-232，CHECK_INTERVAL_MS=2000，donor 须 term==last_log_term 且 term>=my.term，有活 compute 在流时强制不抢）；全丢用 pull_timeline.rs。WAL trim 到 min(remote_consistent_lsn, backup_lsn, commit_lsn, flush_lsn)（remove_wal.rs:5-33）。PS 宕机：controller 心跳 HEARTBEAT_INTERVAL=5s、MAX_OFFLINE_INTERVAL=30s（service.rs:129-143），heartbeater.rs:281/419 判 offline，ToOffline handler service.rs:7988-8057 clear observed location + demote_attached（tenant_shard.rs:337）+ schedule（:701）+ 入队 reconciler（并发默认 128）。单节点集群 / 全挂时跳过重调度。读失败窗口：有 warm secondary 近乎无缝（RFC 028:63-70/104-176），无则新 PS 下 index_part.json 再懒拉 layer，wait_lsn 阻塞到 wait_lsn_timeout（timeline.rs:1782-1836）。compute 侧经 notify-attach 改写 neon.pageserver_connstring 并 SIGHUP（libpagestore.c:130,266-350）。重建三步：扫本地 config（mgr.rs:392-417）→ /re-attach 拿 generation（mgr.rs:340-386，缺席 tenant 本地内容删）→ attach 逐 timeline 从远端加载（tenant.rs:1690-1829，download_index_part，缺层按需拉）。stale PS 校验 generation 前不 upload/delete（RFC 025:826-887），generation 变小即降 secondary（mgr.rs:626-635）。")
+
+# ─────── 备份语义 ───────
+p += 1
+std("s-backup", "运维", "Neon 要不要备份：内建持久化 vs 仍需外部备份", [
+    T("bk-desc", 96, 158, 1088, 44,
+      "Neon 把「定期备份」变成了架构内生能力，日常<b>不用手动备份</b>；"
+      "但这套能力有边界，跨过边界的场景<b>仍要做独立的外部备份</b>。两层要分清。",
+      fs=13, color=DIM, lh=1.6),
+    # Left — built-in durability replaces routine backup
+    R("bk-l-bg", 96, 210, 530, 300, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("bk-l-h", 116, 222, 494, 22, "✓ 架构自带（不用手动做）", fs=14, fw=800, color=AC),
+    *TL("bk-l-b", 116, 254, 494, 250, [
+        ("WAL 多副本共识", FG, 700),
+        ("&nbsp;commit 时已被 Safekeeper Paxos 多数派 fsync", DIM),
+        ("&nbsp;（3 副本 quorum=2），不赌单机磁盘", DIM),
+        "",
+        ("不可变 Layer + 对象存储", FG, 700),
+        ("&nbsp;页面物化成 append-only layer 下沉 S3，永不覆盖", DIM),
+        ("&nbsp;S3 本身 11 个 9 持久性", DIM),
+        "",
+        ("PITR / Time Travel / CoW 分支", FG, 700),
+        ("&nbsp;window 内可查/建分支到任意过去 LSN·时间点", DIM),
+        ("&nbsp;在线、秒级、只写元数据 —— 覆盖误删回滚", DIM),
+    ], fs=11.5, lh=1.5),
+    # Right — still need external backup
+    R("bk-r-bg", 656, 210, 530, 300, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=12),
+    T("bk-r-h", 676, 222, 494, 22, "⚠ 架构盖不住（仍要外部备份）", fs=14, fw=800, color=AC2),
+    *TL("bk-r-b", 676, 254, 494, 250, [
+        ("超出 retention window", FG, 700),
+        ("&nbsp;PITR 只能回到 history window 内，受 pitr_interval /", DIM),
+        ("&nbsp;GC 控制（RFC 011）；窗口外历史被 GC 回收即找不回", DIM),
+        "",
+        ("误操作发现得晚", FG, 700),
+        ("&nbsp;几周后才发现误删，早已超出窗口", DIM),
+        "",
+        ("平台级灾难 / 供应商锁定", FG, 700),
+        ("&nbsp;S3 桶被删、账号异常、想迁出 —— 数据全在这套系统内", DIM),
+        "",
+        ("合规 / 长期冷归档", FG, 700),
+        ("&nbsp;法规要求留数年，retention window 撑不住也不经济", DIM),
+    ], fs=11.5, lh=1.5),
+    # Bottom — recommendation
+    R("bk-b-bg", 96, 526, 1090, 96, fill=PANEL, stroke=EDGE, radius=10),
+    T("bk-b-h", 116, 538, 1000, 20, "落地建议", fs=13, fw=800, color="#7CB3F4"),
+    T("bk-b-b", 116, 564, 1050, 52,
+      "• <b>日常防故障 / 误删回滚</b>：靠内建的 WAL 共识 + S3 不可变 layer + PITR/分支，无需手动备份。<br>"
+      "• <b>长期归档 / 跨窗口恢复 / 防平台级灾难</b>：定期 <span style=\"font-family:" + MONO + "\">pg_dump</span> / "
+      "<span style=\"font-family:" + MONO + "\">pg_dumpall</span> 逻辑导出到 <b>Neon 之外</b>的对象存储/异地，形成脱离 Neon 生命周期的独立副本。",
+      fs=12, color=DIM, lh=1.6),
+], p, notes="回答『Neon 的数据需要备份吗』：要分两层。第一层——Neon 架构把传统的定期备份变成了内生能力，日常不需要手动备份。三点：① WAL 多副本共识，commit 时 WAL 已被 Safekeeper Paxos 多数派 fsync（通常 3 副本 quorum=2），不依赖单机磁盘（见 docs/rfcs/004-durability.md）；② 不可变 Layer + 对象存储，Pageserver 把页面物化成 append-only layer 文件下沉 S3、永不覆盖，S3 本身 11 个 9 持久性；③ PITR / Time Travel / CoW 分支，在 history retention window 内可查询或建分支到过去任意 LSN/时间点，在线、秒级、只写元数据，等价于传统备份恢复才能拿到的东西，覆盖『防单盘故障 + 误删表回滚到某刻』。第二层——这套架构有边界，四类风险盖不住，仍建议做独立外部备份：① 超出 retention window（PITR 只能回到 history window 内，受 pitr_interval / GC 控制，见 docs/rfcs/011-retention-policy.md，窗口外历史被 GC 回收就找不回）；② 逻辑/误操作发现得晚（几周后才发现误删，早超窗口）；③ 整个 Neon 实例/账号级灾难（S3 桶被删、账号出问题、想迁出平台，数据都在这套系统内，供应商锁定风险）；④ 合规/长期归档（法规要求保留数年冷备，retention window 撑不了也不经济）。落地建议：日常防故障/误删回滚靠内建能力，不用手动备份；长期归档/跨窗口恢复/防平台级灾难则定期 pg_dump / pg_dumpall（或 pg_basebackup）逻辑导出到 Neon 外部的对象存储/异地，形成脱离 Neon 生命周期的独立副本。对应 RFC：011-retention-policy（PITR window 与 GC）、004-durability（WAL 持久化对比 Aurora）、009-snapshot-first-storage-pitr。")
+
+# ─────── S3 备份的元数据耦合陷阱 ───────
+p += 1
+std("s-backup-meta", "运维", "裸备份 S3 的陷阱：layer 文件离不开平台元数据", [
+    T("bm-desc", 96, 158, 1088, 44,
+      "「直接拷 S3 桶」做备份看似省事，但 layer 对象<b>不是自包含的</b>：能不能 attach、拼不拼得出 key、"
+      "归谁归哪条分支，都记在 <b>S3 之外</b>的两套库里。要能恢复，三者必须<b>时间点一致</b>地一起备。",
+      fs=13, color=DIM, lh=1.6),
+    # Three-layer dependency
+    *card("bm1", 96, 210, 350, 250,
+          "① S3 桶（layer 文件）", [
+              ("自描述的只有这些：", DIM),
+              "· layer 文件本体（不可变）",
+              "· index_part.json —— 该 timeline 的",
+              "&nbsp;&nbsp;layer 清单 + 分支血缘",
+              "&nbsp;&nbsp;(ancestor_timeline_id / _lsn)",
+              "",
+              ("✗ 不含：这个 timeline 归谁、叫", AC2),
+              ("&nbsp;&nbsp;什么、当前 generation 多少", AC2),
+          ], hc=AC, fs=11.5, headfs=14.5),
+    *card("bm2", 462, 210, 350, 250,
+          "② storage controller PG", [
+              ("独立一套 PG，存关键持久态：", DIM),
+              "· tenant_shards.generation",
+              "&nbsp;&nbsp;（编进 object key 后缀！）",
+              "· shard_stripe_size / count",
+              "· timelines：sk_set / start_lsn",
+              "",
+              ("✗ 丢了它：连该拼哪个 layer key", AC2),
+              ("&nbsp;&nbsp;都不知道，PS 无法 attach", AC2),
+          ], hc="#7CB3F4", fs=11.5, headfs=14.5),
+    *card("bm3", 828, 210, 358, 250,
+          "③ 控制面 DB", [
+              ("用户视角的映射都在这：", DIM),
+              "· 项目 / 分支 / endpoint",
+              "&nbsp;&nbsp;↔ tenant_id / timeline_id",
+              "· 连接串、角色、配额",
+              "",
+              ("✗ 丢了它：恢复出来是一堆 UUID", AC2),
+              ("&nbsp;&nbsp;目录，不知哪个是哪个库", AC2),
+          ], hc="#C89EFF", fs=11.5, headfs=14.5),
+    # generation coupling highlight
+    R("bm-key-bg", 96, 476, 1090, 66, fill="rgba(255,158,138,0.08)", stroke="rgba(255,158,138,0.35)", radius=10),
+    T("bm-key", 116, 488, 1050, 44,
+      "<b style='color:" + AC2 + "'>核心耦合点 · generation</b>：远端 layer 路径 = "
+      "<span style=\"font-family:" + MONO + "\">{layer_name}-{generation:08x}</span>，而 generation 由 storcon 从 ② 的 PG "
+      "<span style=\"font-family:" + MONO + "\">increment_generation</span> 自增分配。<b>三者时间点不一致 → generation 错位、幽灵 timeline、缺层</b>——正是「记录和 S3 对不上」。",
+      fs=12, color=DIM, lh=1.6),
+    # Conclusion band
+    R("bm-c-bg", 96, 556, 1090, 66, fill=PANEL, stroke=EDGE, radius=10),
+    T("bm-c", 116, 566, 1050, 48,
+      "<b style='color:" + AC + "'>结论</b>：<b>逻辑备份（pg_dump）</b>自包含、不引用任何 UUID / layer，恢复到任意原生 PG —— 天然绕开耦合，<b>推荐</b>。"
+      "<b style='color:" + AC2 + "'>裸拷 S3</b> 则<b>必须</b>连 storcon PG + 控制面 DB 一起做一致性快照，深度手术、易不一致，<b>不是自建 Neon 的推荐 DR 路径</b>。",
+      fs=12, color=DIM, lh=1.6),
+], p, notes="承接上一页『S3 备份时平台数据库要不要一起备』：取决于备份方式。① 逻辑备份（pg_dump / pg_dumpall 导出到 Neon 外）——不需要备份平台元数据库，因为导出的是纯 SQL（schema+数据），自包含、不引用任何 tenant_id/timeline_id/layer 文件，可恢复到任意原生 PostgreSQL，天然绕开 S3↔元数据耦合，这也是推荐它做长期归档/DR 的原因。② 裸备份 S3 桶（拷 layer 文件）——用户担心的问题完全成立且更严重，裸对象离开元数据几乎不可恢复，耦合是多层的：(a) generation 编在 object key 里，远端 layer 路径是 {layer_name}-{generation:08x}（remote_timeline_client.rs），generation 由 storage controller 从它那套独立 PG 的 increment_generation 自增分配（persistence.rs），丢了 tenant_shards.generation 连该拼哪个 key 都不知道；(b) timeline 存在性/分片布局/SK 成员在 storcon DB 的 tenant_shards（generation、shard_stripe_size、count、placement_policy）和 timelines（start_lsn、sk_set、generation）表，没有这些 PS 无法 attach、不知拆几个 shard、条带多大；(c) 用户分支/项目/endpoint ↔ tenant_id/timeline_id 的映射在控制面 DB，不在 S3，裸桶恢复出来是一堆 UUID 目录不知哪个是哪个库；(d) 唯一自描述的是分支血缘 ancestor_timeline_id/ancestor_lsn，在 S3 的 index_part.json 里，所以 timeline 内部 layer 清单+父子关系 S3 自带，但『归谁、叫什么、当前 generation、attach 在哪』不在 S3。因此裸 S3 备份要能恢复必须同时且时间点一致地快照 S3 桶 + storage controller PG + 控制面 DB，否则就是 generation 错位/幽灵 timeline/缺层，即『timeline 记录和 S3 对不上』。这也是裸 S3 快照不是推荐 DR 路径的原因。对照表：逻辑 pg_dump 不用额外备份平台 DB、恢复简单；裸拷 S3 必须连 storcon PG+控制面 DB 一致性快照、恢复是深度手术易不一致。相关：storage_controller/src/persistence.rs（generation 分配）、storage_controller schema（tenant_shards/timelines 表，见 s-storcon-schema 页）、pageserver index_part.json（见 s-indexpart 页）。")
+
+# ─────── Neon 官方备份策略 ───────
+p += 1
+std("s-backup-official", "运维", "Neon 官方的三条备份策略：不是「每分支 pg_dump」", [
+    T("bo-desc", 96, 158, 1088, 44,
+      "Neon 托管服务<b>原生备份 = Instant Restore</b>（连续变更历史，非 snapshot / 非 pg_dump）；"
+      "<span style=\"font-family:" + MONO + "\">pg_dump</span> 只是面向合规/DR 的<b>可选补充</b>。三者可单用可叠加。",
+      fs=13, color=DIM, lh=1.6),
+    # 1 — Instant Restore (native)
+    R("bo1-bg", 96, 210, 530, 210, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("bo1-h", 116, 222, 494, 22, "① Instant Restore（PITR）— 原生，默认就有", fs=13.5, fw=800, color=AC),
+    *TL("bo1-b", 116, 252, 494, 158, [
+        "· 系统自动保留变更历史，按套餐 1～30 天",
+        "· 恢复到过去任意时刻 —— 官方原话「无需传统备份」",
+        "· 唯一要配的就是 history window 长度（越长越占存储）",
+        "· 机制：WAL + 不可变 layer + 按 LSN 建分支",
+        ("&nbsp;&nbsp;秒级、无导出/导入，覆盖误删回滚", AC),
+    ], fs=11.5, lh=1.55),
+    # 2 — manual pg_dump
+    R("bo2-bg", 656, 210, 530, 210, fill=PANEL, stroke=EDGE, radius=12),
+    T("bo2-h", 676, 222, 494, 22, "② 手动 pg_dump / pg_restore — 可选", fs=13.5, fw=800, color="#7CB3F4"),
+    *TL("bo2-b", 676, 252, 494, 158, [
+        "· 标准 Postgres 工具，导出自包含 SQL",
+        "· 官方定位：业务连续性 / 灾难恢复 / 合规",
+        "· 正好覆盖 Instant Restore 盖不住的边界：",
+        ("&nbsp;&nbsp;跨 retention window、防平台级灾难、长期归档", DIM),
+        "· 自包含、不依赖平台元数据 → 绕开 S3 耦合陷阱",
+    ], fs=11.5, lh=1.55),
+    # 3 — automated pg_dump to S3
+    R("bo3-bg", 96, 436, 1090, 96, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)", radius=10),
+    T("bo3-h", 116, 448, 1000, 20, "③ 自动化 pg_dump 到 S3 — 即 ② 的工程化", fs=13, fw=800, color="#7CB3F4"),
+    T("bo3-b", 116, 474, 1050, 50,
+      "官方两段式指南：建一个自有 <b>S3 桶</b> + 用 <b>GitHub Action</b> 每晚定时跑 <span style=\"font-family:" + MONO + "\">pg_dump</span>，可配置保留期。"
+      "把「逻辑备份导到 Neon 外部」做成定时任务。<b>注意备份的是导出的 SQL，不是裸拷 layer。</b>",
+      fs=12, color=DIM, lh=1.6),
+    # bottom clarification
+    R("bo-c-bg", 96, 546, 1090, 76, fill=PANEL, stroke=EDGE, radius=10),
+    T("bo-c", 116, 556, 1050, 58,
+      "<b style='color:" + AC2 + "'>回答疑问</b>：并不是「每个分支各 pg_dump」。原生 Instant Restore 是<b>全 timeline 连续保历史</b>、"
+      "恢复靠 CoW 分支到某个 LSN，秒级完成；pg_dump 只在你需要一份<b>脱离 Neon 生命周期的外部副本</b>时才用。"
+      "官方<b>从不推荐裸拷 S3</b> 当备份 —— 正因它会踩 generation / 元数据一致性问题（见上页）。",
+      fs=12, color=DIM, lh=1.6),
+], p, notes="回答『Neon 官网怎么做备份，是不是每分支 pg_dump』：据 Neon 官方文档（neon.com/docs/manage/backups），托管服务提供三条可单用可叠加的备份策略，核心不是 per-branch pg_dump。① Instant Restore（PITR / history retention）——这是原生机制，系统自动保留变更历史，按套餐 1 到 30 天，可恢复到任意时刻，官方原话 'without the need for traditional database backups'，唯一配置是选 history window（越长越占存储）；底层就是 WAL + 不可变 layer + 按 LSN 建分支，不是 snapshot 也不是 pg_dump，是连续变更历史，恢复本质是在某 LSN 开一条分支，秒级、无需导出导入，覆盖误删回滚。所以用户猜的『每个分支各 pg_dump』不是它的做法——它是全 timeline 连续保历史。② 手动 pg_dump / pg_restore——标准 Postgres 工具，官方定位 'For business continuity, disaster recovery, or compliance'，即 Instant Restore 盖不住的跨窗口/防平台级灾难/长期归档边界；导出自包含 SQL、不依赖平台元数据，天然绕开 S3↔元数据耦合陷阱。③ 自动化 pg_dump 到 S3——官方两段式指南：建自有 S3 桶 + GitHub Action 每晚定时 pg_dump、可配保留期，是 ② 的工程化，备份的是导出的 SQL 而非裸拷 layer 文件。关键澄清：Neon 官方从不推荐裸拷 S3 桶当备份，因为会踩 generation/storcon PG/控制面 DB 的一致性问题（见上一页 s-backup-meta），它给的两条外部路径都是 pg_dump 这种自包含逻辑备份。来源：neon.com/docs/manage/backups、neon.com/docs/introduction/point-in-time-restore。")
+
+# ─────── 物理快照：冻结 S3 写入 ───────
+p += 1
+std("s-backup-freeze", "运维", "想物理快照 S3？光「停 GC」不够，要冻结全部写入", [
+    T("bf-desc", 96, 158, 1088, 44,
+      "「备份期间不 GC」只堵住了最危险的竞态，但 GC <b>不是 S3 上唯一改数据的来源</b>。"
+      "要拿到可恢复的一致副本，得让这个 tenant 的 S3 <b>完全静止</b>，再三方对齐快照。",
+      fs=13, color=DIM, lh=1.6),
+    # Left — three writers to S3
+    R("bf-l-bg", 96, 210, 530, 240, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=12),
+    T("bf-l-h", 116, 222, 494, 22, "S3 上会「删/改」数据的三个来源", fs=13.5, fw=800, color=AC2),
+    *TL("bf-l-b", 116, 252, 494, 190, [
+        ("① GC —— 删超出 retention 的旧 layer", FG, 700),
+        ("&nbsp;&nbsp;（这才是你想冻结的那个）", DIM),
+        "",
+        ("② Compaction —— L0→L1 / 生成 image layer", FG, 700),
+        ("&nbsp;&nbsp;既写新层也删旧层；与 GC 是两个独立任务", "#FF9E8A"),
+        ("&nbsp;&nbsp;gc_iteration ≠ compaction_iteration，停 GC 它照删", DIM),
+        "",
+        ("③ 持续 WAL ingest —— compute 还在写", FG, 700),
+        ("&nbsp;&nbsp;不断落新 layer 并覆盖 index_part.json（权威清单）", "#FF9E8A"),
+    ], fs=11.5, lh=1.5),
+    # Right — quiesce + 3-way snapshot
+    R("bf-r-bg", 656, 210, 530, 240, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("bf-r-h", 676, 222, 494, 22, "正确做法：quiesce tenant + 三方一致快照", fs=13.5, fw=800, color=AC),
+    *TL("bf-r-b", 676, 252, 494, 190, [
+        ("① 让 tenant 静止（停/detach compute）", FG, 700),
+        ("&nbsp;&nbsp;ingest / compaction / GC 全停", DIM),
+        "",
+        ("② pin 住此刻 index_part.json 版本", FG, 700),
+        ("&nbsp;&nbsp;+ 它引用的全部 layer（这份自洽）", DIM),
+        "",
+        ("③ 同一时刻快照 storcon PG + 控制面 DB", FG, 700),
+        ("&nbsp;&nbsp;尤其 tenant_shards.generation", DIM),
+        "",
+        ("④ 再拷 S3 —— 三者对齐即可恢复", AC, 700),
+    ], fs=11.5, lh=1.5),
+    # bottom — generation trap
+    R("bf-b-bg", 96, 466, 1090, 156, fill=PANEL, stroke=EDGE, radius=10),
+    T("bf-b-h", 116, 478, 1000, 20, "隐藏的坑 · generation 必须匹配", fs=13, fw=800, color="#C89EFF"),
+    T("bf-b-b", 116, 504, 1050, 110,
+      "备份期间只要发生一次 <b>compute 重启 / 迁移</b>，storcon 就会 "
+      "<span style=\"font-family:" + MONO + "\">increment_generation</span> —— 新的 index_part 落到<b>新 generation 的 key 路径</b>，旧的将来可能被回收。<br>"
+      "你元数据快照里记的 generation，<b>必须和 S3 副本里实际存在的那份对得上</b>；否则恢复时按元数据的 generation 去拼 key，拼到的是不存在/已删的对象。<b>所以「冻结写入」本质也是在冻结 generation。</b><br>"
+      "<b style='color:" + AC + "'>底线</b>：这条路可行（适合超大库 pg_dump 太慢时的块级快照），代价是<b>要停服窗口 + 自己保证 quiesce 和三方一致</b>——这正是它比 pg_dump 重、不被官方当推荐 DR 路径的原因。Neon 内部的 deletion queue + generation 校验（deletion_queue/validator.rs）就是为「不误删仍被引用的层」而设。",
+      fs=12, color=DIM, lh=1.62),
+], p, notes="回答『备份 S3 期间不 GC 是不是就行、把元数据和 S3 都备份下』：方向对一半——不 GC 消除了最危险的竞态，但不够，因为 GC 不是 S3 上唯一删/改数据的来源，共三个独立来源：① GC（删超出 retention 的旧 layer，即用户想冻结的）；② Compaction（L0→L1、生成 image layer，既写新层也删旧层，与 GC 是两个独立任务 gc_iteration vs compaction_iteration，停 GC 它照删）；③ 持续 WAL ingest（只要 compute 还在写，Pageserver 就不断落新 layer 并覆盖 index_part.json 权威清单）。所以只关 GC，compaction 和 ingest 还在动 S3，拷到的是移动的靶子，拷一半清单和层就对不上。正确做法是让该 tenant 的 S3 完全静止=把 tenant quiesce 掉（停/detach compute，让 ingest/compaction/GC 全停），然后：记下此刻 index_part.json 版本 + 它引用的全部 layer（这份自洽）；同一时刻快照 storcon PG（尤其 tenant_shards.generation）+ 控制面 DB；再拷 S3；三者对齐即可恢复。隐藏坑——generation 必须匹配：备份期间只要一次 compute 重启或迁移，storcon 就会 increment_generation，新 index_part 落到新 generation 的 key 路径，旧的将来可能被回收；元数据快照记的 generation 必须和 S3 副本里实际存在的那份对得上，否则恢复时按元数据 generation 拼 key 会拼到不存在/已删对象；所以冻结写入本质也是冻结 generation。Neon 内部已有 deletion queue + generation 校验（pageserver/src/deletion_queue/validator.rs）机制：删除是延迟的、删前要向 controller 校验 generation，正是为了不删掉仍被引用的层。底线：这条路可行（适合超大库 pg_dump 太慢时的物理块级快照），代价是要停服窗口 + 自己保证 quiesce 和三方时间点一致，这正是它比 pg_dump 重、不被官方当推荐 DR 路径的原因。对照：只停 GC 边跑边拷=不可恢复（compaction/ingest 仍删改）；quiesce+三方一致快照=可恢复但要停服；pg_dump 逻辑导出=不停服、自包含、绕开全部耦合。")
+
+# ─────── 建指定 LSN 的 root timeline ───────
+p += 1
+std("s-root-at-lsn", "协调层", "创建「指定 LSN 的新 root timeline」：没有专用接口，两步拼出来", [
+    T("rl-desc", 96, 158, 1088, 44,
+      "storage_controller <b>没有</b> <span style=\"font-family:" + MONO + "\">restore</span> / <span style=\"font-family:" + MONO + "\">reset</span> 这类端点。"
+      "「在某 LSN 上建一条无父 root」是用<b>同一个建 timeline 接口</b> + <b>detach_ancestor</b> 两步组合出来的 —— 官方 Instant Restore 也是控制面在上层编排这两个原语。",
+      fs=13, color=DIM, lh=1.6),
+    # step 1 — branch at LSN
+    R("rl1-bg", 96, 210, 530, 232, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("rl1-h", 116, 222, 494, 22, "① 在指定 LSN 上分支（Branch 模式）", fs=13.5, fw=800, color=AC),
+    *TL("rl1-b", 116, 250, 500, 186, [
+        ("POST /v1/tenant/:tid/timeline", AC, 700),
+        ("&nbsp;&nbsp;http.rs:2565 → handle_tenant_timeline_create", DIM),
+        ("&nbsp;&nbsp;→ service.tenant_timeline_create", DIM),
+        "",
+        ("body = TimelineCreateRequest（Branch 变体）", FG, 700),
+        ("&nbsp;&nbsp;ancestor_timeline_id：从哪条切", DIM),
+        ("&nbsp;&nbsp;ancestor_start_lsn ← 「指定 LSN」入口", AC),
+        ("&nbsp;&nbsp;此刻仍是子分支，不是 root", "#FF9E8A"),
+    ], fs=11.5, lh=1.5),
+    # step 2 — detach ancestor
+    R("rl2-bg", 656, 210, 530, 232, fill=PANEL, stroke=EDGE, radius=12),
+    T("rl2-h", 676, 222, 494, 22, "② 切断祖先，升成无父 root（detach_ancestor）", fs=13.5, fw=800, color="#7CB3F4"),
+    *TL("rl2-b", 676, 250, 500, 186, [
+        ("POST …/timeline/:tlid/detach_ancestor", "#7CB3F4", 700),
+        ("&nbsp;&nbsp;http.rs:2583 → handle_..._detach_ancestor", DIM),
+        "",
+        ("把分支点之前依赖的数据实体化到自己名下", FG, 700),
+        ("&nbsp;&nbsp;之后 ancestor_timeline_id = None", DIM),
+        "",
+        ("DetachBehavior（models.rs:193）：", FG, 700),
+        ("&nbsp;&nbsp;v1 no_ancestor_and_reparent：切断+兄弟改挂祖先", DIM),
+        ("&nbsp;&nbsp;v2 multi_level_and_no_reparent：多级切断不 reparent", DIM),
+    ], fs=11.5, lh=1.5),
+    # bottom — summary & related primitives
+    R("rl-b-bg", 96, 458, 1090, 164, fill=PANEL, stroke=EDGE, radius=10),
+    T("rl-b-h", 116, 470, 1000, 20, "小结 · 建 root at LSN = timeline_create(Branch, ancestor_start_lsn) + detach_ancestor", fs=13, fw=800, color="#C89EFF"),
+    T("rl-b-b", 116, 496, 1050, 118,
+      "• <b>不是原子接口</b>：先在 LSN 上开子分支，再 detach 成 parentless root，两步不可合并。<br>"
+      "• storage_controller 只提供<b>底层积木</b>，官方 Instant Restore 是控制面把这两步 + 挪 compute/endpoint + 改名（旧分支存成 <span style=\"font-family:" + MONO + "\">{name}_old_{ts}</span>）编排起来。<br>"
+      "• 相关积木：<span style=\"font-family:" + MONO + "\">timeline_import</span>（http.rs:1504，对应 ImportPgdata 模式，从外部 pgdata 导入建 timeline）；"
+      "<span style=\"font-family:" + MONO + "\">block_gc</span> / <span style=\"font-family:" + MONO + "\">unblock_gc</span>（http.rs:2593/2603，restore 期间锁住 GC 保护恢复点）。<br>"
+      "• 建 timeline 三种模式（<span style=\"font-family:" + MONO + "\">TimelineCreateRequestMode</span>）：<b>Branch</b>（带 LSN 分支）/ <b>ImportPgdata</b>（外部导入）/ <b>Bootstrap</b>（全新空库）。",
+      fs=12, color=DIM, lh=1.62),
+], p, notes="回答『是 storage_controller 里有单独的接口吗？怎么创建指定了 LSN 的新 root timeline』：没有专用的 create-root-at-LSN 端点，也没有 restore/reset 端点（grep 确认 storage_controller/src/http.rs 里无 restore|reset 路由）。用同一个建 timeline 接口 + detach_ancestor 两步组合。第一步在指定 LSN 分支：路由 POST /v1/tenant/:tenant_id/timeline（http.rs:2565）→ handle_tenant_timeline_create（http.rs:448，463 解析 TimelineCreateRequest，467 调 service.tenant_timeline_create）；请求体 TimelineCreateRequest（libs/pageserver_api/src/models.rs），#[serde(flatten)] 出 TimelineCreateRequestMode，指定 LSN 走 Branch 变体，其中 ancestor_start_lsn: Option<Lsn> 就是『指定 LSN』的入口，ancestor_timeline_id 指定从哪条切；此时新 timeline 仍是子分支不是 root。第二步 detach_ancestor 升成无父 root：路由 POST /v1/tenant/:tenant_id/timeline/:timeline_id/detach_ancestor（http.rs:2583 → handle_tenant_timeline_detach_ancestor at http.rs:579 → service.tenant_timeline_detach_ancestor）；detach 会把分支点之前需要的数据实体化到这条 timeline 自己名下，之后 ancestor_timeline_id = None 成为真正 parentless root。DetachBehavior（models.rs:193）：no_ancestor_and_reparent（=v1，切断到祖先并把兄弟分支重挂祖先）、multi_level_and_no_reparent（=v2，多级切断不 reparent）。小结：建 root at LSN = timeline_create(Branch, ancestor_start_lsn=X) + detach_ancestor，不是原子操作；storage_controller 只提供底层积木，官方 Instant Restore 是控制面编排这两步 + 挪 compute/endpoint + 改名（旧分支存成 {branch_name}_old_{head_timestamp}）。相关积木：timeline_import（http.rs:1504，对应 ImportPgdata 模式，从外部 pgdata 导入）、block_gc/unblock_gc（http.rs:2593/2603，restore 期间锁住 GC）。建 timeline 三种模式 TimelineCreateRequestMode：Branch（带 LSN 分支）/ ImportPgdata（外部导入）/ Bootstrap（全新空库）。")
+
+# ─────── root restore 后子分支的 reparent 规则 ───────
+p += 1
+std("s-reparent", "协调层", "root restore 后，原 root 的子分支怎么办：v1 的 reparent 分流", [
+    T("rp-desc", 96, 158, 1088, 44,
+      "root restore = fork <span style=\"font-family:" + MONO + "\">new_timeline</span>（父=旧 root，分叉点=snapshot_lsn）→ 对它调 <span style=\"font-family:" + MONO + "\">detach_ancestor</span>（默认 v1）。"
+      "v1 会尝试把<b>旧 root 的直接子分支</b>按分叉点 LSN <b>分流</b>：一部分改挂到 new_timeline，其余留在旧 root。",
+      fs=13, color=DIM, lh=1.6),
+    # left — the filter
+    R("rp1-bg", 96, 210, 530, 214, fill=PANEL, stroke=EDGE, radius=12),
+    T("rp1-h", 116, 222, 494, 22, "判定：reparentable_timelines（detach_ancestor.rs:1252）", fs=12.5, fw=800, color="#C89EFF"),
+    *TL("rp1-b", 116, 250, 500, 168, [
+        ("tl_ancestor = tl.ancestor_timeline?  // 无父跳过", DIM),
+        ("is_same    = ptr_eq(ancestor, tl_ancestor)", FG, 700),
+        ("&nbsp;&nbsp;// 直接父 == 被 detach 的旧 root", DIM),
+        ("is_earlier = tl.ancestor_lsn <= ancestor_lsn", FG, 700),
+        ("&nbsp;&nbsp;// 分叉点 <= detach 锚定 LSN(=snapshot)", DIM),
+        ("!is_deleting  // 正在删的排除", FG, 700),
+        "",
+        ("三者全真 → reparent 到 new_timeline", AC),
+    ], fs=11, lh=1.52),
+    # right — two classes
+    R("rp2-bg", 656, 210, 530, 214, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("rp2-h", 676, 222, 494, 22, "子分支被分成两类", fs=13.5, fw=800, color=AC),
+    *TL("rp2-b", 676, 250, 500, 168, [
+        ("① 分叉点 LSN ≤ snapshot_lsn", AC, 700),
+        ("&nbsp;&nbsp;→ 自动 reparent 到 new_timeline", FG),
+        ("&nbsp;&nbsp;安全：该区间 layer 已被 new_timeline 继承，", DIM),
+        ("&nbsp;&nbsp;读到的历史与旧 root 完全一致（快照前不可变）", DIM),
+        "",
+        ("② 分叉点 LSN > snapshot_lsn", AC2, 700),
+        ("&nbsp;&nbsp;→ 不 reparent，仍挂旧 root（备份分支那条）", FG),
+        ("&nbsp;&nbsp;它们依赖被回滚掉的数据，只能跟旧 timeline", DIM),
+    ], fs=11, lh=1.52),
+    # bottom — caveats
+    R("rp-b-bg", 96, 440, 1090, 182, fill=PANEL, stroke=EDGE, radius=10),
+    T("rp-b-h", 116, 452, 1000, 20, "四个易踩的精确点", fs=13, fw=800, color=AC2),
+    T("rp-b-b", 116, 478, 1050, 138,
+      "• <b>只处理直接子分支</b>：<span style=\"font-family:" + MONO + "\">ptr_eq</span> 比的是「直接父 == 旧 root」，"
+      "<b>孙子级/多级后代不在候选</b>（函数名即 <span style=\"font-family:" + MONO + "\">reparented_direct_children</span>，:675）。<br>"
+      "• <b>reparent 目标是 detached 那条</b>：判据里 <span style=\"font-family:" + MONO + "\">ancestor</span> 指旧 root，改挂目标是 <span style=\"font-family:" + MONO + "\">new_parent = detached</span>（<span style=\"font-family:" + MONO + "\">schedule_reparenting_and_wait</span>，:1150）。<br>"
+      "• <b>安全性靠 layer 继承</b>：detach 时 <span style=\"font-family:" + MONO + "\">schedule_adding_existing_layers…detach</span>（:1086）把 ≤ancestor_lsn 的 layer 继承进 new_timeline，"
+      "子分支读同区间拿到同一批层 → 数据不变；> 该点才读不到、不能迁。<br>"
+      "• <b>reparent 尽力而为</b>：部分失败返回 <span style=\"font-family:" + MONO + "\">SomeReparentingFailed</span>（:56），detach 不标记完成、需重试收敛（:1193）。"
+      "<b style='color:" + AC + "'>后果</b>：留在旧 root 的子分支把旧 root 钉住，无法回收 —— 这就是多次 restore 后最早 root 删不掉的根源。",
+      fs=11.5, color=DIM, lh=1.6),
+], p, notes="回答『root 分支 restore 后原 root 的子分支怎么办』，并核对用户对 reparentable_timelines 的理解：结论基本正确，代码印证。root restore = fork new_timeline（父=旧 root timeline，分叉点=snapshot_lsn）再对它调 detach_ancestor（默认 v1 NoAncestorAndReparent）。判定在 pageserver/src/tenant/timeline/detach_ancestor.rs:1252 fn reparentable_timelines：先 tl_ancestor = tl.ancestor_timeline.as_ref()?（无父的 root 跳过），is_same = Arc::ptr_eq(ancestor, tl_ancestor)（tl 的直接父 == 被 detach 的旧 root），is_earlier = tl.get_ancestor_lsn() <= ancestor_lsn（子分支分叉点 <= detach 锚定的 ancestor_lsn，本流程里=snapshot_lsn），外加 !is_deleting；三者全真才 Some(tl) 加入候选。于是旧 root 的子分支分两类：① 分叉点 ≤ snapshot_lsn → 自动 reparent 到 new_timeline，安全性来自 detach 时 schedule_adding_existing_layers_to_index_detach_and_wait（:1086）把 ≤ancestor_lsn 的 layer 继承进 new_timeline，子分支读自己 [0,ancestor_lsn] 区间能从 new_timeline 拿到同一批 layer，内容与旧 root 一致（快照前历史不可变）；② 分叉点 > snapshot_lsn → 不 reparent，仍挂旧 root（保留的备份分支那条 timeline），因为它们依赖被回滚掉的数据。需修正/补充的精确点：(1) 只处理直接子分支——ptr_eq 比的是直接父，孙子级/多级后代不在候选，函数 reparented_direct_children（:675）；(2) reparent 的目标是 detached（new_parent），判据里的 ancestor 指旧 root，改挂用 schedule_reparenting_and_wait(&new_parent)（:1150）；(3) is_earlier 的界是 detach 实际锚定的 ancestor_lsn，在 root-restore 里恰好=snapshot_lsn（fork 时 ancestor_start_lsn=snapshot_lsn）；(4) reparent 尽力而为，部分失败返回 SomeReparentingFailed（:56 error），reparented_all = candidates==reparented.len()（:1193），不全成则 detach 不标记完成需重试。v1=NoAncestorAndReparent 做 reparent；v2=MultiLevelAndNoReparent 直接 return Reparented(HashSet::new()) 不 reparent（:1105-1108）。后果：留在旧 root 的子分支把旧 root 钉住无法删，正是多次 Instant Restore 后最早 root 一直无法回收的根源（呼应 s-root-at-lsn / 前面的 Instant Restore 讨论）。")
 
 # ─────── 局限 & tradeoff ───────
 p += 1
