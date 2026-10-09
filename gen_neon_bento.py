@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Generate the Neon architecture deck as bento/slides JSON."""
+import copy
 import json
 import math
 import re
@@ -4488,6 +4489,248 @@ std("s-reparent", "协调层", "root restore 后，原 root 的子分支怎么�
       fs=11.5, color=DIM, lh=1.6),
 ], p, notes="回答『root 分支 restore 后原 root 的子分支怎么办』，并核对用户对 reparentable_timelines 的理解：结论基本正确，代码印证。root restore = fork new_timeline（父=旧 root timeline，分叉点=snapshot_lsn）再对它调 detach_ancestor（默认 v1 NoAncestorAndReparent）。判定在 pageserver/src/tenant/timeline/detach_ancestor.rs:1252 fn reparentable_timelines：先 tl_ancestor = tl.ancestor_timeline.as_ref()?（无父的 root 跳过），is_same = Arc::ptr_eq(ancestor, tl_ancestor)（tl 的直接父 == 被 detach 的旧 root），is_earlier = tl.get_ancestor_lsn() <= ancestor_lsn（子分支分叉点 <= detach 锚定的 ancestor_lsn，本流程里=snapshot_lsn），外加 !is_deleting；三者全真才 Some(tl) 加入候选。于是旧 root 的子分支分两类：① 分叉点 ≤ snapshot_lsn → 自动 reparent 到 new_timeline，安全性来自 detach 时 schedule_adding_existing_layers_to_index_detach_and_wait（:1086）把 ≤ancestor_lsn 的 layer 继承进 new_timeline，子分支读自己 [0,ancestor_lsn] 区间能从 new_timeline 拿到同一批 layer，内容与旧 root 一致（快照前历史不可变）；② 分叉点 > snapshot_lsn → 不 reparent，仍挂旧 root（保留的备份分支那条 timeline），因为它们依赖被回滚掉的数据。需修正/补充的精确点：(1) 只处理直接子分支——ptr_eq 比的是直接父，孙子级/多级后代不在候选，函数 reparented_direct_children（:675）；(2) reparent 的目标是 detached（new_parent），判据里的 ancestor 指旧 root，改挂用 schedule_reparenting_and_wait(&new_parent)（:1150）；(3) is_earlier 的界是 detach 实际锚定的 ancestor_lsn，在 root-restore 里恰好=snapshot_lsn（fork 时 ancestor_start_lsn=snapshot_lsn）；(4) reparent 尽力而为，部分失败返回 SomeReparentingFailed（:56 error），reparented_all = candidates==reparented.len()（:1193），不全成则 detach 不标记完成需重试。v1=NoAncestorAndReparent 做 reparent；v2=MultiLevelAndNoReparent 直接 return Reparented(HashSet::new()) 不 reparent（:1105-1108）。后果：留在旧 root 的子分支把旧 root 钉住无法删，正是多次 Instant Restore 后最早 root 一直无法回收的根源（呼应 s-root-at-lsn / 前面的 Instant Restore 讨论）。")
 
+# ─────── v1 vs v2 detach_behavior 选型 ───────
+p += 1
+std("s-detach-v1v2", "协调层", "detach_ancestor 用 v1 还是 v2：root restore 选 v1", [
+    T("dv-desc", 96, 158, 1088, 44,
+      "分水岭不只是「reparent 与否」，更在 <span style=\"font-family:" + MONO + "\">prepare()</span>（detach_ancestor.rs:350-374）对<b>「祖先的祖先」</b>的处理。"
+      "root restore 拓扑天然单层（new_timeline 的父=旧 root，旧 root 本身无祖先）—— <b>v1 正合适</b>。",
+      fs=13, color=DIM, lh=1.6),
+    # left — v1
+    R("dv1-bg", 96, 210, 530, 250, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("dv1-h", 116, 222, 494, 22, "v1  no_ancestor_and_reparent（默认）", fs=13.5, fw=800, color=AC),
+    *TL("dv1-b", 116, 250, 500, 202, [
+        ("· 多级祖先 → 直接报 TooManyAncestors（:370）", FG, 700),
+        ("&nbsp;&nbsp;只支持单层祖先", DIM),
+        ("· 做 reparent：≤ancestor_lsn 的直接子分支", AC, 700),
+        ("&nbsp;&nbsp;改挂到 new_timeline（:1126）", DIM),
+        ("· 检查 archived 子分支，有则 Archived 报错（:1299）", FG, 700),
+        "",
+        ("root restore 该用它，因为：", AC, 700),
+        ("&nbsp;&nbsp;① 旧 root 无祖先 → TooManyAncestors 不触发", DIM),
+        ("&nbsp;&nbsp;② 要的正是 reparent 分流（v2 放弃）", DIM),
+        ("&nbsp;&nbsp;③ 官方 Instant Restore 语义依赖 reparent", DIM),
+    ], fs=11, lh=1.5),
+    # right — v2
+    R("dv2-bg", 656, 210, 530, 250, fill=PANEL, stroke=EDGE, radius=12),
+    T("dv2-h", 676, 222, 494, 22, "v2  multi_level_and_no_reparent", fs=13.5, fw=800, color="#7CB3F4"),
+    *TL("dv2-b", 676, 250, 500, 202, [
+        ("· 沿 ancestor.ancestor_timeline 逐级上卷", FG, 700),
+        ("&nbsp;&nbsp;把多级链条扁平化（:352-369）", DIM),
+        ("· 不做 reparent：直接 return 空集（:1105）", AC2, 700),
+        ("&nbsp;&nbsp;所有子分支都留在原祖先", DIM),
+        ("· 上卷前提：每级 ancestor_lsn == 祖先自己的", FG, 700),
+        ("&nbsp;&nbsp;ancestor_lsn，否则 AncestorNotEmpty（:353）", DIM),
+        ("&nbsp;&nbsp;即中间层必须是「空转」层", "#FF9E8A"),
+        ("· 跳过 archived 子分支检查（:1322）", DIM),
+        "",
+        ("适用：深层分支扁平化、且不在乎兄弟 reparent", "#7CB3F4"),
+    ], fs=11, lh=1.5),
+    # bottom — decision
+    R("dv-b-bg", 96, 476, 1090, 146, fill=PANEL, stroke=EDGE, radius=10),
+    T("dv-b-h", 116, 488, 1000, 20, "选型一句话", fs=13, fw=800, color="#C89EFF"),
+    T("dv-b-b", 116, 514, 1050, 100,
+      "<b style='color:" + AC + "'>root restore → v1</b>：拓扑单层，v2 的「多级上卷」用不上；而 v1 独有的 reparent 恰好把 ≤snapshot_lsn 的子分支迁到新主干（见 <span style=\"font-family:" + MONO + "\">s-reparent</span>）。"
+      "选 v2 会让所有子分支留在旧 root，你要的分流根本不发生。<br>"
+      "<b style='color:#7CB3F4'>v2 的场景</b>：被 detach 的 timeline 挂在一条<b>多级链</b>上，想一路拍平成 root、且不需要兄弟 reparent；"
+      "还要求中间每层都是「分叉点 LSN == 自身祖先 LSN」的空转层，否则 <span style=\"font-family:" + MONO + "\">AncestorNotEmpty</span>。这是「深层扁平化」工具，不是 root restore 用的。",
+      fs=12, color=DIM, lh=1.62),
+], p, notes="回答『detach_ancestor 用 v1 还是 v2』：root restore 场景用 v1（NoAncestorAndReparent，默认）。真正的分水岭在 prepare()（pageserver/src/tenant/timeline/detach_ancestor.rs:350-374）对『祖先的祖先』的处理，不只是 reparent 与否。v1：(a) 被 detach 的 timeline 若有多级祖先，直接报 TooManyAncestors（:370-373），只支持单层祖先；(b) 做 reparent，把 ≤ancestor_lsn 的直接子分支改挂到 new_timeline（:1126）；(c) 检查 archived 子分支，有 archived 候选报 Archived（:1299）。v2（MultiLevelAndNoReparent）：(a) 沿 ancestor.ancestor_timeline 逐级上卷把多级链扁平化（:352-369），前提是每一级 ancestor_lsn == ancestor.ancestor_lsn，否则 AncestorNotEmpty（:353-357），即中间层必须是空转层；(b) 不做 reparent，直接 return Reparented(空 HashSet)（:1105-1108），所有子分支留在原祖先；(c) 跳过 archived 子分支检查（:1322-1324）。为什么 root restore 用 v1：① restore 时 new_timeline 的父是旧 root，旧 root 本身无祖先（它是 root），所以拓扑单层，v1 的 TooManyAncestors 不会触发，v2 的多级上卷能力用不上；② 要的正是 reparent——把旧 root 下 ≤snapshot_lsn 的子分支自动迁到新主干，这是 v1 独有、v2 明确放弃的；选 v2 会让所有子分支留旧 root，s-reparent 里讲的分流不发生；③ 官方 Instant Restore 语义依赖 reparent 让快照点前的子分支跟新主干走。v2 的适用场景：被 detach 的 timeline 挂在多级链上，想一路拍平成 root 且不在乎兄弟 reparent，且中间每层是分叉点 LSN==自身祖先 LSN 的空转层，这是深层分支扁平化工具，不是 root restore。呼应 s-reparent / s-root-at-lsn。")
+
+# ─────── v2 的适用场景：多级链扁平化 ───────
+p += 1
+std("s-detach-v2-case", "协调层", "v2 的唯一用武之地：把「多级链」上的分支拍平成 root", [
+    T("v2-desc", 96, 158, 1088, 40,
+      "v2 只在<b>被 detach 的 timeline 不是直接挂在 root 下、而是挂在一条多级链上</b>时才有意义。"
+      "root restore 的 new_timeline 天生只有一层父，几乎永远用不到 v2。",
+      fs=13, color=DIM, lh=1.55),
+    # before
+    R("v2-bf-bg", 96, 206, 530, 268, fill=PANEL, stroke=EDGE, radius=12),
+    T("v2-bf-h", 116, 218, 494, 20, "场景：对 B 做 detach（B 上面还有 A、T0）", fs=12.5, fw=800, color=AC2),
+    *TL("v2-bf-tree", 116, 250, 494, 130, [
+        ("root (T0)", "#7CB3F4", 700),
+        ("&nbsp;└── A   (anc=T0, lsn=L)", FG),
+        ("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── B   (anc=A, lsn=L)  ← 目标", AC, 700),
+        ("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── …", DIM),
+    ], fs=12, lh=1.7, ff=MONO),
+    T("v2-bf-n", 116, 392, 494, 74,
+      "<b>v1 直接失败</b>：<span style=\"font-family:" + MONO + "\">prepare()</span> 见 A 还有祖先 T0 → "
+      "<span style=\"font-family:" + MONO + "\">TooManyAncestors</span>（:370）。v1 只处理「挂在 root 下」的单层。",
+      fs=11.5, color=DIM, lh=1.55),
+    # after
+    R("v2-af-bg", 656, 206, 530, 268, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)", radius=12),
+    T("v2-af-h", 676, 218, 494, 20, "v2：沿 A→T0 逐级上卷，B 拍平成 root", fs=12.5, fw=800, color="#7CB3F4"),
+    *TL("v2-af-tree", 676, 250, 494, 130, [
+        ("root (T0)          B (root, anc=None)", "#7CB3F4", 700),
+        ("&nbsp;└── A   (anc=T0)      ← 独立成库", FG),
+        ("", DIM),
+        ("A 及其它兄弟：原地不动，一个都不迁", AC2),
+    ], fs=12, lh=1.7, ff=MONO),
+    T("v2-af-n", 676, 392, 494, 74,
+      "<b>不 reparent</b>：直接 <span style=\"font-family:" + MONO + "\">return Reparented(空集)</span>（:1105）。"
+      "B 变成 <span style=\"font-family:" + MONO + "\">anc=None</span> 的独立 root，把 [0,L] 的 layer 都继承到自己名下。",
+      fs=11.5, color=DIM, lh=1.55),
+    # bottom — prerequisites
+    R("v2-b-bg", 96, 490, 1090, 132, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=10),
+    T("v2-b-h", 116, 502, 1000, 20, "硬前提 · 中间层必须是「空转层」", fs=13, fw=800, color=AC2),
+    T("v2-b-b", 116, 528, 1050, 86,
+      "上卷时每级都要求 <span style=\"font-family:" + MONO + "\">ancestor_lsn == ancestor.ancestor_lsn</span>（:353-357）——"
+      "即 <b>B 在 A 上的分叉点 LSN，必须正好等于 A 在 T0 上的分叉点 LSN</b>；否则报 <span style=\"font-family:" + MONO + "\">AncestorNotEmpty</span>。"
+      "含义：中间层 A 在那段区间<b>没写过独立新数据</b>（是「空转」的），扁平化才不用多切多拷 layer，当前实现只做这种情形。<br>"
+      "<b style='color:#7CB3F4'>一句话</b>：v2 = 给「深层分支想脱离整条祖先链、独立成库」的运维/整理场景；<b>单层 + 要迁子分支就用 v1</b>（root restore）。",
+      fs=11.5, color=DIM, lh=1.6),
+], p, notes="回答『什么情况下使用 v2』：v2（MultiLevelAndNoReparent）只在被 detach 的 timeline 挂在一条多级链上（不是直接挂 root 下）时才有意义。示例拓扑 root(T0) └ A(anc=T0,lsn=L) └ B(anc=A,lsn=L)，对 B 做 detach：v1 直接失败——prepare() 发现 ancestor(A).ancestor_timeline 非空（A 上面还有 T0），报 TooManyAncestors（detach_ancestor.rs:370-373），v1 只处理挂在 root 下的单层情况。v2 才能处理：沿 ancestor.ancestor_timeline 从 A→T0 逐级上卷（:352-369），把 B 一路扁平化到最顶层，最终 B 变成 anc=None 的独立 root，把 [0,L] 区间 layer 继承进自己名下。v2 三个前提/代价：(1) 每层必须是空转层——上卷要求 ancestor_lsn == ancestor.ancestor_lsn（:353-357），即 B 在 A 的分叉点 LSN 必须正好等于 A 在 T0 的分叉点 LSN，否则 AncestorNotEmpty；因为中间层 A 若在那段区间真写过独立数据，扁平化就要多切多拷 layer，当前实现不做，所以 v2 适用中间层没有独立新数据的链条；(2) 放弃 reparent，直接 return Reparented(空集)（:1105-1108），A、T0 下其它兄弟分支一个都不迁全留原地；(3) 跳过 archived 子分支检查（:1322-1324）。一句话区分：单层+要迁子分支→v1（root restore）；多级链+只想把目标拍平成 root、不管兄弟→v2。root restore 流程几乎永远用不到 v2，因为 restore 造的 new_timeline 天生只有一层父（旧 root）。v2 是给『深层分支想脱离整条祖先链、独立成库』的运维/整理场景准备的。呼应 s-detach-v1v2 / s-reparent。")
+
+# ─────── role/database 归谁：控制面 spec vs LSN 快照 ───────
+p += 1
+std("s-role-db-backup", "运维", "role/database 到底归谁：控制面 spec（薄）vs LSN 快照（数据）", [
+    T("rd-desc", 96, 158, 1088, 44,
+      "「role/database 是控制面 spec 权威、下发给 compute」—— <b>对，但它只权威一个薄子集</b>（存在性+口令+owner）。"
+      "数据、ACL、成员关系归 LSN 快照。恢复 = <b>LSN 快照(数据) + 控制面 spec(叠配置)</b>，两者不能互相替代。",
+      fs=13, color=DIM, lh=1.55),
+    # left — control-plane spec (thin)
+    R("rd1-bg", 96, 212, 530, 244, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)", radius=12),
+    T("rd1-h", 116, 224, 494, 22, "控制面 spec 权威的 —— 薄子集", fs=13.5, fw=800, color="#7CB3F4"),
+    *TL("rd1-b", 116, 252, 500, 196, [
+        ("ComputeSpec.cluster.roles/databases", "#7CB3F4", 700),
+        ("&nbsp;&nbsp;spec.rs:555-574", DIM),
+        ("· role 存在性 + encrypted_password（口令）", FG),
+        ("&nbsp;&nbsp;口令控制面管，数据页里未必是最新", DIM),
+        ("· database 存在性 + owner + 少量 options", FG),
+        "",
+        ("属于「平台元数据」，不在 S3 layer 里 →", AC, 700),
+        ("&nbsp;&nbsp;跟 generation / endpoint 映射一起备份", AC),
+        ("&nbsp;&nbsp;（本就在控制面 DB 里，无需另抄）", DIM),
+        ("compute 侧靠它 reconcile：CreateRoles/", "#F4C77C"),
+        ("&nbsp;&nbsp;CreateDatabases、DeltaOp 处理 DROP/RENAME", DIM),
+    ], fs=11, lh=1.48),
+    # right — LSN snapshot (data)
+    R("rd2-bg", 656, 212, 530, 244, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("rd2-h", 676, 224, 494, 22, "LSN 快照权威的 —— 数据大头", fs=13.5, fw=800, color=AC),
+    *TL("rd2-b", 676, 252, 500, 196, [
+        ("控制面 spec 完全不碰的：", AC, 700),
+        ("· 每个库的表 / schema / 行数据", FG),
+        ("· 对象级权限 ACL（表/schema/函数 GRANT）", FG),
+        ("· 角色成员关系 pg_auth_members", FG),
+        ("· pg_db_role_setting、default privileges", FG),
+        "",
+        ("这些只在该 LSN 的 layer 里；按 LSN 建分支时", DIM),
+        ("pg_authid / pg_database 也随数据原子回来", DIM),
+        "",
+        ("→ 单独记 role/db 省不掉数据快照，", AC2, 700),
+        ("&nbsp;&nbsp;且是有损第二真相源，会与数据漂移", AC2),
+    ], fs=11, lh=1.48),
+    # bottom — restore = overlay
+    R("rd-b-bg", 96, 472, 1090, 150, fill=PANEL, stroke=EDGE, radius=10),
+    T("rd-b-h", 116, 484, 1000, 20, "恢复流程 = 两段叠加，各管一段", fs=13, fw=800, color="#C89EFF"),
+    T("rd-b-b", 116, 510, 1050, 104,
+      "<b>① 按 LSN 建分支</b> → 数据 + <span style=\"font-family:" + MONO + "\">pg_authid</span>/<span style=\"font-family:" + MONO + "\">pg_database</span> + ACL + 成员关系（无损、原子一致）<br>"
+      "<b>② 控制面按该 endpoint 的 spec reconcile</b> → 叠加口令、确保期望 role/db 存在（<span style=\"font-family:" + MONO + "\">spec_apply.rs</span>：CreateRoles/CreateDatabases、ChangeSchemaPerms 打 default_grants）<br>"
+      "<b style='color:" + AC + "'>结论</b>：role/database 的「存在性+口令+owner」跟控制面元数据<b>一起备</b>（你说得对，这部分要备）；但它是薄薄一层配置意图，"
+      "<b>数据/ACL/成员关系归 LSN 快照</b>。想「只记 role/db 就恢复」不成立——只会得到口令对、权限残缺、且与数据漂移的空壳。DDL forwarding（<span style=\"font-family:" + MONO + "\">s-ddl-fwd</span>）持续把 CREATE/DROP ROLE·DATABASE 上报控制面，正是维护这份薄清单，但它不是恢复数据的依据。",
+      fs=11.5, color=DIM, lh=1.6),
+], p, notes="回答『role/database 是控制面 spec 权威、下发给 compute，所以应该备份 role 和 database 吧』：你抓住了真实分工，但要厘清『谁对什么权威』。控制面 spec（ComputeSpec.cluster.roles/databases，libs/compute_api/src/spec.rs:555-574）确实权威、下发、compute reconcile，但它权威的只是一个薄子集：role 存在性 + encrypted_password（口令，控制面管，用户在 Console 改密码写进控制面再下发，数据页里那个 LSN 未必最新）、database 存在性 + owner + 少量 options。这个薄子集属于『平台元数据』（不在 S3 layer 里），应该跟 tenant_shards.generation、project/branch/endpoint↔tenant/timeline 映射一起备份——这点你对。但它不对『数据库内容』权威：控制面 spec 完全不碰每个库的表/schema/行数据、对象级 ACL（表/schema/函数 GRANT）、角色成员关系 pg_auth_members、pg_db_role_setting、default privileges——这些只在 LSN 快照 layer 里，按 LSN 建分支时 pg_authid/pg_database 随数据原子回来。所以『用记录的 role/database 直接恢复到新分支更简单』不成立：库数据/ACL/成员关系仍只能从 LSN 快照来，单独记的 spec 清单恢复时是叠加在 LSN 数据之上而非替代，且是有损第二真相源会与数据漂移。正确心智模型：恢复 endpoint/分支 = ① 按 LSN 建分支（数据 + pg_authid/pg_database + ACL + 成员关系，无损原子）+ ② 控制面按该 endpoint spec reconcile（叠加口令、确保期望 role/db 存在，compute_tools/src/spec_apply.rs：CreateRoles/CreateDatabases、DeltaOp 处理 DROP/RENAME/delete_role at :1240-1252、ChangeSchemaPerms 打 default_grants at :1122-1147），两者缺一不可且不能互相替代。DDL forwarding（s-ddl-fwd）实时把 CREATE/DROP ROLE·DATABASE 上报控制面，持续维护这份薄清单，但那是给控制面自己用（UI、给新 endpoint 下发 spec），不是恢复数据的依据。收敛：role/database 的存在性+口令+owner 跟控制面元数据一起备（要备），但数据/ACL/成员关系归 LSN 快照；恢复 = LSN 快照(数据) + 控制面 spec(叠配置)。呼应 s-backup-meta / s-backup-freeze / s-ddl-fwd。")
+
+# ─────── detach 后 S3 存几份 ───────
+p += 1
+std("s-detach-storage", "PAGESERVER", "detach_ancestor 后，S3 上两个 root 存两份还是一份？", [
+    T("ds-desc", 96, 158, 1088, 44,
+      "答案：<b>S3 上存两份物理对象</b> —— 新 root 把分叉点前依赖的历史 layer 复制出自己一整套副本（server-side copy）。"
+      "只有<b>本地磁盘</b>靠 hardlink 共享 inode，S3 没有 hardlink，只能真拷。",
+      fs=13, color=DIM, lh=1.55),
+    # left — why two objects
+    R("ds1-bg", 96, 212, 530, 250, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=12),
+    T("ds1-h", 116, 224, 494, 22, "为什么必须是两个对象：key 里带 timeline_id", fs=12.5, fw=800, color=AC2),
+    *TL("ds1-b", 116, 254, 500, 200, [
+        ("remote key = {tenant}/timelines/{timeline_id}/", "#F4C77C", 700),
+        ("&nbsp;&nbsp;{layer_name}-{generation:08x}", "#F4C77C", 700),
+        ("&nbsp;&nbsp;（remote_timeline_client.rs:1790-1806）", DIM),
+        "",
+        ("· 新 root = 不同 timeline_id → key 路径不同", FG, 700),
+        ("· remote_copy 还改写 metadata（:851）：", FG, 700),
+        ("&nbsp;&nbsp;generation = 新 timeline 的（:860）", DIM),
+        ("&nbsp;&nbsp;shard = 自己的 shard_index（:861）", DIM),
+        "",
+        ("→ 同一份内容在旧/新 root 下是两个不同 key", AC2, 700),
+        ("&nbsp;&nbsp;物理上两份对象", AC2),
+    ], fs=11, lh=1.5),
+    # right — how prepare adopts layers
+    R("ds2-bg", 656, 212, 530, 250, fill=PANEL, stroke=EDGE, radius=12),
+    T("ds2-h", 676, 224, 494, 22, "prepare() 把 ≤ancestor_lsn 的历史过继给新 root", fs=12, fw=800, color=AC),
+    *TL("ds2-b", 676, 254, 500, 200, [
+        ("① 跨分叉点的 delta layer（straddling）", AC, 700),
+        ("&nbsp;&nbsp;upload_rewritten_layer：裁 ≤end_lsn 前缀", DIM),
+        ("&nbsp;&nbsp;上传一个新对象（:483, :760）", DIM),
+        "",
+        ("② 完全在分叉点前的历史 layer（rest）", AC, 700),
+        ("&nbsp;&nbsp;remote_copy → copy_timeline_layer", DIM),
+        ("&nbsp;&nbsp;S3 server-side copy 生成新对象（:1784）", DIM),
+        "",
+        ("本地磁盘：std::fs::hard_link（:883）", "#7CB3F4", 700),
+        ("&nbsp;&nbsp;did_hardlink=true，同 inode 不占额外空间", DIM),
+        ("&nbsp;&nbsp;但远端不受影响，仍真拷", "#FF9E8A"),
+    ], fs=11, lh=1.5),
+    # bottom — implications
+    R("ds-b-bg", 96, 478, 1090, 144, fill=PANEL, stroke=EDGE, radius=10),
+    T("ds-b-h", 116, 490, 1000, 20, "存储含义 · 为什么 detach 是「重」操作", fs=13, fw=800, color="#C89EFF"),
+    T("ds-b-b", 116, 516, 1050, 98,
+      "• <b>新 root 自包含</b>：把分叉点前依赖的历史全 adopt 到自己名下，不再引用旧 root —— 这是它能成为「无父 root」的物理前提。<br>"
+      "• <b>代价 = 共享历史被复制成两份</b>：呼应 tradeoff 页「S3 无廉价 mv，rename/adopt 类操作都被放大成拷贝」（RFC 022）。<br>"
+      "• <b>多次 root restore 持续放大 S3 占用</b>：每条独立 root 各存一份自分叉点回溯的历史，不共享 —— 这也是 detach_ancestor 推高存储账单的根因。<br>"
+      "<b style='color:" + AC + "'>一句话</b>：逻辑上两条独立 root，物理上 S3 两份 layer（各带自己的 timeline_id/generation）；仅本地磁盘靠 hardlink 共享 inode。",
+      fs=11.5, color=DIM, lh=1.6),
+], p, notes="回答『detach_ancestor 之后 S3 上两个 root 分支是存两份还是一份』：S3 上存两份物理对象——新 root 把分叉点前依赖的历史 layer 复制出自己一整套副本（server-side copy），不共享；只有本地磁盘靠 hardlink 省。代码依据：detach_ancestor.rs 的 prepare() 把旧 root 在 ≤ancestor_lsn 的历史 layer 过继给新 root（detached），分两类：① 跨分叉点的 delta layer（straddling_branchpoint，:483）→ upload_rewritten_layer（:760）裁剪出 ≤end_lsn 前缀上传一个新对象；② 完全在分叉点之前的历史 layer（rest_of_historic，:526）→ remote_copy（:851）→ copy_timeline_layer。关键在 copy_timeline_layer（remote_timeline_client.rs:1784）：算 source_remote_path（旧 root key）和 target_remote_path（新 root key），upload::copy_timeline_layer 做一次 S3 server-side copy，即在对象存储里生成新对象。为什么必须新对象不能共享 key：remote_layer_path 构成 = {tenant}/timelines/{timeline_id}/{layer_name}-{generation:08x}，key 里带 timeline_id，新 root 是不同 timeline_id 路径就不同；remote_copy 里还把 metadata.generation 改成新 timeline 的 generation（:860）、shard 改成自己的（:861）。所以同一份内容在旧/新 root 下是两个不同 S3 key，物理两份。本地 vs 远端要分开：本地磁盘 remote_copy（:873-914）对还常驻本地的 layer 做 std::fs::hard_link（did_hardlink=true），同 inode 本地不占额外空间；远端 S3 无论本地是否 hardlink 都走 copy_timeline_layer 生成独立对象，S3 没 hardlink 概念只能真拷。现实含义：detach 后新 root 自包含，把分叉点前依赖历史全 adopt 到自己名下不再引用旧 root，这是它成为无父 root 的物理前提；代价是 S3 上这段共享历史被复制成两份，呼应 tradeoff 页『S3 无廉价 mv，rename/adopt 类操作被放大成拷贝』（RFC 022）；多次 root restore 持续放大 S3 占用，每条独立 root 各存一份自分叉点回溯的历史而非共享，这是 detach_ancestor 属于重操作、推高存储账单的根因。一句话：逻辑上两条独立 root，物理上 S3 存两份 layer（server-side copy，各带自己的 timeline_id/generation），仅本地磁盘靠 hardlink 共享 inode。呼应 s-reparent / s-detach-v1v2 / s-ps-layer-name / s-tradeoff。")
+
+# ─────── Neon 的两种 checkpoint ───────
+p += 1
+std("s-checkpoint", "COMPUTE", "Neon 也有 checkpoint 吗：有，但分裂成两个层面", [
+    T("ck-desc", 96, 158, 1088, 44,
+      "有，但「checkpoint」在 Neon 里裂成两件事：<b>pageserver 的 LSM flush 阈值</b>（真正高频、起作用）"
+      "与 <b>compute 里被架构弱化的 PG checkpoint</b>（不再管崩溃恢复和脏页落盘）。",
+      fs=13, color=DIM, lh=1.55),
+    # left — pageserver checkpoint_distance
+    R("ck1-bg", 96, 212, 530, 250, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("ck1-h", 116, 224, 494, 22, "① Pageserver：checkpoint_distance（LSM flush）", fs=12.5, fw=800, color=AC),
+    *TL("ck1-b", 116, 254, 500, 200, [
+        ("config.rs：", DIM),
+        ("· checkpoint_distance 默认 256 MB（:851）", FG, 700),
+        ("· checkpoint_timeout 默认 10 分钟（:852）", FG, 700),
+        "",
+        ("作用：InMemoryLayer（ephemeral=MemTable）", AC, 700),
+        ("&nbsp;&nbsp;写满 256MB 或距上次满 10min → freeze+flush", DIM),
+        ("&nbsp;&nbsp;滚成一个 L0 delta layer 落盘 / 传 S3", DIM),
+        "",
+        ("本质 = LSM memtable flush 阈值，不是 PG checkpoint", "#F4C77C", 700),
+        ("&nbsp;&nbsp;名字沿用，频率远高于传统 PG checkpoint", DIM),
+        ("&nbsp;&nbsp;呼应 s-flush-policy / s-ps-inmem", DIM),
+    ], fs=11, lh=1.5),
+    # right — compute PG checkpoint weakened
+    R("ck2-bg", 656, 212, 530, 250, fill=PANEL, stroke=EDGE, radius=12),
+    T("ck2-h", 676, 224, 494, 22, "② Compute：PG checkpoint 被存算分离掏空", fs=12.5, fw=800, color="#7CB3F4"),
+    *TL("ck2-b", 676, 254, 500, 200, [
+        ("内核改动（core_changes.md）：", DIM),
+        ("· Allow startup without checkpoint record", "#7CB3F4", 700),
+        ("&nbsp;&nbsp;compute 无状态，启动走 basebackup +", DIM),
+        ("&nbsp;&nbsp;从 SK/PS 拉 WAL，不依赖本地 checkpoint", DIM),
+        "",
+        ("两个经典职责都被架构掏空：", AC2, 700),
+        ("· 「限制恢复回放的 WAL 量」→ 不需要", FG),
+        ("&nbsp;&nbsp;恢复不从本地 checkpoint 起", DIM),
+        ("· 「把脏页刷进数据文件」→ 不需要", FG),
+        ("&nbsp;&nbsp;没有本地权威数据文件，页都在 PS", DIM),
+        ("checkpointer 进程还在，但已非持久性关键路径", "#FF9E8A"),
+    ], fs=11, lh=1.5),
+    # bottom — comparison
+    R("ck-b-bg", 96, 478, 1090, 144, fill=PANEL, stroke=EDGE, radius=10),
+    T("ck-b-h", 116, 490, 1000, 20, "对比 · 持久性与恢复的职责搬家了", fs=13, fw=800, color="#C89EFF"),
+    T("ck-b-b", 116, 516, 1050, 98,
+      "• <b>持久性靠谁</b>：原生 PG = checkpoint + WAL fsync 到本地盘；<b>Neon = WAL 落 safekeeper 法定多数</b>（见 <span style=\"font-family:" + MONO + "\">s-sk1</span>），与 compute checkpoint 无关。<br>"
+      "• <b>崩溃恢复起点</b>：原生 PG = 最后一个 checkpoint record；<b>Neon = basebackup + 远端拉 WAL</b>，无需本地 checkpoint record。<br>"
+      "• <b>高频「落盘点」</b>：原生 PG = checkpoint 刷脏页进数据文件；<b>Neon = pageserver checkpoint_distance（256MB）滚 InMemoryLayer→L0</b>。<br>"
+      "<b style='color:" + AC + "'>一句话</b>：Neon 有 checkpoint，但真正起作用的是 PS 的 LSM flush 阈值；compute 里 PG 的传统 checkpoint 因存算分离 + WAL 法定多数持久化，已不再承担崩溃恢复与脏页落盘。",
+      fs=11.5, color=DIM, lh=1.6),
+], p, notes="回答『Neon 也有 checkpoint 吗』：有，但 checkpoint 在 Neon 里裂成两个不同层面，和原生 PG 含义不同。① Pageserver 侧 checkpoint_distance——这才是 Neon 真正高频的 checkpoint。libs/pageserver_api/src/config.rs：checkpoint_distance: u64 默认 256MB（DEFAULT_CHECKPOINT_DISTANCE = 256*1024*1024，:851）；checkpoint_timeout 默认 10 分钟（:852）。控制 InMemoryLayer（ephemeral，pageserver 的 MemTable）何时 freeze+flush 成一个 L0 delta layer：写入累计到 256MB，或距上次满 10 分钟，就滚一层落盘/传 S3。跟 s-flush-policy（Ephemeral Layer 滚动策略）、s-ps-inmem 同一回事，是存储引擎的检查点，对应 LSM 的 memtable flush，不是 PG 的 checkpoint；名字沿用 PG 的 checkpoint 但本质是 LSM flush 阈值，频率远高于传统 PG checkpoint。② Compute（patched PG）侧传统 checkpoint 被大幅弱化。docs/core_changes.md 两条相关内核改动：Allow startup without checkpoint record——原生 PG 崩溃恢复必须从最后一个 checkpoint record 开始回放 WAL，Neon compute 无状态，启动走 basebackup + 从 safekeeper/pageserver 拉 WAL，不依赖本地 checkpoint record 也能起来；compute 本地盘只是缓存，dirty page 不需要像原生 PG 靠 checkpoint 刷回数据文件，因为没有本地权威数据文件，页都在 pageserver，持久性由 WAL 落 safekeeper 法定多数保证（s-sk1）不是 checkpoint。所以 compute 里 checkpoint 两个经典职责都被架构掏空：限制崩溃恢复要回放的 WAL 量→不需要（恢复不从本地 checkpoint 起）；把脏页刷进数据文件→不需要（没有本地数据文件）。PG 的 checkpointer 进程还在（WAL 里仍有 checkpoint record，walproposer 相关逻辑还要处理）但对持久性/恢复不再是关键路径。对比：持久性靠——原生 PG = checkpoint + WAL fsync 到本地；Neon = WAL 落 safekeeper 法定多数。崩溃恢复起点——原生 PG = 最后一个 checkpoint record；Neon = basebackup + 远端拉 WAL 无需本地 checkpoint。高频落盘点——原生 PG = checkpoint 刷脏页；Neon = pageserver checkpoint_distance（256MB）滚 InMemoryLayer→L0。结论：Neon 有 checkpoint，但真正起作用的是 pageserver 的 checkpoint_distance（LSM flush 阈值）；compute 里 PG 的传统 checkpoint 因存算分离 + WAL 法定多数持久化已不再承担崩溃恢复和脏页落盘职责。呼应 s-flush-policy / s-ps-inmem / s-core-compute / s-sk1 / s-lsn-chain。")
+
 # ─────── 局限 & tradeoff ───────
 p += 1
 std("s-tradeoff", "局限", "架构局限 & Tradeoff：清醒地知道边界在哪", [
@@ -4707,4 +4950,239 @@ idx_lines.append("")
 with open("SLIDES_INDEX.md", "w") as f:
     f.write("\n".join(idx_lines))
 print("Wrote SLIDES_INDEX.md ({} rows)".format(len(slides)))
+
+
+# ═══════════════════════ DECK SPLIT (multi-file) ═══════════════════════
+# 全量 deck 页数过多，这里按「受众」拆成 3 本可独立放映的 HTML。
+# 每本内部再按「主题」切成若干 **子章节（section）**，并各自生成分节页；
+# 每本的子章节编号都从 01 重排、页脚也从 1 重新编号，互不干扰：
+#   A《概览与能力》  01 背景痛点 / 02 顶层架构 / 03 核心数据流 / 04 标志性能力
+#   B《组件与原理》  01 接入层 Proxy&TLS / 02 Compute / 03 Safekeeper /
+#                   04 Pageserver / 05 协调层 / 06 核心原理深度剖析
+#   C《运维与落地》  01 日志·可观测·故障演练 / 02 备份与恢复 / 03 局限·演进·总结
+# 单一数据源：复用上面已构建好的 slides，按 section 的 pick 规则挑选后重组。
+#   pick 三种形态（都保持 master 原始顺序）：
+#     {"chapter": N}              —— 第 N 章全部内容页（随新增 slide 自动纳入）
+#     {"chapter": N, "kickers":[]} —— 第 N 章中 kicker 命中集合的内容页（半自动）
+#     {"ids": [...]}              —— 显式按 id 列举（编排型分组，顺序即列表顺序）
+# 完整 master（Bento_Slides.bento.html）仍然生成，作为全量参照与索引来源。
+
+DECKS = [
+    {"key": "A", "file": "Neon_A_概览与能力.bento.html",
+     "title": "Neon 架构解析 · A 概览与能力",
+     "series": "A ｜ 概览与能力",
+     "tag": "背景痛点 · 顶层架构 · 核心数据流 · 标志性能力",
+     "docId": "neon-arch-deck-A",
+     "sections": [
+        {"title": "背景痛点", "desc": "传统 PostgreSQL 的运维/扩缩容/分支痛点",
+         "pick": {"chapter": 1}},
+        {"title": "顶层架构总览", "desc": "六大核心组件 + 端到端数据流拓扑",
+         "pick": {"chapter": 2}},
+        {"title": "核心数据流", "desc": "一次 INSERT / SELECT 的完整旅程：写路径 + 读路径",
+         "pick": {"chapter": 3}},
+        {"title": "标志性能力实现", "desc": "CoW 分支、Proxy、Scale-to-Zero、Autoscaling、多云存储",
+         "pick": {"chapter": 6}},
+     ]},
+    {"key": "B", "file": "Neon_B_组件与原理.bento.html",
+     "title": "Neon 架构解析 · B 组件与原理",
+     "series": "B ｜ 组件与原理",
+     "tag": "接入层 · Compute · Safekeeper · Pageserver · 协调层 · 核心原理",
+     "docId": "neon-arch-deck-B",
+     "sections": [
+        {"title": "接入层 Proxy & TLS", "desc": "连接代理 · 路由认证 · Serverless 网关 · 两跳 TLS 与证书",
+         "pick": {"chapter": 4, "kickers": ["PROXY", "PROXY · TLS", "COMPUTE · TLS"]}},
+        {"title": "Compute", "desc": "patched PostgreSQL · compute_ctl · 状态机 · bootstrap · LFC · DDL 转发",
+         "pick": {"chapter": 4, "kickers": ["COMPUTE"]}},
+        {"title": "Safekeeper", "desc": "WAL 服务 · Paxos-like 复制 · 关键 LSN · 成员迁移",
+         "pick": {"chapter": 4, "kickers": ["SAFEKEEPER"]}},
+        {"title": "Pageserver", "desc": "存储引擎 · 多租户 · Layer/LSM · LayerMap · index_part · 读路径",
+         "pick": {"chapter": 4, "kickers": ["PAGESERVER", "读路径"]}},
+        {"title": "协调层", "desc": "Storage Broker & Controller · 元数据表",
+         "pick": {"chapter": 4, "kickers": ["协调层"]}},
+        {"title": "核心原理深度剖析", "desc": "落盘策略、L0→L1、LSN 链路、沙箱、背压、GC、分片、防脑裂",
+         "pick": {"chapter": 5}},
+     ]},
+    {"key": "C", "file": "Neon_C_运维与落地.bento.html",
+     "title": "Neon 架构解析 · C 运维·备份恢复·局限落地",
+     "series": "C ｜ 运维 · 备份恢复 · 局限落地",
+     "tag": "日志 · 可观测 · 故障演练 · 备份恢复 · 局限 & tradeoff",
+     "docId": "neon-arch-deck-C",
+     "sections": [
+        {"title": "日志·可观测·故障演练", "desc": "关键数字 · 各组件周期任务/日志解读 · 裸测 · 指标 · 故障演练",
+         "pick": {"ids": ["s-numbers", "s-log-prefix", "s-sk-tasks", "s-sk-logs",
+                          "s-sk-notest", "s-ps-tasks", "s-ps-logs", "s-ps-notest",
+                          "s-metrics", "s-failure"]}},
+        {"title": "备份与恢复", "desc": "内建持久化 vs 外部备份 · root restore / detach_ancestor · role/db · checkpoint",
+         "pick": {"ids": ["s-backup", "s-backup-meta", "s-backup-official",
+                          "s-backup-freeze", "s-root-at-lsn", "s-reparent",
+                          "s-detach-v1v2", "s-detach-v2-case", "s-role-db-backup",
+                          "s-detach-storage", "s-checkpoint"]}},
+        {"title": "局限·演进·总结", "desc": "架构局限 & tradeoff · Git 历史脉络 · 源码入口 · 设计哲学",
+         "pick": {"ids": ["s-tradeoff", "s-dev", "s-src", "s-sum"]}},
+     ]},
+]
+
+# PLACEHOLDER_DECK_IMPL
+
+def _footer_html(n):
+    return ("Neon · Serverless Postgres 架构解析　·　{{date}}　·　"
+            + "%02d / {{pages:2}}" % n)
+
+
+def _set_footer(slide, n):
+    for e in slide.get("elements", []):
+        if e.get("id") == "footer":
+            e["html"] = _footer_html(n)
+            return
+
+
+def _deck_cover(deck, n):
+    return dict(id="cover", background=BG, transition="none",
+                notes="封面：" + deck["title"], elements=[
+        R("coverbg", 0, 0, W, H, fill="rgba(0,229,153,0.035)", stroke="none", sw=0, radius=0),
+        T("cover-title", 96, 190, 1088, 180, "Neon", fs=120, fw=900, color=FG, lh=1,
+          align="left", fx={"enter": "fade-up", "order": 0}),
+        T("cover-sub", 96, 350, 1088, 60, "开源 Serverless Postgres · 架构解析", fs=34,
+          fw=600, color=DIM, lh=1.3, fx={"enter": "fade-up", "order": 1}),
+        R("cover-series-bg", 96, 426, 560, 44, fill="rgba(0,229,153,0.08)",
+          stroke="rgba(0,229,153,0.32)", radius=10),
+        T("cover-series", 116, 436, 540, 24, "分册 " + deck["series"], fs=17, fw=800,
+          color=AC, ff=MONO, lh=1.4, fx={"enter": "fade-up", "order": 2}),
+        T("cover-tag", 96, 486, 1088, 30, deck["tag"], fs=16, fw=500, color=AC2, ff=MONO,
+          lh=1.4, fx={"enter": "fade-up", "order": 3}),
+        R("cover-bar", 96, 540, 120, 4, fill=AC2, stroke="none", sw=0, radius=2),
+        T("cover-author", 96, 566, 1088, 24, "作者：meetbill", fs=15, fw=500, color=FAINT,
+          ff=MONO, lh=1.4, fx={"enter": "fade-up", "order": 4}),
+        footer(n),
+    ])
+
+
+def _deck_toc(deck, n):
+    rows = []
+    secs = deck["sections"]
+    # 子章节较多时自动压缩行高，保证一页放得下。
+    row_h, gap = (74, 88) if len(secs) <= 5 else (58, 70)
+    y0 = 196 if len(secs) <= 5 else 180
+    for i, sec in enumerate(secs):
+        num = "%02d" % (i + 1)
+        rows += [
+            R(f"toc{i}bg", 96, y0 + i * gap, 1088, row_h, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=10),
+            T(f"toc{i}n", 116, y0 + 16 + i * gap, 80, 44, num, fs=28, fw=900, color=AC, ff=MONO),
+            T(f"toc{i}t", 212, y0 + 12 + i * gap, 920, 28, sec["title"], fs=18, fw=800, color=FG),
+            T(f"toc{i}d", 212, y0 + 40 + i * gap, 920, 20, sec["desc"], fs=12, fw=500, color=DIM),
+        ]
+    return dict(id="s-toc", background=BG, transition="none",
+                notes="本册目录：" + deck["title"], elements=[
+        kicker("本册目录", color=AC), title("本册章节", 1088), accent_rule(),
+        *rows, footer(n),
+    ])
+
+
+def _deck_divider(num, ttl, n):
+    """本册内部的子章节分节页：编号从 01 本地重排。"""
+    return dict(id=f"s-sec-{num:02d}", background=BG, transition="none",
+                notes=f"分节页：{num:02d} {ttl}", elements=[
+        R("divbg", 0, 0, W, H, fill="rgba(0,229,153,0.035)", stroke="none", sw=0, radius=0),
+        T("divnum", 96, 260, 1088, 90, f"{num:02d}", fs=72, fw=900, color=AC, ff=MONO,
+          lh=1, fx={"enter": "fade-up", "order": 0}),
+        R("divbar", 96, 356, 100, 5, fill=AC2, stroke="none", sw=0, radius=3),
+        T("divttl", 96, 388, 1088, 100, ttl, fs=48, fw=800, color=FG, lh=1.15,
+          fx={"enter": "fade-up", "order": 1}),
+        footer(n),
+    ])
+
+
+def _deck_end(deck, n):
+    return dict(id="s-end", background=BG, transition="none",
+                notes="Thanks slide — " + deck["title"], elements=[
+        R("end-bg", 0, 0, W, H, fill="rgba(0,229,153,0.04)", stroke="none", sw=0, radius=0),
+        T("end-title", 96, 260, 1088, 120, "Thank You", fs=96, fw=900, color=FG, lh=1,
+          fx={"enter": "fade-up", "order": 0}),
+        T("end-sub", 96, 390, 1088, 40, "https://github.com/neondatabase/neon", fs=20,
+          fw=500, color=AC, ff=MONO, lh=1, fx={"enter": "fade-up", "order": 1}),
+        T("end-tags", 96, 450, 1088, 30, "分册 " + deck["series"], fs=16, fw=500,
+          color=FAINT, ff=MONO, lh=1.4, fx={"enter": "fade-up", "order": 2}),
+        R("end-bar", 96, 510, 60, 4, fill=AC2, stroke="none", sw=0, radius=2),
+        footer(n),
+    ])
+
+# PLACEHOLDER_DECK_SLICE
+
+# 把 master 的内容页按「章节号」归桶（跳过 cover / s-toc / s-end 全局页，
+# 也跳过 divider 自身——分册会生成自己的本地分节页）。章节号取自 divider 的 divnum。
+# 同时建立 id → slide 的索引，供显式 ids 选取使用。
+_chapter_slides = {}
+_by_id = {}
+_cur_ch = None
+for _s in slides:
+    _sid = _s["id"]
+    _by_id[_sid] = _s
+    if _sid in ("cover", "s-toc", "s-end"):
+        continue
+    _num = _el(_s, "divnum")
+    _div = _el(_s, "divttl")
+    if _div is not None and _num is not None:
+        _cur_ch = int(_plain(_num["html"]))
+        continue  # divider 自身不进内容桶
+    if _cur_ch is not None:
+        _chapter_slides.setdefault(_cur_ch, []).append(_s)
+
+
+def _pick_section(pick):
+    """按 section 的 pick 规则返回命中的 master slide 列表（保持原始顺序）。"""
+    if "ids" in pick:
+        out = []
+        for _i in pick["ids"]:
+            if _i not in _by_id:
+                raise KeyError("deck section pick: unknown slide id %r" % _i)
+            out.append(_by_id[_i])
+        return out
+    _ch = _chapter_slides.get(pick["chapter"], [])
+    _ks = pick.get("kickers")
+    if _ks is None:
+        return list(_ch)
+    _kset = set(_ks)
+    out = []
+    for _s in _ch:
+        _k = _el(_s, "kicker")
+        if _k is not None and _plain(_k["html"]) in _kset:
+            out.append(_s)
+    return out
+
+
+_master_html = open("Bento_Slides.bento.html", encoding="utf-8").read()
+_doc_pat = re.compile(
+    r'(<script type="application/bento\+json" id="bento-doc">\n)(.*?)(\n    </script>)',
+    re.S)
+_title_pat = re.compile(r"<title>.*?</title>", re.S)
+
+for _deck in DECKS:
+    _deck_slides = [_deck_cover(_deck, 1), _deck_toc(_deck, 2)]
+    _pg = 3
+    for _si, _sec in enumerate(_deck["sections"], 1):
+        _deck_slides.append(_deck_divider(_si, _sec["title"], _pg))
+        _pg += 1
+        for _s in _pick_section(_sec["pick"]):
+            _c = copy.deepcopy(_s)
+            _set_footer(_c, _pg)
+            _deck_slides.append(_c)
+            _pg += 1
+    _deck_slides.append(_deck_end(_deck, _pg))
+
+    _ddoc = dict(doc)
+    _ddoc["title"] = _deck["title"]
+    _ddoc["docId"] = _deck["docId"]
+    _ddoc["slides"] = _deck_slides
+    _dout = json.dumps(_ddoc, ensure_ascii=False, indent=2).replace("<", "\\u003c")
+
+    _dhtml = _doc_pat.sub(lambda m: m.group(1) + _dout + m.group(3), _master_html, count=1)
+    _dhtml = _title_pat.sub("<title>" + _deck["title"] + " — bento/slides</title>",
+                            _dhtml, count=1)
+    with open(_deck["file"], "w", encoding="utf-8") as _f:
+        _f.write(_dhtml)
+    print("Wrote {} ({} slides, {} sections)".format(
+        _deck["file"], len(_deck_slides), len(_deck["sections"])))
+
+
+
 
