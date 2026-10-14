@@ -5,14 +5,14 @@
 | 文件 | 用途 |
 |------|------|
 | `gen_neon_bento.py` | Python 生成器脚本，定义所有 slide 内容和布局 |
-| `Bento_Slides.bento.html` | 全量单文件 HTML 演示文稿（105 页），浏览器直接打开即可放映 |
+| `Bento_Slides.bento.html` | 全量单文件 HTML 演示文稿（109 页），浏览器直接打开即可放映 |
 | `Neon_A_概览与能力.bento.html` | 分册 A：背景痛点 + 顶层架构 + 核心数据流 + 标志性能力 |
 | `Neon_B_组件与原理.bento.html` | 分册 B：组件逐层拆解 + 核心原理深度剖析 |
 | `Neon_C_运维与落地.bento.html` | 分册 C：运维·限制·对比·落地 |
 
 ## 分册拆分说明
 
-全量 deck 页数过多（105 页），`gen_neon_bento.py` 在生成全量 HTML 的同时，
+全量 deck 页数过多（109 页），`gen_neon_bento.py` 在生成全量 HTML 的同时，
 按「受众」自动切出 3 本可独立放映的分册（单一数据源，复用同一批 slide）。
 **每本内部再按主题切成若干子章节（section）**，各自生成分节页；
 每本的子章节编号都从 **01** 本地重排、页脚也从 **1** 重新编号，三本互不干扰：

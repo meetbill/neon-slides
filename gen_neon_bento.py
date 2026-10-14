@@ -241,9 +241,9 @@ base("s-toc", [
         ("01", "背景痛点", "传统 PostgreSQL 的运维/扩缩容/分支痛点"),
         ("02", "顶层架构总览", "六大核心组件 + 端到端数据流拓扑"),
         ("03", "核心数据流", "一次 INSERT / SELECT 的完整旅程：写路径 + 读路径"),
-        ("04", "组件逐层拆解", "Compute / Pageserver / Safekeeper，读写路径贯穿"),
-        ("05", "核心原理深度剖析", "落盘策略、L0→L1、LSN 链路、沙箱、背压、GC、分片、防脑裂"),
-        ("06", "标志性能力实现", "CoW 分支、Proxy、Scale-to-Zero、Autoscaling、多云存储"),
+        ("04", "标志性能力实现", "CoW 分支、Proxy、Scale-to-Zero、Autoscaling、多云存储"),
+        ("05", "组件逐层拆解", "Compute / Pageserver / Safekeeper，读写路径贯穿"),
+        ("06", "核心原理深度剖析", "落盘策略、L0→L1、LSN 链路、沙箱、背压、GC、分片、防脑裂"),
         ("07", "运维·限制·对比·落地", "关键数字、可观测、故障演练、局限 & tradeoff、总结"),
     ]) for e in (
         R(f"toc{i}bg", 96, 176 + i * 68, 1088, 58, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=10),
@@ -252,11 +252,13 @@ base("s-toc", [
         T(f"toc{i}d", 200, 210 + i * 68, 940, 20, desc, fs=11.5, fw=500, color=DIM),
     )],
     footer(p),
-], notes="总目录：七大章节导航——背景痛点/顶层架构总览/核心数据流/组件逐层拆解/核心原理深度剖析/标志性能力实现/运维限制对比落地")
+], notes="总目录：七大章节导航——背景痛点/顶层架构总览/核心数据流/标志性能力实现/组件逐层拆解/核心原理深度剖析/运维限制对比落地")
 
 
 p += 1
 divider("s-div1", 1, "背景痛点", p)
+
+
 # ─────── Slide 1.5: The log is the database ───────
 p += 1
 std("s-log-is-db", "理论基石", "“The log is the database.” — Aurora, SIGMOD 2017", [
@@ -357,6 +359,8 @@ std("s-goals", "定位", "核心定位与核心价值", [
 
 p += 1
 divider("s-div2", 2, "顶层架构总览", p)
+
+
 # ─────── Slide 3: 顶层组件 Overview ───────
 p += 1
 std("s-topo", "组件总览", "六大核心组件", [
@@ -374,6 +378,7 @@ std("s-topo", "组件总览", "六大核心组件", [
     *card("c6", 844, 380, 340, 170,
           "Proxy", ["Postgres 协议路由", "认证: SCRAM/JWT/Link", "SQL over HTTP", "WebSocket 网关"], hc="#C89EFF"),
 ], p, notes="Neon 6 大核心组件：Compute / Pageserver / Safekeeper / Broker / Controller / Proxy")
+
 
 # ─────── Slide 4: 架构拓扑图 ───────
 p += 1
@@ -457,6 +462,8 @@ std("s-arch", "架构", "端到端数据流拓扑", [
 
 p += 1
 divider("s-div-flow", 3, "核心数据流：写路径 + 读路径", p)
+
+
 # ─────── Slide 12: 写路径 ───────
 p += 1
 std("s-write", "写路径", "一次 INSERT 的旅程", [
@@ -507,7 +514,416 @@ std("s-read", "读路径", "一次 SELECT 的旅程", [
 
 
 p += 1
-divider("s-div3", 4, "组件逐层拆解：读写路径贯穿", p)
+divider("s-div5", 4, "标志性能力实现", p)
+
+
+# ─────── Slide 19: Branching intro (morph target) ───────
+p += 1
+std("s-branch1", "BRANCHING", "Copy-on-Write 分支 —— Neon 的杀手锏", [
+    T("br-big", 96, 210, 700, 120, "&lt; 100 ms", fs=110, fw=900, color=AC, lh=1,
+      fx={"countUp": False}),
+    T("br-bigl", 100, 340, 700, 40, "创建一个分支所需时间", fs=22, fw=600, color=DIM),
+    *card("br-why", 96, 410, 1088, 150,
+          "为什么这么快？", [
+              "创建 branch = <b>只写一行元数据</b>：(new_timeline_id, ancestor_timeline_id, ancestor_lsn)",
+              "<b>不复制任何 layer 文件</b>。父分支的所有 layer 被子分支隐式共享。",
+              "读：子分支 miss → 递归到 ancestor 找　|　写：新 WAL 只写子分支目录，父分支不受影响。",
+          ], hc=AC2, fs=15, headfs=18),
+], p, notes="Branch = 只写一行元数据，不复制 layer 文件，秒级完成")
+
+
+# ─────── Slide 20: Branching detail (morph from 19) ───────
+p += 1
+std("s-branch2", "BRANCHING", "CoW 分支 vs 传统快照", [
+    # keep morph headline el
+    T("br-big", 96, 172, 400, 60, "CoW vs 快照", fs=34, fw=800, color=AC, lh=1.1),
+    # comparison table
+    R("brt-bg", 96, 240, 1088, 300, fill=PANEL, stroke=EDGE, radius=12),
+    # header
+    T("brt-h0", 130, 258, 300, 26, "维度", fs=14, fw=800, color=FG),
+    T("brt-h1", 470, 258, 340, 26, "传统 PG 复制 / 快照", fs=14, fw=800, color=AC2),
+    T("brt-h2", 830, 258, 340, 26, "Neon Branch", fs=14, fw=800, color=AC),
+    R("brt-hdiv", 130, 292, 1024, 1, fill="rgba(255,255,255,0.12)", stroke="none", sw=0, radius=0),
+    *[e for i, (d, a, b) in enumerate([
+        ("拷贝数据？", "是（GB → TB 级）", "否，仅元数据"),
+        ("建立时间", "分钟 ~ 小时", "秒级（&lt; 100 ms）"),
+        ("从历史 LSN 建", "需 PITR 完整回放", "直接指定 ancestor_lsn"),
+        ("物理开销", "复制后独立占用", "0，直到 diverge 才增长"),
+        ("逻辑大小归属", "复制后独立计", "父/子都是完整逻辑大小"),
+    ]) for e in (
+        T(f"brt-d{i}", 130, 312 + i * 44, 320, 24, d, fs=14, fw=600, color=DIM),
+        T(f"brt-a{i}", 470, 312 + i * 44, 340, 24, a, fs=14, fw=500, color=FAINT),
+        T(f"brt-b{i}", 830, 312 + i * 44, 340, 24, b, fs=14, fw=500, color=FG),
+    )],
+    T("br-note", 96, 556, 1088, 40,
+      "GC 删 layer 时需考虑所有 child 的 ancestor_lsn + pitr_interval(7天) + gc_horizon(64MB) 的并集。",
+      fs=13, color=FAINT, lh=1.5),
+], p, morph=True, notes="CoW 分支对比传统快照：不拷贝数据、秒级、可从历史 LSN 建")
+
+
+# ─────── Slide 21: Synthetic Size ───────
+p += 1
+std("s-synsize", "BRANCHING", "Synthetic Size：与物理布局解耦的计费", [
+    T("ss-desc", 96, 180, 1088, 90,
+      "因为物理大小依赖 CoW 共享 + compaction 时机，<b>用物理字节计费对用户不公平也不可预测</b>。<br>"
+      "Neon 定义 <b>Synthetic Size</b>：只从逻辑大小 + WAL 保留量推算，与底层实现完全解耦。",
+      fs=16, color=DIM, lh=1.8),
+    *card("ss1", 96, 300, 528, 220,
+          "Synthetic Size 的价值", [
+              "• 计费独立于存储实现细节",
+              "• 改进物理层（更好的 compaction）",
+              "&nbsp;&nbsp;只降低 Neon 自己的 COGS",
+              "&nbsp;&nbsp;<b>不改变用户账单</b>",
+              "• 分支共享的数据不重复计费",
+              "• 可预测：用户能自己估算",
+          ], fs=14, headfs=17),
+    *card("ss2", 656, 300, 528, 220,
+          "计算输入", [
+              "• 各 timeline 的逻辑大小",
+              "• 分支拓扑（共享祖先部分只计一次）",
+              "• pitr_interval 窗口内保留的 WAL 量",
+              "",
+              "→ 一个确定性函数，不依赖 layer 文件的",
+              "&nbsp;&nbsp;实际磁盘占用",
+          ], hc=AC2, fs=14, headfs=17),
+], p, notes="Synthetic size 从逻辑大小+WAL 量推算，与物理布局解耦，保证计费可预测")
+
+
+# ─────── 分支 Schema Diff ───────
+p += 1
+std("s-schema-diff", "BRANCHING", "分支 Schema Diff：Butterfly 的实现（Neon 上游未实现）", [
+    T("sd-desc", 96, 168, 1088, 40,
+      "Neon 上游<b>没有</b> schema/branch diff 功能，只提供 <span style=\"font-family:" + MONO + "\">pg_dump --schema-only</span> 原语；"
+      "Butterfly 在其之上封装了「与父分支对比」的能力。",
+      fs=14, color=DIM, lh=1.5),
+    # left: Neon primitive
+    R("sd1-bg", 96, 216, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("sd1-n", 116, 228, 200, 18, "NEON UPSTREAM", fs=11, fw=800, color=AC, ff=MONO),
+    T("sd1-h", 116, 250, 500, 22, "只提供 pg_dump 原语，没有 diff", fs=15, fw=800, color=AC),
+    T("sd1-b", 116, 278, 500, 230,
+      "<b>可用的构件</b>：每台 compute 都暴露<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">GET /database_schema?database=&lt;db&gt;</span><br>"
+      "&nbsp;&nbsp;→ compute_ctl 内部 shell 出 <span style=\"font-family:" + MONO + "\">pg_dump --schema-only</span><br>"
+      "&nbsp;&nbsp;→ 把 DDL 文本流式返回<br><br>"
+      "<b>代码位置</b><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">compute_tools/src/catalog.rs:57</span> get_database_schema<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">http/routes/database_schema.rs:25</span> HTTP handler<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">compute_tools/src/http/openapi_spec.yaml:176</span><br><br>"
+      "<b>关于 diff 的历史提及</b>：仅 <span style=\"font-family:" + MONO + "\">docs/rfcs/003-laptop-cli.md:232</span><br>"
+      "&nbsp;&nbsp;2022 年 CLI 设计草案里一句 <b>neon snapshot diff</b><br>"
+      "&nbsp;&nbsp;针对本地 snapshot，非分支，<b>从未落地</b>",
+      fs=11.5, color=DIM, lh=1.7),
+    # right: Butterfly implementation
+    R("sd2-bg", 656, 216, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("sd2-n", 676, 228, 200, 18, "BUTTERFLY", fs=11, fw=800, color=AC2, ff=MONO),
+    T("sd2-h", 676, 250, 490, 22, "分支 ↔ 父分支对比（scope 受限）", fs=15, fw=800, color=AC2),
+    T("sd2-b", 676, 278, 490, 230,
+      "<b>API</b>　<span style=\"font-family:" + MONO + "\">GET /api/v2/branches/:id/schema-diff</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">?database=&lt;db&gt;</span>　只接 database，<b>无第二 branch 参数</b><br>"
+      "&nbsp;&nbsp;仅比对<b>直接父分支</b>；root 分支返回 BadParam<br><br>"
+      "<b>核心流程</b>　<span style=\"font-family:" + MONO + "\">lib_branch_schema.py</span><br>"
+      "&nbsp;&nbsp;① find_active_pod × 2（父/子各自定位）<br>"
+      "&nbsp;&nbsp;② ThreadPoolExecutor <b>并发</b> fetch_schema<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;→ 各调各 pod 的 <span style=\"font-family:" + MONO + "\">/database_schema</span><br>"
+      "&nbsp;&nbsp;③ clean_schema 剔除 pg_dump timestamp/version 头<br>"
+      "&nbsp;&nbsp;④ Python <span style=\"font-family:" + MONO + "\">difflib.unified_diff</span> 出报告<br><br>"
+      "<b>返回</b>　unified-diff 文本 + <span style=\"font-family:" + MONO + "\">lines_added</span> /<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">lines_removed</span> / <span style=\"font-family:" + MONO + "\">has_changes</span>",
+      fs=11.5, color=DIM, lh=1.7),
+    # bottom band
+    R("sd3-bg", 96, 530, 1088, 132, fill="rgba(255,158,138,0.06)", stroke="rgba(255,158,138,0.3)", radius=10),
+    T("sd3-h", 116, 542, 900, 20, "为什么只对比父分支 & Neon 为什么没做", fs=13, fw=800, color=AC2),
+    T("sd3-b", 116, 568, 1048, 88,
+      "• <b>父子对齐 CoW 语义</b>：子分支继承父分支所有 layer，diff = 「从 ancestor_lsn 之后子分支上做了哪些 DDL」，与 branching 模型天然对齐<br>"
+      "• <b>任意分支对比</b>需要显式路径找 LCA、可能跨 project／跨 shard，控制面复杂度高；先满足 90% 场景（review 一次变更）<br>"
+      "• Neon 上游只关心「让 compute 能被 dump」；<b>UI/diff 是控制面职责</b>，故只提供原语不做上层功能 ── 与 Butterfly 分工合理<br>"
+      "• 前端：<span style=\"font-family:" + MONO + "\">branch-schema-diff.json</span> 直接调该 API；几乎每个分支页面都挂 「Schema Diff」 tab",
+      fs=12, color=DIM, lh=1.7),
+], p, notes="分支 Schema Diff：Neon 上游没有实现（grep .rs/.py/.md/.go 关于 schema_diff/branch diff 全无命中，只在 docs/rfcs/003-laptop-cli.md:232 有 2022 年一句 CLI 草案 neon snapshot diff 从未实现）。Neon 只提供构件：GET /database_schema?database=<db> 每个 compute 上暴露，compute_ctl 内部 shell 出 pg_dump --schema-only 流式返回 DDL，代码 compute_tools/src/catalog.rs:57 get_database_schema、http/routes/database_schema.rs:25、openapi_spec.yaml:176。Butterfly 在其上封装 GET /api/v2/branches/:branch_id/schema-diff?database=<db>，代码 handlers/branch/api_branch_schema_diff.py:32、lib_branch_schema.py。scope 只支持与直接父分支对比（api_branch_schema_diff.py:53 取 branch_b_obj.parent_branch_id；无父返回 BadParam）。流程：find_active_pod × 2 定位父子 pod → ThreadPoolExecutor 并发 fetch_schema 各调 compute_ctl HTTP /database_schema → clean_schema 剔除 pg_dump timestamp/version 头减 diff 噪声 → difflib.unified_diff。返回 unified-diff 文本+ lines_added/lines_removed/has_changes。前端 branch-schema-diff.json 直接调，每个分支页都挂 Schema Diff tab。文档 static/docs/schema-diff.md、api/branches.md:486。设计取舍：父子对齐 CoW 语义、任意分支对比需 LCA 复杂度高、Neon 上游只做原语上层留给控制面。")
+
+
+# ─────── Slide 22: Proxy ───────
+p += 1
+std("s-time-travel", "BRANCHING", "Time Travel：查询「过去某一刻」的数据库", [
+    T("tt-desc", 96, 166, 1088, 44,
+      "对<b>历史某个时间点/LSN</b> 跑<b>只读</b>查询，不动生产数据。本质是 <b>instant restore + 瞬时分支</b>的组合："
+      "选定时刻 → Neon 用 CoW 在那个 LSN 拉起一个<b>临时分支 + 临时 compute</b> → 查完即焚。"
+      "依赖的正是 proxy 侧 <span style=\"font-family:" + MONO + "\">neon_lsn</span> / <span style=\"font-family:" + MONO + "\">neon_timestamp</span> 这类 <span style=\"font-family:" + MONO + "\">is_ephemeral</span> 选项。",
+      fs=13, color=DIM, lh=1.5),
+    # left card: how it works
+    R("tt1-bg", 96, 220, 534, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("tt1-n", 114, 232, 300, 18, "怎么工作", fs=11, fw=800, color=AC, ff=MONO),
+    T("tt1-h", 114, 254, 500, 22, "临时分支 + 临时 compute，查完即焚", fs=15, fw=800, color=AC),
+    T("tt1-b", 114, 284, 500, 228,
+      "① 选定时间点 / LSN（必须落在 <b>history window</b> 内）<br>"
+      "② Neon 在该 LSN 处<b>瞬时建分支</b>（CoW，秒级）<br>"
+      "③ 拉起一个 <b>ephemeral compute</b>（<span style=\"font-family:" + MONO + "\">.50 CU / 2GB</span>）<br>"
+      "④ 你的只读查询打到这台临时 PG<br>"
+      "⑤ <b>停止查询 30s 后</b>：<span style=\"font-family:" + MONO + "\">suspend_compute</span> →<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">delete_timeline</span>，临时分支与 endpoint 一并回收<br><br>"
+      "临时分支<b>不出现在 Branches 页 / list 接口</b>，<br>"
+      "只在 <b>Operations 页</b>留痕：<span style=\"font-family:" + MONO + "\">create_branch</span> /<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">start_compute</span> / <span style=\"font-family:" + MONO + "\">suspend_compute</span> / <span style=\"font-family:" + MONO + "\">delete_timeline</span>",
+      fs=11.5, color=DIM, lh=1.72),
+    # right card: how to use
+    R("tt2-bg", 650, 220, 534, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("tt2-n", 668, 232, 300, 18, "怎么用（三个入口）", fs=11, fw=800, color=AC2, ff=MONO),
+    T("tt2-h", 668, 254, 500, 22, "连接串锚定 branch@时刻", fs=15, fw=800, color=AC2),
+    T("tt2-b", 668, 284, 500, 228,
+      "<b>① CLI</b>　<span style=\"font-family:" + MONO + "\">&lt;branch&gt;@&lt;timestamp|LSN&gt;</span><br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">neon cs main@2024-04-21T00:00:00Z</span>（RFC3339）<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">neon cs main@0/234235</span>（LSN 更精细）<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">--psql</span> 直连；省略 branch = 默认分支<br>"
+      "<b>② SQL Editor</b>：Time Travel 开关，在<br>"
+      "&nbsp;&nbsp;「当前」与「历史」数据间切换<br>"
+      "<b>③ Backup &amp; Restore</b>：Time Travel Assist —<br>"
+      "&nbsp;&nbsp;正式 restore 前<b>先验证恢复点</b>是否正确<br><br>"
+      "<b>用途</b>：查异常/事故根因、评估变更影响、<br>"
+      "&nbsp;&nbsp;合规审计、restore 前预演",
+      fs=11.5, color=DIM, lh=1.72),
+    # bottom band: limits
+    R("tt3-bg", 96, 534, 1088, 128, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.32)", radius=10),
+    T("tt3-h", 116, 546, 1000, 20, "边界与限制", fs=13, fw=800, color=AC2),
+    T("tt3-b", 116, 572, 1048, 84,
+      "• <b>只读</b>：仅允许<b>非破坏性只读查询</b>，任何试图改历史数据的语句直接报错（历史是不可变的 layer，本就写不进去）<br>"
+      "• <b>受 history window 约束</b>：只能查保留窗口内的时间点（与 instant restore 同一份 PITR 配置），窗口外不允许 —— 见 <span style=\"font-family:" + MONO + "\">s-pitr-cfg</span> / <span style=\"font-family:" + MONO + "\">s-gc</span><br>"
+      "• <b>范围仅数据库时间线</b>：覆盖 Postgres 状态（含 <span style=\"font-family:" + MONO + "\">neon_auth</span> schema）；对象存储桶 / Functions / AI Gateway 配置<b>不在</b>时间线内<br>"
+      "• <b>计费</b>：临时 endpoint 与普通 active endpoint 一样计入用量，但生命周期极短（停查 30s 即挂起回收）",
+      fs=11.5, color=DIM, lh=1.72),
+], p, notes="Time Travel（Neon 官网 instant restore 特性）：对历史时间点/LSN 跑只读查询，不改生产数据，通过 WAL 记录追踪变更。工作机制：选定时间点后 Neon 用 instant branching 在该 LSN 处建临时分支 + 临时 compute（ephemeral），这些 compute 不显示在 Branches 页或 list 请求，但创建/删除会在 Operations 页留痕（start_compute/create_branch/delete_timeline/suspend_compute）。ephemeral endpoint 查询期间保持 active，停止查询 30 秒后 timeline 被删、endpoint 被移除。endpoint 用 .50 CU（2GB RAM）。底层与 proxy 的 cplane 选项呼应：neon_lsn/neon_timestamp/neon_endpoint_type 的 is_ephemeral() 返回 true（proxy/src/proxy/mod.rs:287-298），正是拉起 ephemeral compute 的入口，区别于 neon_proxy_params_compat（返回 false，纯 proxy flag）。history window：只能查项目 history window（与 instant restore 同一 PITR 保留配置）内的时间点，窗口外不允许，配置链路见 s-pitr-cfg / GC 见 s-gc。访问入口三种：SQL Editor（Time Travel 开关切换当前/历史数据）、Backup & Restore（Restore from history 下的 Time Travel Assist，正式 branch restore 前验证恢复点）、Neon CLI（point-in-time 连接串，脚本/分析用）。CLI 语法：neon connection-string <branch>@<timestamp|LSN>；timestamp 用 RFC3339，如 neon connection-string main@2024-04-21T00:00:00Z；直连 psql：neon cs main@2024-01-01T00:00:00Z --psql；LSN 更精细：neon cs main@0/234235；多 project 用 --project-id 或 neon set-context --project-id；省略 branch 连默认分支。用途：调查异常、评估新特性影响、排障、合规审计。限制：只读，仅允许非破坏性只读查询，改历史数据的语句报错（历史 layer 不可变）；覆盖 Postgres 状态含 neon_auth schema，但对象存储桶/Functions/AI Gateway 配置不在数据库时间线内。计费：ephemeral endpoint 与普通 active endpoint 一样计入 consumption，但短命，停查 30s 后挂起。文档来源 https://neon.com/docs/guides/time-travel-assist。")
+
+
+p += 1
+std("s-wake", "PROXY", "wake_compute：从「连接请求」到「一台活着的 Postgres」", [
+    T("wk-desc", 96, 166, 1088, 38,
+      "Proxy <b>每次连接前都会调一次</b> wake_compute（<span style=\"font-family:" + MONO + "\">connect_compute.rs:114</span>）；"
+      "连接失败且错误可重试时<b>作废缓存再叫一次</b> —— 这就是「compute 已经被销毁、缓存过期」的自愈路径。",
+      fs=13.5, color=DIM, lh=1.5),
+    # left: proxy side
+    R("wk1-bg", 96, 212, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("wk1-n", 116, 224, 260, 18, "PROXY 侧（RUST）", fs=11, fw=800, color=AC, ff=MONO),
+    T("wk1-h", 116, 246, 500, 22, "缓存优先 + 单飞 + 退避重试", fs=15, fw=800, color=AC),
+    T("wk1-b", 116, 274, 500, 232,
+      "① 先查 <b>node_info 缓存</b>（moka）<span style=\"font-family:" + MONO + "\">cache/node_info.rs:8</span><br>"
+      "&nbsp;&nbsp;默认 <span style=\"font-family:" + MONO + "\">size=4000, idle_ttl=4m</span>（<b>空闲</b> TTL，非绝对）<br>"
+      "&nbsp;&nbsp;命中即返回，标记 <span style=\"font-family:" + MONO + "\">ColdStartInfo::WarmCached</span><br>"
+      "&nbsp;&nbsp;<b>失败也缓存</b>，但只 30s（或按 retry_info.retry_at）<br>"
+      "② miss → 取 <b>per-endpoint 许可</b>（ApiLocks）再<b>二次查缓存</b><br>"
+      "&nbsp;&nbsp;防惊群 dog-piling；另有 endpoint 级限流<br>"
+      "③ 真正发 <span style=\"font-family:" + MONO + "\">GET /wake_compute?session_id=&amp;<br>"
+      "&nbsp;&nbsp;application_name=&amp;endpointish=ep-xxx</span><br>"
+      "&nbsp;&nbsp;头带 <span style=\"font-family:" + MONO + "\">Authorization: Bearer &lt;jwt&gt;</span> + X-Request-ID<br>"
+      "④ 可重试错误 → <b>指数退避</b>重试<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">num_retries=8, base=100ms, exp=1.6</span> ≈ 总 7s<br>"
+      "&nbsp;&nbsp;wake 成功后连 PG 另有一套：<span style=\"font-family:" + MONO + "\">5 次 / 200ms / ×2</span>",
+      fs=11.5, color=DIM, lh=1.66),
+    # right: butterfly side
+    R("wk2-bg", 656, 212, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("wk2-n", 676, 224, 260, 18, "BUTTERFLY 侧（PYTHON）", fs=11, fw=800, color=AC2, ff=MONO),
+    T("wk2-h", 676, 246, 490, 22, "分布式锁 + 温池取 pod + 等就绪", fs=15, fw=800, color=AC2),
+    T("wk2-b", 676, 274, 490, 232,
+      "① 解析 <span style=\"font-family:" + MONO + "\">endpointish</span> → endpoint_id + <b>pooled 标记</b><br>"
+      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">-pooler</span> 后缀＝走 PgBouncer）<br>"
+      "② <b>Redis 分布式锁</b> <span style=\"font-family:" + MONO + "\">wake:{endpoint_id}</span>，TTL 30s<br>"
+      "③ 锁内按需<b>补齐前置状态</b>：Project storage attach、<br>"
+      "&nbsp;&nbsp;分支 unarchive；<span style=\"font-family:" + MONO + "\">RESTARTING/RESTORING</span> 直接回可重试 503<br>"
+      "④ 绑定 compute：<b>复用现有健康 pod</b>，否则从<br>"
+      "&nbsp;&nbsp;<b>温 pod 池</b>分配 —— <b>热路径上不创建 k8s pod</b><br>"
+      "⑤ 新分配则<b>同步等就绪</b>：每 <b>0.5s</b> 轮询 status，<br>"
+      "&nbsp;&nbsp;最多 <b>8s</b> 等到 RUNNING；超时回 503 +<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">RETRY_POD_INIT_IN_PROGRESS, retry_delay_ms=1000</span><br>"
+      "⑥ pooled 模式额外 sleep <b>1s</b> 让 PgBouncer<br>"
+      "&nbsp;&nbsp;清掉 <span style=\"font-family:" + MONO + "\">server_login_retry</span> 陈旧缓存",
+      fs=11.5, color=DIM, lh=1.66),
+    # bottom: wire contract
+    R("wk3-bg", 96, 526, 1088, 136, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("wk3-h", 116, 538, 900, 20, "线上协议（两侧字段严格对齐）", fs=13, fw=800, color=AC),
+    T("wk3-b", 116, 564, 1048, 92,
+      "<b>成功 200</b>　<span style=\"font-family:" + MONO + "\">{\"address\": \"10.244.1.23:5432\", \"server_name\": null, \"aux\": {endpoint_id, project_id, branch_id, compute_id, cold_start_info}}</span><br>"
+      "&nbsp;&nbsp;Proxy 用 <span style=\"font-family:" + MONO + "\">address</span> 拆 host:port；<span style=\"font-family:" + MONO + "\">server_name</span> 有值则 <b>SslMode::Require</b>，null 则 Disable；<span style=\"font-family:" + MONO + "\">aux</span> 进 metrics<br>"
+      "&nbsp;&nbsp;pooled 时 port 换成 <b>PgBouncer 端口</b>；Rust 侧结构体 <span style=\"font-family:" + MONO + "\">WakeCompute</span>（<span style=\"font-family:" + MONO + "\">control_plane/messages.rs:289</span>）<br>"
+      "<b>失败</b>　<span style=\"font-family:" + MONO + "\">{error, status:{code, message, details:{user_facing_message, error_info.reason, retry_info.retry_delay_ms}}}</span><br>"
+      "&nbsp;&nbsp;可重试 reason：<span style=\"font-family:" + MONO + "\">RUNNING_OPERATIONS / CONCURRENCY_LIMIT_REACHED / LOCK_ALREADY_TAKEN / ENDPOINT_IDLE / PROJECT_UNDER_MAINTENANCE</span>",
+      fs=11.5, color=DIM, lh=1.7),
+], p, notes="wake_compute 全链路。Proxy 侧：connect_compute.rs:114 每次连接前无条件调 wake_compute；连接失败且 err.should_retry_wake_compute() 为真且节点信息来自缓存，则 invalidate_cache 后再 wake（connect_compute.rs:135-154，retry.rs:64 大部分 IO 错误都算可重试，含义是 compute 可能已销毁缓存过期）。wake_compute 实现 cplane_proxy_v1.rs:409：先查 node_info 缓存（check_cache! 宏 416-435），moka Cache（cache/node_info.rs:8），默认 CACHE_DEFAULT_OPTIONS=size=4000,idle_ttl=4m（config.rs:119，--wake-compute-cache），命中标 ColdStartInfo::WarmCached（466）；错误也缓存但用 CplaneExpiry 默认 30s（cache/common.rs:13,92），若控制面返回 retry_info.retry_at 则用它。miss 后取 per-endpoint ApiLocks 许可（443-450）再二次查缓存防 dog-piling，还有 wake_compute_endpoint_rate_limiter 限流（452）。真正 HTTP 见 do_wake_compute（272-336）：GET .../wake_compute?session_id=&application_name=&endpointish=，头 Authorization Bearer jwt + X-Request-ID。重试 proxy/src/proxy/wake_compute.rs:31 循环 + retry_after 指数退避，配置 WAKE_COMPUTE_DEFAULT_VALUES=num_retries=8,base_retry_wait_duration=100ms,retry_wait_exponent_base=1.6 约 7s（config.rs:256）；wake 成功后连 PG 用 CONNECT_TO_COMPUTE_DEFAULT_VALUES=5次/200ms/×2（config.rs:252）。per-endpoint wake 并发锁默认 permits=0 即关闭（config.rs:308）。Butterfly 侧 handlers/proxy_callback/api_compute_wake.py:33 GET /wake_compute + @require_proxy_auth：compute_wake_impl（lib_compute_wake.py:704）解析 endpointish 为 endpoint_id+pooled；wake_endpoint_under_lock（612）校验后取 Redis 分布式锁 wake:{endpoint_id} TTL 30s（lib_endpoint_wake_lock.py:12）；_wake_under_lock（551）处理 Project storage attach、分支 unarchive、状态校验（RESTARTING/RESTORING 回可重试 503，只有 SUSPENDED/ACTIVE 继续）；_bind_endpoint_compute（491）复用健康 pod 或从温 pod 池 allocate_endpoint_compute 分配（热路径不创建 k8s pod）；新分配则 _wait_endpoint_compute_ready（176）每 WAKE_READY_POLL_INTERVAL_SECONDS=0.5s 轮询最多 WAKE_READY_TIMEOUT_SECONDS=8s 等 RUNNING，超时返回 503 + RETRY_POD_INIT_IN_PROGRESS + retry_delay_ms=1000；pooled 额外 _wait_pooler_settle sleep WAKE_POOLER_SETTLE_SECONDS=1.0s 清 PgBouncer server_login_retry 陈旧缓存。协议：成功 200 返回 {address, server_name, aux}（_build_wake_response lib_compute_wake.py:664），Proxy 侧 parse_host_port 拆 address，server_name 有值走 SslMode::Require 否则 Disable，aux 变 MetricsAuxInfo，Rust 结构体 WakeCompute（messages.rs:289）字段名严格对齐；pooled 时 port 用 DEFAULT_PGBOUNCER_PORT。失败返回 {error, status.code, status.message, status.details.user_facing_message/error_info.reason/retry_info.retry_delay_ms}（make_proxy_error lib_proxy_error.py:38），可重试 reason 有 RUNNING_OPERATIONS/CONCURRENCY_LIMIT_REACHED/LOCK_ALREADY_TAKEN/ENDPOINT_IDLE/PROJECT_UNDER_MAINTENANCE。")
+
+
+# ─────── Slide 23: Scale-to-Zero ───────
+p += 1
+std("s-s2z", "核心卖点", "Scale-to-Zero：闲置即销毁", [
+    T("s2z-big", 300, 200, 680, 120, "0", fs=200, fw=900, color=AC, lh=1, align="center",
+      fx={"countUp": True}),
+    T("s2z-l", 300, 340, 680, 40, "闲置时的资源消耗（计算层完全销毁）", fs=22, fw=600, color=DIM, align="center"),
+    *card("s2z1", 96, 410, 528, 190,
+          "如何实现？", [
+              "• compute-monitor 跟踪最后活动时间",
+              "• 超时 → control plane 销毁 pod",
+              "• 数据安全：WAL 已在 SK 多数派持久化",
+              "&nbsp;&nbsp;pages 在 Pageserver / S3",
+              "• 唤醒：新连接 → proxy → control plane → 启动新 compute",
+              "• 全流程 PGDATA 重建（basebackup + on-demand）",
+          ], fs=14, headfs=16),
+    *card("s2z2", 656, 410, 528, 190,
+          "Prewarm 加速唤醒", [
+              "• endpoint_storage：持久化 LFC 缓存快照",
+              "• 唤醒后异步 prewarm 热页到 shared_buffers",
+              "• 典型唤醒延迟：<b>数百 ms ~ 数秒</b>",
+              "",
+              "RFC 2025-03-17: compute-prewarm",
+              "• cancellation 支持（不阻塞启动）",
+          ], hc=AC2, fs=14, headfs=16),
+], p, notes="Scale-to-Zero: 闲置销毁 compute pod，唤醒重建 PGDATA，Prewarm 加速")
+
+
+# ─────── Slide 24a: Autoscaling 总览 + NeonVM 热插拔 + goal-CU ───────
+p += 1
+std("s-auto", "核心卖点", "Autoscaling：三个组件，一套 goal-CU 算法", [
+    T("auto-desc", 96, 168, 1088, 36,
+      "Neon 可以<b>秒级调整 Compute 的 CPU 和内存</b>，无需重启 Postgres。三个进程各司一职："
+      "<span style=\"font-family:" + MONO + "\">autoscaler-agent</span>（决策）"
+      "→ <span style=\"font-family:" + MONO + "\">NeonVM</span>（QEMU 热插拔）"
+      "→ <span style=\"font-family:" + MONO + "\">vm-monitor</span>（compute 内安全阀）。",
+      fs=13.5, color=DIM, lh=1.5),
+    # left: NeonVM QEMU hotplug
+    R("au1-bg", 96, 216, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("au1-n", 116, 228, 260, 18, "NEONVM（K8S CONTROLLER + QEMU）", fs=11, fw=800, color=AC, ff=MONO),
+    T("au1-h", 116, 250, 500, 22, "CPU/内存热插拔：QMP 命令", fs=15, fw=800, color=AC),
+    T("au1-b", 116, 278, 500, 230,
+      "<b>CPU</b>：默认走 QMP 逐核 <span style=\"font-family:" + MONO + "\">device_add</span> / "
+      "<span style=\"font-family:" + MONO + "\">device_del</span> 热插拔<br>"
+      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">vm_qmp_queries.go:159/202</span>），"
+      "每次 reconcile 只增/减<b>一颗</b><br>"
+      "&nbsp;&nbsp;可选 <span style=\"font-family:" + MONO + "\">CpuScalingModeSysfs</span>：改宿主机 cgroup + "
+      "guest sysfs 在线/离线核，不动 QEMU<br><br>"
+      "<b>内存</b>：virtio-mem 设备，"
+      "<span style=\"font-family:" + MONO + "\">qom-set requested-size</span><br>"
+      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">vm_qmp_queries.go:310</span>），"
+      "guest 内核在线增减物理页，<b>PG 无需重启</b><br>"
+      "&nbsp;&nbsp;仅当 max mem ≠ min mem 时才存在该设备<br><br>"
+      "两者都由 <span style=\"font-family:" + MONO + "\">VMReconciler</span> 驱动，"
+      "对齐 <span style=\"font-family:" + MONO + "\">vm.Spec.Guest</span> 期望态",
+      fs=11.5, color=DIM, lh=1.66),
+    # right: goal-CU algorithm
+    R("au2-bg", 656, 216, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("au2-n", 676, 228, 260, 18, "AUTOSCALER-AGENT（PER-VM）", fs=11, fw=800, color=AC2, ff=MONO),
+    T("au2-h", 676, 250, 490, 22, "goal-CU = 三路目标的最大值", fs=15, fw=800, color=AC2),
+    T("au2-b", 676, 278, 490, 230,
+      "<span style=\"font-family:" + MONO + "\">GoalCU() = ceil(max(CPU, Mem, LFC))</span>"
+      "（<span style=\"font-family:" + MONO + "\">goalcu.go:27</span>）<br><br>"
+      "<b>① CPU</b>：load1/load5 按<b>稳定区/混合区</b>比例混合<br>"
+      "&nbsp;&nbsp;算出目标 vCPU，再 ÷ 每 CU 的 vCPU 数<br>"
+      "<b>② Mem</b>：已分配内存 ÷ 目标使用率<br>"
+      "&nbsp;&nbsp;（含 page-cache/LFC 命中率的第二路 memTotal 变体，取更大值）<br>"
+      "<b>③ LFC</b>：working-set-size 分桶历史 → 估算真实工作集<br>"
+      "&nbsp;&nbsp;→ 预测下一分钟峰值 → 折算所需内存 → CU<br><br>"
+      "三路目标各自独立计算，取<b>最大者</b>决定最终 goal-CU，"
+      "任一维度吃紧都会触发扩容",
+      fs=11.5, color=DIM, lh=1.66),
+    # bottom band
+    R("au3-bg", 96, 530, 1088, 132, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("au3-h", 116, 542, 900, 20, "与 Scale-to-Zero 的关系", fs=13, fw=800, color=AC),
+    T("au3-b", 116, 568, 1048, 88,
+      "• 完全闲置 → Scale-to-Zero 直接销毁整台 VM；有负载 → autoscaler-agent 在 <b>min~max CU</b> 区间内持续调 goal-CU<br>"
+      "• goal-CU 算出后不是直接下发：还要过<b>调度器插槽协商</b>（下一页）和 <b>vm-monitor 安全阀</b>（下下页）两道关卡才真正落地<br>"
+      "• 扩容路径优先级：agent 认为需要 → 先问调度器有没有位子 → 有位子先扩 NeonVM/QEMU → 再通知 vm-monitor 放行；"
+      "缩容则反过来，<b>先问 vm-monitor 安全再收缩</b>",
+      fs=12, color=DIM, lh=1.7),
+], p, notes="Autoscaling 由三个独立进程构成：autoscaler-agent（K8s 集群里每台 VM 一个 goroutine，做决策）、NeonVM controller（K8s controller，用 QEMU QMP 做热插拔）、vm-monitor（compute VM 内部，rust，做安全阀）。NeonVM 热插拔：CPU 默认走 handleCPUScalingQMP（vm_controller_cpu_scaling.go:38），QMP device_add/device_del 逐核热插拔（vm_qmp_queries.go:159 QmpPlugCpu, :202 QmpUnplugCpu），每次 reconcile 只处理一颗核的差量；也可用 CpuScalingModeSysfs 走 guest sysfs cpu online/offline + runner pod cgroup 更新（handleCPUScalingSysfs:89，cgroup 更新走 setRunnerCPULimits，注释里说明daemon里cgroup还未实现所以目前是QMP或sysfs二选一）。内存用 virtio-mem，QmpSetVirtioMem 调 qom-set path=vm0 property=requested-size（vm_qmp_queries.go:262-310），guest 内核在线上报/回收内存页，只有 min mem != max mem 时才有这个设备（vm_qmp_queries.go:267注释）。goal-CU 算法在 pkg/agent/core/goalcu.go：calculateGoalCU (35) 汇总 CPU/Mem/LFC 三路，GoalCU() (27) = ceil(max(round(CPU), Mem, LFC))，注释说明 CPU 用 round 是历史兼容原因，其余用 ceil。CPU路（calculateCPUGoalCU:81）：stableThreshold=CPUStableZoneRatio*load5，mixedThreshold=stableThreshold+CPUMixedZoneRatio*load5，diff=|load1-load5|，用 blendingFactor(diff,stable,mixed) 在0~1间插值混合load1/load5得到blendedLoadAverage，除以LoadAverageFractionTarget得目标vCPU数再除以每CU的vCPU数。CPUStableZoneRatio=0.25,CPUMixedZoneRatio=0.15的例子（vminfo.go:409-417）：稳定区是0.75~1.25倍load5，混合区是0.6~0.75和1.25~1.4倍load5。Mem路（calculateMemGoalCU:116）：MemoryUsageBytes/MemoryUsageFractionTarget再换算CU；还有calculateMemTotalGoalCU(128)把LFC working-set-size和page cache一起考虑，取两者较大值。LFC路（calculateLFCGoalCU:140）：wssValues是过去N分钟working-set-size分桶（1分钟一个点），用EstimateTrueWorkingSetSize或直接取最大窗口，再用ProjectNextHighest外推下一分钟峰值，8KiB页转字节再除LFCToMemoryRatio和computeUnit.Mem得所需CU。三路各自算完取max决定最终goal-CU。")
+
+
+# ─────── Slide 24b: 调度器插槽协商 + vm-monitor 安全阀 ───────
+p += 1
+std("s-auto-nego", "核心卖点", "扩缩容前的两道关卡：调度器插槽 & vm-monitor 安全阀", [
+    T("an-desc", 96, 150, 1088, 26,
+      "goal-CU 算出来之后，agent <b>不能直接改 VM</b>：扩容要先问调度器有没有资源位，"
+      "缩容要先问 vm-monitor 会不会把 Postgres 挤爆。",
+      fs=12, color=DIM, lh=1.5),
+    # lane headers
+    T("an-lh0", 104, 180, 68, 20, "阶段", fs=10, fw=700, color=FAINT),
+    T("an-lh1", 176, 180, 480, 20, "autoscaler-agent ↔ scheduler-plugin（HTTP :10299）", fs=12, fw=800, color=AC),
+    T("an-lh2", 668, 180, 508, 20, "autoscaler-agent ↔ vm-monitor（WebSocket :10301）", fs=12, fw=800, color="#7CB3F4"),
+    # ── Row 1: scale up
+    R("an-r1", 96, 204, 1088, 108, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.28)", radius=10),
+    T("an-r1-t", 104, 214, 66, 90, "<b>扩容</b><br>Upscale", fs=11, fw=700, color=AC, lh=1.5),
+    T("an-r1-c", 176, 212, 480, 92,
+      "agent 定期 <span style=\"font-family:" + MONO + "\">PluginRequestTick</span>"
+      "（<span style=\"font-family:" + MONO + "\">Scheduler.RequestAtLeastEverySeconds</span> 减抖动）"
+      "带 goal-CU 请求调度器<br>"
+      "→ 调度器走 K8s Scheduler Framework 扩展点：<b>Filter</b>（容量够不够，纯判断不改状态）"
+      "→ <b>Score</b>（打分挑节点）→ <b>Reserve</b>（临时占位）<br>"
+      "→ 全程用 <span style=\"font-family:" + MONO + "\">Speculatively()</span> 在临时 Node 副本上试算，"
+      "确认不 <span style=\"font-family:" + MONO + "\">OverBudget()</span> 才提交<br>"
+      "→ <b>从不实现 Bind/Permit</b>：真正的 Pod 绑定是 K8s 默认调度器做的，"
+      "本插件只影响 Filter/Score/Reserve",
+      fs=10.5, color=DIM, lh=1.55),
+    T("an-r1-p", 668, 212, 508, 92,
+      "调度器批准的资源额度回传给 agent 后，agent 才调 <b>NeonVM</b>（上一页 QMP）真正扩容，"
+      "扩完再通过 WebSocket 发 "
+      "<span style=\"font-family:" + MONO + "\">UpscaleNotification&#123;granted&#125;</span> 告知 vm-monitor，"
+      "&nbsp;<span style='color:" + FAINT + "'>vm-monitor 收到后调高 cgroup 内存阈值 / LFC 上限，此前一直用旧阈值运行。</span>",
+      fs=10.5, color=DIM, lh=1.55),
+    # ── Row 2: scale down safety check
+    R("an-r2", 96, 322, 1088, 130, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=10),
+    T("an-r2-t", 104, 332, 66, 110, "<b>缩容</b><br>Downscale<br>安全阀", fs=11, fw=700, color=AC2, lh=1.5),
+    T("an-r2-h", 176, 330, 490, 17, "vm-monitor 说不安全，缩容就不会发生", fs=13, fw=800, color=HL, lh=1.25),
+    T("an-r2-c", 176, 347, 480, 96,
+      "agent 想缩容前，<b>先</b>发 WebSocket "
+      "<span style=\"font-family:" + MONO + "\">DownscaleRequest&#123;target&#125;</span> 问 vm-monitor<br>"
+      "vm-monitor 检查最近 cgroup <span style=\"font-family:" + MONO + "\">memory.stat</span> 采样：<br>"
+      "&nbsp;&nbsp;新阈值 &lt; 当前用量 + 安全缓冲(100MiB) → <b>拒绝</b>，返回原因文本<br>"
+      "&nbsp;&nbsp;采样太少 / 太旧（&gt;5s 无新数据）→ 同样拒绝或报错<br>"
+      "只有<b>批准</b>后，agent 才敢真的调小 NeonVM（QMP unplug / virtio-mem 收缩）",
+      fs=10.5, color=DIM, lh=1.5),
+    T("an-r2-p", 668, 347, 508, 96,
+      "批准后 vm-monitor 才真正执行：<br>"
+      "① <b>先调小 LFC</b>：SQL "
+      "<span style=\"font-family:" + MONO + "\">ALTER SYSTEM SET neon.file_cache_size_limit=…</span>"
+      "（<span style=\"font-family:" + MONO + "\">filecache.rs:250</span>）<br>"
+      "② <b>再调低 cgroup 内存阈值</b>——但这只是 vm-monitor 自己用来判断「下次还能不能再降」的<b>内部水位线</b>，"
+      "<span style='color:" + AC2 + "'>从不写 <span style=\"font-family:" + MONO + "\">memory.max</span> / "
+      "<span style=\"font-family:" + MONO + "\">memory.high</span></span>，"
+      "cgroup 侧真正的物理内存收缩由 QEMU virtio-mem 完成",
+      fs=10.5, color=DIM, lh=1.5),
+], p, notes="扩容路径：autoscaler-agent 周期性向 scheduler-plugin 发资源请求，PluginRequestTick = Scheduler.RequestAtLeastEverySeconds 减一个随机抖动（runner.go:209，避免所有VM同时请求造成惊群）。scheduler-plugin 监听 0.0.0.0:10299（run.go:120），实现 K8s Scheduler Framework 的 Filter/Score/Reserve/PostFilter 扩展点（framework_methods.go），但从不实现 Bind 或 Permit —— 真正把 Pod 绑到 Node 这件事仍由 K8s 默认调度器完成，本插件只在决策阶段插入资源感知。Filter(:104)/Score(:279)/Reserve(:468) 都通过 ns.node.Speculatively(func(tmp) {...; return false}) 在一个临时 Node 副本上先跑一遍 AddPod + OverBudget() 检查，不提交(commit=false)真实状态，只用来判断'如果这个pod放这个节点会不会超预算'。Score 用 calculateScore（:366）按 reserved/total 相对 ScorePeak 分段线性打分再乘 scale=total/maxTotalSeen。Reserve（:468）有意不做真正的容量拒绝：代码注释原文'we always allow the change to go through, even though we could deny the Reserve() if there isn't room. We don't deny, because that's ultimately less reliable' 并链接 issue #869，用 tentativelyScheduled map[pod.UID] 记录临时占位，只在重复UID或节点不存在时报错。调度器批准后，agent 调 NeonVM controller 走 QMP 完成真正扩容（见上一页），扩容成功后才通过 WebSocket 向 vm-monitor 发 UpscaleNotification{granted: Resources}（protocol.rs InboundMsgKind），vm-monitor 收到后调高 cgroup.threshold 和 filecache 上限，见 runner.go handle_upscale(:300)。缩容路径完全反过来：agent 先发 DownscaleRequest{target} 给 vm-monitor（走 WebSocket，vm-monitor 监听 0.0.0.0:10301，非文档中过时的10369，config_map.yaml:39 serverPort=10301），vm-monitor.try_downscale()（runner.go:205）做安全检查：若 cgroup watcher 最近5秒没有新采样(last_time.elapsed()>5s)则报错拒绝；若采样数<=1（刚启动）则拒绝但不报错；计算 new_threshold = cgroup_threshold(usable_system_memory)，若 new_threshold < current_usage + cgroup_downscale_threshold_buffer_bytes(100MiB) 则拒绝，返回status文本说明原因（:249-261）。批准后才真正执行：先调用 file_cache.set_file_cache_size() 通过 SQL ALTER SYSTEM SET neon.file_cache_size_limit=... 加 pg_reload_conf 缩小LFC上限（filecache.rs:250-290），再更新 cgroup.threshold 这个内部字段（:288，只是vm-monitor自己下次判断安全性时用的水位线数值，从未调用任何 cgroup 文件系统写入，cgroup.rs 全文没有对 memory.max/memory.high 的写操作，只有 memory_stat() 只读轮询）。真正的内存物理收缩是 QEMU virtio-mem 通过 qom-set requested-size 完成（上一页），vm-monitor 只是那个'batch决定能不能收缩'的安全阀。WebSocket wire协议见 protocol.rs：OutboundMsgKind{UpscaleRequest,DownscaleResult{ok,status},HealthCheck,...} tag=type；InboundMsgKind{UpscaleNotification{granted},DownscaleRequest{target},HealthCheck} tag=type,content=content；Resources{cpu:f64,mem:u64} 序列化成 \"Allocation\"（向后兼容旧 informant 协议的重命名）。PROTOCOL_MIN/MAX_VERSION 都是 V1_0。")
+
+
+# ─────── Slide 25: 多云存储 ───────
+p += 1
+std("s-cloud", "存储底座", "多云对象存储支持", [
+    T("cl-desc", 96, 175, 1088, 40,
+      "Pageserver 的存储后端抽象为 Rust trait，支持插拔不同云提供商。",
+      fs=16, color=DIM, lh=1.6),
+    *card("cl1", 96, 240, 340, 200,
+          "AWS S3", [
+              "• 初始也是唯一实现",
+              "• 生产验证最多",
+              "• 支持所有功能",
+              "• 兼容 S3 API 的对象存储",
+          ], hc=AC, fs=14, headfs=16),
+    *card("cl2", 470, 240, 340, 200,
+          "Google GCS（新）", [
+              "• commit 85ce109: 初版实现",
+              "• commit 39e4f23: Range 请求支持",
+              "• commit 6a35a3e: upload permit 死锁修复",
+              "• Bytes Range 对按需下载至关重要",
+          ], hc="#7CB3F4", fs=14, headfs=16),
+    *card("cl3", 844, 240, 340, 200,
+          "Azure Blob", [
+              "• 较早支持",
+              "• 仓库中已有完整 trait 实现",
+              "• 适配 Azure 原生 API",
+              "",
+          ], hc=AC2, fs=14, headfs=16),
+    *card("cl4", 96, 470, 1088, 90,
+          "Direct IO 对齐（commit 26b47b5）", [
+              "可配置对齐方式，优化不同存储硬件（NVMe 4KB / 传统 512B）的 I/O 性能。",
+              "Pageserver 本地 layer 文件的读写走 Direct IO 路径。",
+          ], hc=FAINT, fs=14, headfs=16),
+], p, notes="多云存储：S3 / GCS / Azure Blob，Rust trait 抽象，可插拔。新增 GCS + Direct IO 对齐。")
+
+
+p += 1
+divider("s-div3", 5, "组件逐层拆解：读写路径贯穿", p)
 
 
 # ─────── PROXY 层概述 ───────
@@ -542,6 +958,70 @@ std("s-proxy", "PROXY", "连接代理：路由 + 认证 + Serverless 网关", [
               "• 支持 JWT 认证 + CORS headers",
           ], hc=AC, fs=14, headfs=16),
 ], p, notes="Proxy: TCP/WebSocket/HTTP 三协议入口，SCRAM/JWT/Link 认证，新增 REST Broker 模式")
+
+
+# ─────── proxy 子系统内部架构 ───────
+p += 1
+std("s-proxy-arch", "PROXY", "proxy 子系统内部架构", [
+    T("pxa-desc", 96, 164, 1088, 28,
+      "<b>三协议接入</b>（PG over TCP / WebSocket / SQL over HTTP）→ 统一 <b>per-connection 处理链</b>（握手→认证→wake→连 compute→对拷）；"
+      "<b>无状态</b>，缓存可重建。<span style='color:" + FAINT + "'>（源码：proxy/src/）</span>",
+      fs=13, color=DIM, lh=1.5),
+    # ── 调用方 ──
+    R("pxa-cli", 96, 200, 300, 44, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.5)"),
+    T("pxa-cli-t", 96, 206, 300, 20, "客户端 · psql / 驱动 / 浏览器", fs=13.5, fw=800, color=AC, align="center"),
+    T("pxa-cli-s", 96, 226, 300, 16, "TCP · WebSocket · HTTP", fs=10, color=FAINT, align="center", ff=MONO),
+    R("pxa-cpl", 884, 200, 300, 44, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.5)"),
+    T("pxa-cpl-t", 884, 206, 300, 20, "Control Plane · compute", fs=13.5, fw=800, color="#7CB3F4", align="center"),
+    T("pxa-cpl-s", 884, 226, 300, 16, "wake_compute → 活的 PG", fs=10, color=FAINT, align="center", ff=MONO),
+    LN("pxa-a1", 246, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("pxa-a1l", 96, 252, 220, 18, "① 连接进入", fs=10, fw=700, color=AC, ff=MONO),
+    LN("pxa-a2", 1034, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("pxa-a2l", 964, 252, 220, 18, "③ 唤醒 + 路由", fs=10, fw=700, color="#7CB3F4", align="right", ff=MONO),
+    # ── ① 接入层 ──
+    R("pxa-in-bg", 96, 278, 1088, 52, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("pxa-in-h", 116, 286, 480, 20, "① 接入层 · 三协议前端（listener task-per-conn）", fs=12.5, fw=800, color=AC),
+    T("pxa-in-b", 116, 306, 1048, 20,
+      "pglb（PG over TCP · 主路径）· serverless（WebSocket 复用 PG 管线 + SQL over HTTP）· console_redirect（link 模式）· pg-sni-router（运维端口）",
+      fs=11, color=DIM, lh=1.4),
+    # ── ② per-connection 处理链 ──
+    R("pxa-ch-bg", 96, 342, 1088, 186, fill="rgba(255,158,138,0.05)", stroke="rgba(255,158,138,0.3)"),
+    T("pxa-ch-h", 116, 350, 700, 20, "② per-connection 处理链", fs=12.5, fw=800, color=AC2),
+    T("pxa-ch-h2", 800, 350, 364, 20, "pglb::handle_client → proxy::handle_client", fs=10.5, color=FAINT, align="right"),
+    R("pxa-s1", 116, 378, 250, 100, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.4)", radius=8),
+    T("pxa-s1-t", 116, 386, 250, 18, "握手 · TLS · SNI", fs=11.5, fw=800, color=AC, align="center"),
+    T("pxa-s1-b", 124, 408, 234, 64, "handshake 解析<br>SslRequest 升级<br>SNI → endpoint_id<br>CertResolver", fs=9.5, color=DIM, align="center", lh=1.5),
+    R("pxa-s2", 378, 378, 250, 100, fill="rgba(200,158,255,0.10)", stroke="rgba(200,158,255,0.4)", radius=8),
+    T("pxa-s2-t", 378, 386, 250, 18, "认证", fs=11.5, fw=800, color="#C89EFF", align="center"),
+    T("pxa-s2-b", 386, 408, 234, 64, "SCRAM / JWT /<br>link / password<br>flow.rs + sasl + scram<br>pbkdf2 线程池", fs=9.5, color=DIM, align="center", lh=1.5),
+    R("pxa-s3", 640, 378, 250, 100, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.4)", radius=8),
+    T("pxa-s3-t", 640, 386, 250, 18, "wake_compute", fs=11.5, fw=800, color="#7CB3F4", align="center"),
+    T("pxa-s3-b", 648, 408, 234, 64, "问 control plane<br>先查 node_info 缓存<br>retry + rate-limit<br>拿 compute 地址", fs=9.5, color=DIM, align="center", lh=1.5),
+    R("pxa-s4", 902, 378, 262, 100, fill="rgba(0,229,153,0.12)", stroke="rgba(0,229,153,0.45)", radius=8),
+    T("pxa-s4-t", 902, 386, 262, 18, "连 compute · 对拷", fs=11.5, fw=800, color=AC, align="center"),
+    T("pxa-s4-b", 910, 408, 246, 64, "connect_to_compute<br>TCP+TLS+startup<br>失效则 invalidate 重试<br>copy_bidirectional", fs=9.5, color=DIM, align="center", lh=1.5),
+    LN("pxa-x1", 366, 428, 12, 0, stroke=A_NEU, sw=2, thick=8),
+    LN("pxa-x2", 628, 428, 12, 0, stroke=A_NEU, sw=2, thick=8),
+    LN("pxa-x3", 890, 428, 12, 0, stroke=A_NEU, sw=2, thick=8),
+    R("pxa-alt-bg", 116, 486, 1048, 34, fill="rgba(255,158,138,0.08)", stroke="rgba(255,158,138,0.3)", radius=8),
+    T("pxa-alt", 130, 494, 1020, 20,
+      "SQL over HTTP 走旁路 PoolingBackend：authenticate_with_password/jwt → 连接池化 connect_to_compute → 跑完返回 JSON，无长连对拷",
+      fs=10.5, fw=600, color=AC2, lh=1.4),
+    # ── ③ 共享状态 ──
+    R("pxa-st-bg", 96, 544, 1088, 62, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)"),
+    T("pxa-st-h", 116, 552, 500, 20, "③ 共享状态 / 外部依赖 · 无本地持久化", fs=12, fw=800, color="#7CB3F4"),
+    T("pxa-st-b", 116, 574, 1048, 24,
+      "内存缓存 node_info / project_info（moka）· rate_limiter（AIMD）· intern 字符串池 · waiters；外部 Redis（取消跨实例传播 + 缓存失效 pub/sub）· remote storage（用量 parquet）",
+      fs=10, color=DIM, lh=1.4),
+    # ── 底部关键路径 ──
+    R("pxa-note-bg", 96, 618, 1088, 52, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("pxa-note-h", 112, 628, 96, 18, "两条路径", fs=11.5, fw=800, color=AC, lh=1.3),
+    T("pxa-note", 216, 626, 952, 40,
+      "<b>PG</b>：TCP accept → TLS+SNI 握手 → handle_client → SCRAM 认证 → wake_compute → connect_to_compute → copy_bidirectional 透传<br>"
+      "<b>HTTP</b>：wss accept + TLS → request_handler → POST /sql → PoolingBackend 认证 → 池化连 compute → 跑查询回 JSON",
+      fs=10.5, color=DIM, lh=1.55),
+], p, notes="proxy 内部架构（源码 proxy/src/，file:line 核实）。① 接入层：binary 入口 bin/proxy.rs:9 main → binary/proxy.rs run()，各 listener 在 run() 里 TcpListener::bind——PG proxy :379、serverless wss :412、HTTP health :370、mgmt :373、pg-sni-router :400；任务 spawn 进 client_tasks JoinSet：pglb::task_main :437、serverless::task_main :448、console_redirect_proxy::task_main :471、sni-router :493。PG over TCP accept：pglb/mod.rs:44 task_main，循环 :63，task-per-conn connections.spawn :80 → handle_connection :238。WebSocket + SQL-over-HTTP 共用一个 listener：serverless/mod.rs:63 task_main，accept :130，per-conn TLS :234，hyper serve_connection_with_upgrades :324；协议路由 request_handler :398：WS upgrade :419→websocket::serve_websocket，POST /sql :461→sql_over_http::handle :476，REST /..rest/.. :518（feature rest_broker）。WS 复用 PG 管线：serverless/websocket.rs:128 serve_websocket 包成 WebSocketRw 调 pglb::handle_connection :146。② per-connection 处理链：握手/TLS+SNI pglb/handshake.rs:61 handshake → HandshakeData::Startup|Cancel :51，SslRequest→TLS accept :76-155，SNI→endpoint via auth/credentials.rs:63 endpoint_sni，cert/SNI resolver tls/server_config.rs:83 CertResolver，config TlsConfig :14，CancelRequest 分支 :236。cancel：handle_connection spawn cancellation_handler.cancel_session pglb/mod.rs:270。driver：pglb/mod.rs:300 handle_client → proxy/mod.rs:40 handle_client：.authenticate( :65 然后 connect_auth::connect_to_compute_and_auth :98。auth 后端：auth/backend/mod.rs:62 enum Backend（ControlPlane :64 / Local :66），console-redirect/link auth/backend/console_redirect.rs，JWT auth/backend/jwt.rs，入口 authenticate :319 → auth_quirks :199 → authenticate_with_secret :265（password-hack :213、cleartext :301）。SCRAM/SASL：auth/flow.rs:22 flow 状态（Scram/CleartextPassword/PasswordHack），SCRAM authenticate :132；SASL loop sasl/stream.rs（sasl::authenticate，sasl/mod.rs:17），Mechanism trait :86；exchange scram/exchange.rs:94，impl Mechanism :276；pbkdf2 卸到 scram/threadpool.rs:25（spawn_job :82）。control_plane client + wake：trait ControlPlaneApi control_plane/mod.rs（wake_compute :186、get_endpoint_access_control :172），dispatch enum control_plane/client/mod.rs:28（ProxyV1 :30 / PostgresMock :33），真实 HTTP impl control_plane/client/cplane_proxy_v1.rs:272 do_wake_compute、wake_compute :409（缓存检查 :418）；wake 包装 + retry/rate-limit proxy/wake_compute.rs:27 trait、:31 fn。connect-to-compute：proxy/connect_compute.rs:86 connect_to_compute → _inner :106（wake→connect→invalidate-cache-and-retry :135-154），ConnectMechanism/TcpMechanism :36/:60，实际 TCP+TLS+startup compute/mod.rs:271 connect_raw（TcpStream::connect :280），结果 ComputeConnection :330。passthrough：pglb/mod.rs:331 建 ProxyPassthrough（pglb/passthrough.rs:67），字节泵 proxy_pass :20 → copy_bidirectional_client_compute（pglb/copy_bidirectional.rs）。serverless 旁路数据路径：serverless/backend.rs:36 PoolingBackend——authenticate_with_password :49、authenticate_with_jwt :105、connect_to_compute :163，池化 via GlobalConnPool/EndpointConnPool（serverless/conn_pool_lib.rs），HTTP2 池 http_conn_pool.rs，local 池 local_conn_pool.rs。③ 共享状态/外部依赖（多为内存；proxy 无状态）：缓存（moka 内存）node-info cache/node_info.rs:8 NodeInfoCache→CachedNodeInfo :9；project-info/role-secret/endpoint-access cache/project_info.rs:25（get_role_secret :124、get_endpoint_access :138、invalidation :37-81），打包成 ApiCaches control_plane/client/mod.rs / cplane_proxy_v1.rs:42。限流（内存）rate_limiter/mod.rs——EndpointRateLimiter/LeakyBucketRateLimiter :5、WakeComputeRateLimiter + AIMD :7-11。Redis（外部）redis/mod.rs；pub/sub 缓存失效 redis/notifications.rs:287 task_main、handle_message :152→invalidate_cache :227（topics /allowed_ips_updated :49、/password_updated :58）；KV ops redis/kv_ops.rs RedisKVClient；cancel keyspace redis/keys.rs:4。取消：cancellation.rs:199 CancellationHandler；register key get_key :263；跨 proxy via Redis CancellationProcessor :160/Pipeline :86；cancel_session :362（查 key，否则发 Redis）。字符串 interning（内存全局）intern.rs:16 StringInterner、InternedString :22（撑 EndpointIdInt/RoleNameInt）。waiters（console-redirect/link oneshot 会合）waiters.rs:31 Waiters、register :40 / notify :57。用量指标（外部 S3/remote-storage）usage_metrics.rs:237 task_main（ticker :265、upload :390），内存计数 USAGE_METRICS :235、register :214；另有 parquet worker context::parquet::worker binary/proxy.rs:510。外部依赖：control-plane HTTP API（auth secret、endpoint access、wake_compute）、Redis（取消扇出 + 缓存失效 pub/sub + KV）、remote storage（用量/parquet）；无本地持久化，所有 per-connection 状态在内存，缓存/限流器可重建。关键路径①正常 PG：TCP accept pglb/mod.rs:63 → TLS+SNI 握手 handshake.rs:61 → handle_client proxy/mod.rs:40 → SCRAM auth flow.rs:132（secret 来自缓存/控制面）→ wake_compute proxy/wake_compute.rs:31 → connect_to_compute connect_compute.rs:86 → compute::connect_raw compute/mod.rs:271 → copy_bidirectional 透传 passthrough.rs:20。②HTTP/serverless：wss accept + TLS serverless/mod.rs:130/234 → hyper request_handler :398 → POST /sql sql_over_http::handle :476 → PoolingBackend 认证（authenticate_with_password/jwt backend.rs:49/105）→ 池化 connect_to_compute backend.rs:163 → 连接池跑查询返回 JSON，无长连透传。")
+
 
 # ─────── 连接 Neon：endpoint 路由三法 ───────
 p += 1
@@ -607,6 +1087,7 @@ std("s-conn-route", "PROXY", "连上 Neon：Proxy 怎么知道你要连哪个库
       fs=12, color=DIM, lh=1.7),
 ], p, notes="连接 Neon 的 endpoint 路由三法，统一入口 ComputeUserInfoMaybeEndpoint::parse（proxy/src/auth/credentials.rs:74-156），由 proxy/src/proxy/mod.rs:53 每连接调一次。① options 启动参数：?options=endpoint%3Dep-xxx，project= 是旧写法仍兼容；解析 options_raw()（pqproto.rs:398）拆词 + parse_endpoint_param（password_hack.rs:33）取前缀 + .at_most_one() 保证唯一，出现两个 token 或同时有 endpoint= 和 project= 都判歧义返回 None（测试 credentials.rs:317,336）。② TLS SNI：<endpoint>.<common-name>，第一个点前 label 是 endpoint_id，后半段必须在证书 CN 集合内，endpoint_sni() credentials.rs:63；保留子域 api（SERVERLESS_DRIVER_SNI）和 apiauth（AUTH_BROKER_SNI）不走 SNI 路由，见 serverless/mod.rs:60；SNI 从 stream.rs:266 sni_hostname() 取，WebSocket 客户端无 SNI 用 HTTP Host 头代替（pglb/mod.rs:190）。③ Password Hack：给不支持 SNI 的老客户端，格式 endpoint=<name>;<password> 或 endpoint=<name>$<password>，分号和美元符谁先出现按谁切（password_hack.rs:16-30）；只在①②都失败时触发，在 auth_quirks（backend/mod.rs:211）里 TryFrom 失败分支调 hacks::password_hack_no_authentication（hacks.rs:63），Proxy 先发 AuthenticationCleartextPassword（flow.rs:77），密码不在 Proxy 校验直接透传 compute。优先级：match (endpoint_option, endpoint_from_domain) credentials.rs:106，两者不一致直接 InconsistentProjectNames 拒连；一致或只有一个用 a.or(b) 即 options 优先；都没有则 None 落 Password Hack，解不出返回 MissingEndpointName 并提示升级 libpq 或加 ?options=endpoint%3D<id>（auth/mod.rs:50）。SniKind 指标区分 Sni/NoSni/PasswordHack。")
 
+
 # ─────── neon_proxy_params_compat：启动参数透传开关 ───────
 p += 1
 std("s-params-compat", "PROXY", "neon_proxy_params_compat：启动参数透传的兼容开关", [
@@ -654,6 +1135,7 @@ std("s-params-compat", "PROXY", "neon_proxy_params_compat：启动参数透传�
       fs=11.5, color=DIM, lh=1.7),
 ], p, notes="neon_proxy_params_compat 是 proxy 侧的启动参数透传开关。核心 AuthInfo::set_startup_params(params, arbitrary_params)（proxy/src/compute/mod.rs:216-249）。arbitrary_params=false（默认）：先 server_params.insert(client_encoding, UTF8)（mod.rs:221），再逐 key match，只放行 user/database（skip_db_user 时跳）、application_name、replication，options 经 filtered_options() 洗掉 neon_*/endpoint token（mod.rs:380-394），其余 key 命中 _ => {} 被丢弃。arbitrary_params=true：不塞 client_encoding，另有一条 k if arbitrary_params => self.server_params.insert(k, v)（mod.rs:240）把任意 GUC 原样透传。注释 mod.rs:238-239 明说是 'a flag for a period of backwards compatibility'，即迁移期逃生舱。开启：startup options 串放 neon_proxy_params_compat:true，neon_option 正则 ^neon_(\\w+):(.+)（proxy/src/proxy/mod.rs:328-335）剥 neon_ 前缀得 key=proxy_params_compat（常量 PARAMS_COMPAT proxy/mod.rs:255-256）。判定 creds.info.options.get(NeonOptions::PARAMS_COMPAT).is_some()（proxy/mod.rs:91-93）只判存在不看值，写 :false 也算开。is_ephemeral() 对 PARAMS_COMPAT 返回 false（proxy/mod.rs:287-298），区别于 lsn/timestamp/endpoint_type 会建 ephemeral compute 的 cplane 选项。serverless backend.rs:191 与 console_redirect_proxy.rs:217 调 set_startup_params(&params, true) 恒开。为什么别长期开：过渡机制上游可能移除；放弃白名单过滤防护，客户端任意 GUC 直入 compute；丢掉强制 UTF8 跨端编码风险；presence-based 易误开且固化后易遗忘；透传是隐式行为换驱动结果可能变。推荐替代：① ALTER ROLE/DATABASE ... SET（持久，不碰 proxy 透传）② 会话级 SET search_path=custom, public / SET IntervalStyle='iso_8601' ③ options=-csearch_path=custom 走 options 白名单分支经 filtered_options()（compute/mod.rs:380-394）转发免开关。search_path 反例：search_path=custom 作独立 startup 参数命中 _ => {} 默认被丢必须开开关；options=-csearch_path=custom 走 options 分支默认生效。验证例 test_runner/regress/test_proxy.py:133-147：IntervalStyle=iso_8601，select to_json('0 seconds'::interval)，默认 \"00:00:00\"，加 options=neon_proxy_params_compat:true 后 \"PT0S\"。")
 
+
 # ─────── Proxy 为什么依赖 Redis ───────
 p += 1
 std("s-proxy-redis", "PROXY", "Proxy 为什么依赖 Redis：无状态集群的共享短时状态层", [
@@ -699,6 +1181,7 @@ std("s-proxy-redis", "PROXY", "Proxy 为什么依赖 Redis：无状态集群的�
       "• <b>接入 &amp; 非强依赖</b>：支持 AWS ElastiCache/MemoryDB 的 IAM(IRSA) 签名认证（<span style=\"font-family:" + MONO + "\">elasticache.rs</span>，token 15min）；Redis 挂了不影响建连查询，只是取消不跨实例、缓存退化为按 TTL 过期",
       fs=11, color=DIM, lh=1.66),
 ], p, notes="Proxy 依赖 Redis 做无状态集群的共享短时状态层，两个明确用途。用途一 Query Cancellation（proxy/src/cancellation.rs + redis/keys.rs + redis/kv_ops.rs）：取消走 PG 协议的 CancelRequest 特殊首包（不是普通 StartupMessage），pqproto.rs:154-166 按 CANCEL_REQUEST_CODE 魔数分支解析，报文长度固定 8 字节（len != 8 报 malformed），内容仅 CancelKeyData = 4 字节 backend PID + 4 字节 secret key，不带 endpoint/user/database/password，因此 proxy 无法像普通连接那样从 params/SNI 路由到 compute。而且这对 PID/secret 不是 compute 真实值，是 proxy 用 rand::random() 随机生成的查找 ID（get_key cancellation.rs:263-278，注释说明真实 backend_pid 太小跨 compute 会大量重复，故做一层间接）。要把 key 翻译成真实 compute 地址+令牌，需查 CancelKeyData→CancelClosure 映射（CancelClosure 含 socket_addr/cancel_token: RawCancelToken/hostname/user_info，cancellation.rs:430-436），该映射由原查询那台 proxy 在建连时持有。无状态 proxy 集群里取消请求可能落到别的 proxy，故把映射以 cancel:<id> 为 key（KeyPrefix::Cancel build_redis_key keys.rs:12-20，格式 cancel:{id:x}）写进 Redis：建连 Store 带 TTL（SetExpiry），Refresh 续期（maintain_cancel_key cancellation.rs:474），收取消时任意 proxy 用 get_cancel_key（cancellation.rs:281）Get 查出 CancelClosure，反序列化后 cancel_session（cancellation.rs:362）校验 IP/VPC allowlist 再 try_cancel_query（cancellation.rs:440：TcpStream::connect socket_addr + TLS + cancel_query_raw）发出取消；key 查不到返回 NotFound（:397）取消静默失败。写入经 BatchQueue 批量 pipeline（CancellationProcessor cancellation.rs:160-200，QueueProcessing::apply 组 redis::Pipeline）。CancelKeyOp 有 Store/Refresh/Get/GetOld 四种（cancellation.rs:42-66），对应 Set/Expire/Get/HGet。对比普通建连（如 postgresql://user:endpoint=ep-xxx;pwd@host/db）：发 StartupMessage 带 endpoint/user/db/password，proxy 从 params 或 SNI 挖出 endpoint 直接路由，连接上下文天生在本地，不需要 Redis；取消请求是无上下文孤儿连接只带 8 字节 key，才必须查表（跨实例即查 Redis）。用途二 Cache Invalidation（proxy/src/redis/notifications.rs）：proxy 本地缓存 endpoint/project/role 元数据（ProjectInfoCache，含认证、allowed_ips、VPC endpoints、密码），控制面改配置后经 Redis Pub/Sub 频道 neondb-proxy-ws-updates（notifications.rs:15）广播失效，proxy 订阅清缓存。Notification topic：/account_settings_update（alias /allowed_vpc_endpoints_updated_for_org）、/endpoint_settings_update、/project_settings_update（alias /allowed_ips_updated、/block_public_or_vpc_access_updated、/allowed_vpc_endpoints_updated_for_projects）、/role_setting_update（alias /password_updated），未知 topic 忽略（notifications.rs:33-68）。RECONNECT_TIMEOUT=20s、INVALIDATION_LAG=20s（notifications.rs:16-17）：handle_message 收到后先失效一次，再 sleep INVALIDATION_LAG 重复失效一次防丢（notifications.rs:189-215）。效果：改密码/改 IP 白名单/改 VPC 策略近实时在所有 proxy 生效，不用等缓存自然过期。接入：redis/elasticache.rs 支持 AWS ElastiCache/MemoryDB 的 IAM IRSA sigv4 签名认证（AWSIRSAConfig，token_ttl 15min，service elasticache action connect），connection_with_credentials_provider.rs 统一封装凭证刷新。Redis 非强依赖：挂了不影响正常建连查询，只是取消无法跨实例、缓存失效退化为按 TTL 自然过期。")
+
 
 # ─────── TLS 机制：两跳加密 ───────
 p += 1
@@ -759,6 +1242,7 @@ std("s-tls-overview", "PROXY · TLS", "Neon 的 TLS：两跳加密，两套证�
           ], hc="#C89EFF", fs=13, headfs=15),
 ], p, notes="Neon TLS 两跳：Client↔Proxy 用公网通配证书（CertResolver 按 SNI 选证，SNI 第一段是 endpoint_id），Proxy↔Compute 用 Neon Internal CA + compute_ctl 把 cert-manager 证书落到 PGDATA。用户 sslmode=verify-full 校验的是 Proxy 证书。源码 proxy/src/tls/{mod,server_config,client_config}.rs、pglb/handshake.rs、compute_tools/src/tls.rs。")
 
+
 # ─────── TLS 握手：SSLRequest vs Direct TLS ───────
 p += 1
 std("s-tls-handshake", "PROXY · TLS", "客户端握手：SSLRequest 升级，或直接开打 TLS", [
@@ -802,6 +1286,7 @@ std("s-tls-handshake", "PROXY · TLS", "客户端握手：SSLRequest 升级，�
       "协议版本：TLS 1.2 + 1.3（兼容老 libpq）。无 Client Auth。可选 <span style=\"font-family:" + MONO + "\">SSLKEYLOGFILE</span> 仅排障。",
       fs=13, color=DIM, lh=1.55),
 ], p, notes="握手在 proxy/src/pglb/handshake.rs。经典路径：SSLRequest(80877103) → 回 S → rustls Accept → 再读 Startup。Direct TLS：第一包就是 ClientHello，accept_direct_tls + session.read_tls 喂 early data。ALPN 只接受空或 postgresql。pg_config / http_config 因 rustls 不能动态改 ALPN 而拆成两份 ServerConfig，共用 CertResolver。GSS 拒绝。WS/HTTP 不再二次 TLS。明文 Startup + 已配 TLS = TlsRequired。")
+
 
 # ─────── 证书选择 CertResolver ───────
 p += 1
@@ -859,6 +1344,7 @@ std("s-tls-cert", "PROXY · TLS", "CertResolver：一张通配证，按 SNI 剥�
       fs=13, color=DIM, lh=1.55),
 ], p, notes="CertResolver（proxy/src/tls/server_config.rs）：启动加载 -c/-k，certs_dir 下 cert-manager 的 tls.crt/tls.key。CN=*.host 存成 host，CN=apiauth.x 去掉 apiauth。resolve 循环 sni.split_once('.') 直到命中，否则 default。无 SNI 也 default，verify-full 对 CNAME 失败。TlsServerEndPoint 在加载时就算好。endpoint_sni 另用第一段 label，且 api/apiauth 不参与选库。")
 
+
 # ─────── Channel Binding ───────
 p += 1
 std("s-tls-cbind", "PROXY · TLS", "SCRAM Channel Binding：把认证钉在这张叶子证上", [
@@ -899,6 +1385,7 @@ std("s-tls-cbind", "PROXY · TLS", "SCRAM Channel Binding：把认证钉在这�
       "• compute 侧同样只认 P-256 + SHA-256；<span style=\"font-family:" + MONO + "\">compute_tools</span> 装证时会核对私钥和叶子证公钥一致，避免半更新。",
       fs=13, color=DIM, lh=1.5),
 ], p, notes="Channel binding：tls/mod.rs 对 ECDSA_WITH_SHA_256 / SHA256_WITH_RSA 的叶子证 DER 做 SHA-256，得到 TlsServerEndPoint；其它 OID 为 Undefined。SASL GS2 n/y/p= 见 sasl/channel_binding.rs。Proxy 用自己的证绑定客户端 SCRAM；postgres_rustls.rs 连 compute 时用 compute 对端证再绑一次。两跳不是同一张证。")
+
 
 # ─────── Proxy → Compute 内网 TLS ───────
 p += 1
@@ -953,6 +1440,7 @@ std("s-tls-compute", "COMPUTE · TLS", "第二跳：compute_ctl 把内部 CA 证
               "→ <span style=\"font-family:" + MONO + "\">TlsError::Required</span>（可重试）",
           ], hc="#C89EFF", fs=13, headfs=15),
 ], p, notes="compute_tools/src/tls.rs：watch 60s、verify ECDSA P-256 公钥匹配、写入 PGDATA server.crt/key mode 600。config.rs 写 ssl=on。libs/compute_api TlsConfig{key_path,cert_path}。Proxy client_config 加载 native + NEON_INTERNAL_CA_FILE。connect_tls 支持 Direct / Postgres SSLRequest，Require 被拒可重试。")
+
 
 # ─────── pg-sni-router + sslmode 边界 ───────
 p += 1
@@ -1056,6 +1544,7 @@ std("s-comp1", "COMPUTE", "Compute Node — patched PostgreSQL 的四点关键�
           ], hc="#7CB3F4", fs=11.5, headfs=15),
 ], p, notes="讲这页时先立设计原则：docs/core_changes.md:14-17 明确 'Most of the Neon-specific code is in the extensions, and for any new features, that is preferred over modifying core PostgreSQL code' —— 绝大多数改造在 pgxn/neon 扩展（shared_preload_libraries 加载），内核 patch 只在扩展够不到的地方动刀，且 core_changes.md 每条 patch 都带一节 'How to get rid of the patch'，长期目标是全部推上游、让未修改的 PG 也能跑 Neon 存储（:4-7）。徽章含义：[EXT]=纯扩展；[PATCH]=纯内核 patch；[EXT + PATCH]=扩展是主体但依赖内核 patch 凿出 hook 点。① 替换 smgr [EXT + PATCH]：主体是扩展——pagestore_smgr.c:2220 定义 neon_smgr 结构体（smgr_read=neon_read/smgr_write=neon_write），libpagestore.c:1649-1651 装 smgr_hook=smgr_neon / smgr_init_hook / dbsize_hook；permanent 关系 read 走 LFC→GetPage@LSN（:1367-1471），write 走 LFC+补 WAL-log（:1596-1675），临时/unlogged 表 fallback md。依赖三个内核 patch：core_changes.md:179-191 'Make smgr interface available to extensions'（改 smgr.c/smgr.h 共 275 行，凿出 smgr_hook，已提上游 commitfest 47/4428 但推进极慢）、:193-211 'Added relpersistence argument to smgropen()'（让 smgr 实现能区分 permanent/unlogged/temp，否则无法差异化处理 unlogged 表）、:221-232 'Use smgr and dbsize_hook for size calculations'（原生 dbsize.c 直接扫 data directory 算大小，在 Neon 下不成立）。② WAL→SK [EXT + PATCH]：主体是扩展——walproposer_pg.c:689 walprop_register_bgworker 注册 bgworker（bgw_library_name='neon', BgWorkerStart_RecoveryFinished），:180 WalProposerMain，:1566 XLogBroadcastWalProposer 读 GetFlushRecPtr()（本地已 fsync 的 pg_wal）广播给 3 台 SK，quorum=2 达成即 commit。依赖两个辅助 patch：core_changes.md:325-354 'Backpressure if pageserver doesn't ingest WAL fast enough'（在 ProcessInterrupts 里加 ProcessInterruptsCallback + retry label，让 PS 消费 WAL 落后时能在 compute 侧反压）、:388-395 'Shut down walproposer after checkpointer'（调整关停顺序，确保 checkpointer 最后一条 CheckPoint WAL record 也能推给 SK）。③ checkpoint 掏空 [EXT]：没有独立 patch，checkpointer 进程和 CheckPoint WAL record 都是 PG 原生行为、照常跑；扩展只是把 smgr 的刷盘方法做成 no-op——neon_writeback (pagestore_smgr.c:1230)/neon_immedsync (1888)/neon_registersync (1922) 对 permanent 关系全空转（日志打 'writeback noop'/'immedsync noop'），BufferSync 遍历脏页调下来时底层 fsync 被架空。这条能纯扩展实现，正是因为 ① 已经把整个 smgr 表换掉了。持久化真正靠 AM 层 XLogInsert → 本地 pg_wal fsync → walproposer → SK quorum。④ 启动跳过 crash recovery [PATCH]：这是真·内核 patch，启动流程和 pg_control 语义扩展拦不到——core_changes.md:119-135 'Allow startup without reading checkpoint record' 改 xlog.c，读 neon.signal（也兼容 zenith.signal）里的 LSN 作为起点、直接认定该 LSN 一致，不读最后的 checkpoint record、不做 WAL redo；'How to get rid of the patch' 一栏写的是 '???'，说明连 Neon 自己都还没想好怎么消掉。配套的不是插件也不是 patch，而是 Rust 侧：libs/postgres_ffi/src/xlog_utils.rs:159-176 generate_pg_control 造出 checkPoint=0 / state=DB_SHUTDOWNED 的假 pg_control 塞进 basebackup tarball；compute_tools/src/compute.rs:1201 create_pgdata 清空目录、:1601-1650 prepare_pgdata 拉 tarball 解压（pageserver/src/basebackup.rs:1-11：只含 non-relational data——pg_control/SLRU/filenodemap/twophase/neon.signal/dummy WAL segment，关系文件是占位空文件）。注意 core_changes.md:145-146 记了备选方案是往 tarball 里塞假 checkpoint record，但被否了——怕假 WAL 意外流到 safekeeper 覆盖真 WAL。")
 
+
 # ─────── 内核 patch · Compute 侧 ───────
 p += 1
 std("s-core-compute", "COMPUTE", "内核存算分离改动 · Compute 侧（改 PG 源码）", [
@@ -1111,6 +1600,7 @@ std("s-core-compute", "COMPUTE", "内核存算分离改动 · Compute 侧（改 
     ], fs=11, lh=1.5),
 ], p, notes="本页记录 postgres REL_17_STABLE_neon 分支（/Users/wangbin34/meetbill/git/postgres）针对 Compute 节点的内核层存算分离改动，权威清单在 neon/docs/core_changes.md『Changes for Compute node』一节。git log 里带 'NEON:' 前缀的提交共 15 个。SMGR/存储侧四项：① Make smgr interface available to extensions（改 smgr.c ~203 行 + smgr.h ~72 行，凿出 smgr_hook/smgr_init_hook，已提上游 commitfest 47/4428 但推进 glacial）；② Added relpersistence argument to smgropen()（heapam_handler.c/storage.c/tablecmds.c/md.c/rel.h，让 smgr 实现能区分 permanent/unlogged/temp，否则无法差异化处理 unlogged 表）；③ Use smgr & dbsize_hook（dbsize.c ~61 行，原生 rel/db-size 函数直接扫 data directory，Neon 下不成立）；④ Mark index builds that use buffer manager without logging explicitly（gininsert.c/gistbuild.c/spginsert.c + smgr.c，新增 smgr_start_unlogged_build/smgr_finish_unlogged_build_phase_1/smgr_end_unlogged_build，pgvector 0.6.0 也需要类似改动）。WAL/启动/序列侧四项：① Add t_cid to heap WAL records（heapam.c/neon_xlog.h，给 XLOG_HEAP_INSERT/UPDATE/DELETE 加 command id，导致 Neon WAL 格式与原生 PG 不兼容——因为 replica 在原事务仍运行时就靠 WAL 重放重建页面，需要 cmin）；② Track last-written page LSN（dbcommands.c/xlog.c，evict 页面时记住其 LSN 供 GetPage@LSN 复用，避免 pageserver 等最新 WAL，主要靠 smgrwrite() 里跟踪但少数地方需显式 SetLastWrittenPageLSN()）；③ Allow startup without reading checkpoint record（xlog.c，读 neon.signal/zenith.signal 里的 LSN 作起点直接认定一致，不读最后 checkpoint record、不做 WAL redo，去除路径栏写 ???）；④ Disable sequence caching（sequence.c 把 SEQ_LOG_VALS 从 32 改成 0，每次取值都 WAL-log，避免 sequence 页被 evict 后即使不崩溃也跳号）。对应提交 bd09a752 Adapt SMGR / 2ea6455a Unlogged build / e1b32d73 t_cid custom records / 379ee5fd LwLsnCache / 849463 Sequence log 0。docs/core_changes.md 每条都带一节『How to get rid of the patch』，长期目标是消掉全部 patch。")
 
+
 # ─────── 内核 patch · WAL redo & 其它兼容 ───────
 p += 1
 std("s-core-walredo", "COMPUTE", "内核存算分离改动 · WAL redo 进程 & 其它兼容", [
@@ -1163,6 +1653,7 @@ std("s-core-walredo", "COMPUTE", "内核存算分离改动 · WAL redo 进程 & 
         ("&nbsp;标脏 / Prewarming 预热 buffer cache", AC2),
     ], fs=11, lh=1.5),
 ], p, notes="本页记录 WAL redo 进程侧及零散兼容性内核改动，见 neon/docs/core_changes.md『WAL redo process changes』与『Not currently committed but proposed』两节。背景：pageserver 把复杂 WAL 解码委托给一个用 Linux seccomp 沙箱包住的 Postgres（同一 binary 加 --wal-redo flag），因为可能遭遇恶意构造的 WAL，也因为用 Rust 重写全部 redo handler 或硬化所有 redo 函数都不现实。WAL redo 侧：① Don't replay change in XLogReadBufferForRedo that are not for the target page（ginxlog.c/xlog.c/xlogutils.c，WAL redo 只关心正重放的单页，其余页返回 BLK_DONE 省 CPU，但像 ginRedoSplit 那种期望 BLK_RESTORED 的代码要相应改 action != BLK_RESTORED && action != BLK_DONE）；② Add predefined_sysidentifier flag to initdb（bootstrap.c/initdb.c/xlog.c，灾备场景：有一路到 initdb 的全量 WAL 但无备份时，用同 sysidentifier 重跑 initdb 重建缺失的 backup）；③ pg_waldump flags to ignore errors（Neon 建 project/branch 后首个 timeline 可能起于某个 WAL segment 中段，pg_waldump 会 choke，加 flag 容错）；④ WAL-log an all-zeros page as one large hole（XLogRecordAssemble，v16 起 PG 扩展关系时先补零且一次可扩多块，全零页 WAL-log 很浪费，改成紧凑 hole 记录，但 PG 有断言禁止重放这种记录，导致原生 PG 无法处理 Neon WAL）；⑤ Backpressure（postgres.c 的 ProcessInterrupts 加 retry label + ProcessInterruptsCallback，guc_tables.c 加 GUC，PS 消费 WAL 落后时在 compute 侧反压）。兼容改动：SLRU on-demand download（slru.c +92 行，SLRU 可能几个 GB，全放 basebackup 拖慢启动，改按需下载）；On-demand download of extensions（dfmgr.c/extension.c）；Shut down walproposer after checkpointer（postmaster.c，把 walproposer bgworker 当 WAL sender 最后关停，确保 shutdown checkpoint record 能到 safekeeper）；Publication superuser checks（publicationcmds.c，让 neon_superuser 也能 CreatePublication）；WAL log replication slots / WAL-log replication snapshots / WAL-log relmapper files（slot.c/snapbuild.c/origin.c/rewriteheap.c，把这些本地状态文件也 WAL-log 才能随存储重建）；EXPLAIN changes for prefetch and LFC（explain.c/instrument.c，已提 commitfest 47/4643）；还有 XLogWaitForReplayOf()。『Not currently committed but proposed』三项：Disable ring buffer buffer manager strategies（bulk 操作的环形缓冲策略在 Neon 下代价高）、Disable marking page as dirty when hint bits are set（避免 hint bit 触发 FPI 撑大 WAL）、Prewarming（捕获 buffer cache 状态、启动时批量预取以缩短冷启动）。对应提交 a4e665a WalRedo & startup / feb6c004 Expose lag tracker+backpressure / 700e77eb Dynamic loading of extension libs / 14d522d1 EXPLAIN LFC+Prefetch / b4357e32 & 5eb05c85 Various compatibility。")
+
 
 # ─────── 扩展打包 patch ───────
 p += 1
@@ -1219,6 +1710,7 @@ std("s-ext-patches", "COMPUTE", "扩展打包 patch（compute/patches/ · 构建
               ("下载源码后于构建期 apply。", FAINT),
           ], hc=DIM, fs=11.5, headfs=14),
 ], p, notes="本页记录扩展打包 patch，位于 neon/compute/patches/（25 个）与 neon/build-tools/patches/（1 个）。与内核 patch 的区别：内核 patch 改的是 PostgreSQL 源码本体（在 postgres REL_17_STABLE_neon 分支），而这批是给第三方扩展/contrib 模块打的补丁，在构建 compute 镜像时由 compute/compute-node.Dockerfile 用 COPY compute/patches/xxx.patch 引入后 apply（可 grep Dockerfile 里的 COPY compute/patches 确认引用点，如 :173 postgres_fdw、:518 pgvector、:650 rum、:876 pg_cron、:1156 onnxruntime、:1247 pg_graphql、:1392 anon_v2、:1494/1517/1518 duckdb 系、:1568 pgaudit、:1890 pg_hint_plan、:1906 pg_repack、:372 plv8、:174/175 pg_stat_statements）。清单：内置/contrib 兼容——postgres_fdw、pg_stat_statements_pg14-16/_pg17、contrib_pg16/_pg17、cloud_regress_pg16/_pg17（云端回归测试补丁，各约 240KB，最大的两个）；检索/向量/计划——pgvector、rum、pg_hint_plan_v16/_v17、pg_graphql；分析/OLAP/ML——duckdb_v113/_v120、pg_duckdb_v031、onnxruntime；运维/审计/任务——pg_cron、pg_repack、pgaudit-parallel_workers-v14/v15/v16/v17（四个 PG 大版本各一份，让 pgaudit 兼容并行 worker）；语言/脱敏——plv8_v3.1.10/_v3.2.3、anon_v2（PostgreSQL Anonymizer）；build-tools/patches/ 里另有 pgcopydbv017.patch。扩展本体大多不在本仓，而是 submodule 或构建期下载源码后再 apply 这些 patch。")
+
 
 # ─────── compute_ctl 总览 ───────
 p += 1
@@ -1277,6 +1769,7 @@ std("s-computectl", "COMPUTE", "compute_ctl —— compute 容器里的 PostgreS
       "• 顺带管的周边：<span style=\"font-family:" + MONO + "\">pgbouncer</span> 参数下发、local_proxy 配置、swap/磁盘扩容、LFC prewarm/offload",
       fs=12, color=DIM, lh=1.62),
 ], p, notes="compute_ctl 是 compute 容器的 entrypoint（Docker entrypoint 或 systemd ExecStart），是 Pod 里的 1 号/监护进程，postgres 是它 fork 的子进程。源码 compute_tools crate，入口 bin/compute_ctl.rs（main 在 :213），核心逻辑 compute_tools/src/compute.rs。职责一句话：把控制面给的 ComputeSpec 翻译成一个连好存储、建好库和角色的可用 PG。启动流程 ComputeNode::run() compute.rs:627：① 起两个 HTTP server，external 3080（compute_ctl.rs:78）给控制面和监控，internal 3081（:83）给 neon 扩展和 local_proxy；② wait_spec()(:752)，spec 可以启动时用 CLI 参数带进来，也可以阻塞等控制面 POST /configure 推过来；③ start_compute()(:793) 冷启动：下载 remote extensions → prepare_pgdata()(:1601) 清空 pgdata、写 postgresql.conf、sync safekeepers 确定起点 LSN、拉 basebackup tarball 解压、写 pg_hba → 调整 swap/磁盘 → 起 monitor 和 configurator 线程 → start_postgres()(:1789) fork postgres → configure_as_primary()(:2179) 调 apply_config()(:1972) 按 ApplySpecPhase 各阶段建 role/database/extension，最后（在 extension phase 之后）跑 bootstrap template（spec_apply.rs:358）；④ 状态置 Running(:1039)，起 vm-monitor；⑤ 等 postgres 退出后清理，失败时多等 30s 方便抓日志。热变更走 configurator 线程（configurator.rs:13 configurator_main_loop）常驻循环，等到 ConfigurationPending 或 RefreshConfigurationPending 就调 reconfigure()(compute.rs:2089)，重写 postgresql.conf + pg_reload_conf + 重放 spec SQL，不重启 PG。HTTP 路由定义在 http/server.rs:38-49，外部路由 :94-127，内部路由 :66-84；/metrics 和 /autoscaling_metrics 免鉴权，其余外部路由要鉴权；内部还有 /failpoints 仅测试构建开放。⚠ 3081 端口实际绑定 Ipv6Addr::UNSPECIFIED（http/server.rs:196，等价于双栈 :: / 0.0.0.0），并非注释所说的 loopback；:194-195 有 TODO 说明是因为 GitHub Actions runner 不允许绑 localhost 才临时放开，一直未改回。内部 router（:64-87）也没挂 AsyncRequireAuthorizationLayer，所以 /extensions /grants /refresh_configuration /extension_server/* 事实上暴露给整个 Pod 网络且免鉴权，安全靠部署侧 NetworkPolicy 兜底。pgxn/neon 里 curl 目标虽然写的 http://localhost:{neon.extension_server_port}/...（extension_server.c:49、libpagestore.c:1078），但那只是客户端选择走 loopback，服务端并没做绑定收敛。核心结构体：ComputeNodeParams(compute.rs:85) 静态 CLI 参数、ComputeNode(:139) 全局单例内含 Mutex<ComputeState>(:173) 存 status/pspec/metrics、ParsedSpec(:254) 是校验并解出 tenant_id/timeline_id 后的 spec。本页只讲总览，具体细节分散在相邻各页：状态机（11 个状态，responses.rs:174）在下一页，ComputeSpec 字段在 s-compute-spec，basebackup 在 s-basebackup，bootstrap template 在 s-boot，DDL 反向同步在 s-ddl-fwd。")
+
 
 # ─────── Slide 5.6: 3081 内部端口的两类调用方 ───────
 p += 1
@@ -1347,6 +1840,7 @@ std("s-cc-internal", "COMPUTE", "内部端口 3081 —— 4 个路由，两类�
       "内部 router（:64-87）<b>也没挂鉴权层</b> → 4 个路由对整个 Pod 网络可达且免鉴权，只能靠部署侧 <b>NetworkPolicy</b> 兜底",
       fs=11.5, color=DIM, lh=1.6),
 ], p, notes="本页把 3081 内部端口的 4 个路由按调用方分成两类，要点：3081 不等于「Postgres 专用端口」，Postgres 只用其中 2 个。端口发现机制：compute_ctl 启动时把 internal http port 写成 GUC neon.extension_server_port 进 postgresql.conf（compute_tools/src/config.rs:345），PG 后端（普通 backend 或 bgworker）读这个 GUC 拿到端口，用 libcurl 发 HTTP。第一类，Postgres 自己调的两个：（1）POST /extension_server/{filename}，实现在 pgxn/neon/extension_server.c:33 neon_download_extension_file_http，通过 :110-111 挂在 PG 的 download_extension_file_hook 上。触发时机是用户执行 CREATE EXTENSION xxx，或者 PG 需要加载某个扩展的动态库时，发现本地 $PGSHAREDIR/extension/xxx--*.sql 或 $PKGLIBDIR/xxx.so 不存在，于是走 hook，hook 请求 compute_ctl 从对象存储（remote extension storage）把文件下载下来写进容器文件系统，PG 再重试 open。粒度是每个 SQL 文件或 so 文件一次请求，查询参数 ?is_library=true 用来区分二进制库和 SQL 脚本，60s 超时。（2）POST /refresh_configuration，实现在 pgxn/neon/libpagestore.c:1058 hadron_request_configuration_refresh，只在 lakebase_mode 这个 Hadron fork 引入的 GUC 打开时才启用（:1065 判断）。触发时机是 Postgres backend 跟 pageserver 的连接掉线或者读到异常响应，backend 怀疑自己被路由到了错误的 pageserver（典型是那台 PS 现在只是 secondary，或者分片映射已经变了），于是主动「戳」一下 compute_ctl，让 compute_ctl 去问控制面重新拉一份 spec。libpagestore.c 里的调用点分两类：一类是重连路径，:1169 连续重连次数超过 conf_refresh_reconnect_attempt_threshold 时先戳 refresh，再抛 ERROR 取消当前 query；另一类是收包路径，同步收包函数 pageserver_receive（:1240-1305）和异步收包函数 pageserver_try_receive（:1307-1397）各有一组三个分支——PQgetCopyData 返回 -1 表示 COPY 流被对端正常关闭（EOF，对这条长连的 pagestream 来说意味着 PS 侧主动断了，从 compute 看是异常）、-2 表示读 COPY 数据失败、其它值表示意外返回码，三种情况都调 refresh（同步版 :1286/:1293/:1299，异步版 :1367/:1374/:1381）。异步版函数末尾 :1390 还有一处兜底：rc < 0 且 refresh 请求本身也失败时，直接 ERROR 'refresh_configuration request failed, cancelling query'（:1392）。这条路径整体是 best-effort 的：3s 超时，失败只打 WARNING 不报错。第二类，不是 Postgres 调的：/extensions 和 /grants 是 local_proxy 调的。local_proxy 是 Neon Auth / serverless driver 在 Pod 内的边车进程，在 proxy/src/serverless/backend.rs:311-341 的 connect_to_local_postgres 里，对某个 database 第一次建连接池时调这两个接口：/extensions 安装 pg_session_jwt 扩展（版本 0.3.1，装到 schema auth，常量在 local_conn_pool.rs:44-46），/grants 给 JWKS 配置里声明的 role 补 schema 授权。每个 db 只做一次，并且用信号量限并发。/extensions 的 handler 要求 compute 状态必须是 Running（routes/extensions.rs:19），否则直接拒。最后一个要点，「内部」只是命名不是隔离：pgxn 里 curl 的目标 URL 确实写的是 http://localhost:{port}（extension_server.c:49、libpagestore.c:1078），但那只是客户端选择走 loopback；服务端 ip() 函数对 external 和 internal 两个 server 都返回 Ipv6Addr::UNSPECIFIED（http/server.rs:196-197，等价于 :: / 0.0.0.0），:194-195 的 TODO 注释说明是因为 GitHub Actions runner 不允许绑 localhost 才临时放开、一直没改回；而且内部 router（:64-87）没有挂 AsyncRequireAuthorizationLayer。两者叠加的结果是这 4 个路由对整个 Pod 网络可达且免鉴权，安全性只能靠部署侧 NetworkPolicy 兜底。")
+
 
 # ─────── Slide 5.7: Compute VM 进程清单 ───────
 p += 1
@@ -1432,6 +1926,7 @@ std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
       "<b>观测</b> 4 个 exporter + rsyslog",
       fs=11.5, color=DIM, lh=1.4),
 ], p, notes="本页把 compute VM 内所有常驻和一次性进程列全，来源是 compute/vm-image-spec-bookworm.yaml（vm-image-spec-bullseye.yaml 内容对齐）。9 个常驻守护进程（sysvInitAction: respawn）：（1）compute_ctl 是 Pod entrypoint / PID 1，由 VM entrypoint 直接拉起，不在 vm-image-spec 的 commands 列表里；负责监护、状态机、HTTP 3080/3081，源码在 compute_tools/ crate，入口 bin/compute_ctl.rs。（2）postgres 是 compute_ctl fork 出来的子进程，跑 postmaster + backends + bgworkers，pgxn/neon 扩展在这里加载，监听 5432。（3）pgbouncer 监听 0.0.0.0:6432，transaction pooling，配置见 compute/etc/pgbouncer.ini，max_client_conn=10000、default_pool_size=64、auth_type=scram-sha-256，通过 unix_socket_dir=/tmp/ 也暴露 socket。（4）local_proxy 监听 0.0.0.0:10432，Neon Authorize 组件，校验客户端 JWT、维护 pg_session_jwt 扩展和 JWKS 授权，reload 通过 SIGHUP（compute_tools/src/local_proxy.rs）；只有开了 Neon Auth 的项目才实际用到，但进程本身对所有 compute 常驻。（5）postgres-exporter Prometheus PG 指标；启动参数 --no-collector.database 关掉 pg_database_size_bytes 采集（会因为坏 db 打爆日志），DATA_SOURCE_NAME 走 cloud_admin@postgres 本地 socket。（6）pgbouncer-exporter Prometheus pgbouncer 指标，通过 unix socket 连 pgbouncer。（7）sql-exporter 监听 :9399，跑通用 SQL-based 指标采集（Neon 定义的 collector 集合）。（8）sql-exporter-autoscaling 监听 :9499，给 autoscaler 拉的一份专用指标（LFC hit/miss、working set size 等）。（9）rsyslogd 用 postgres 用户跑（这样能写自己的 pid 文件），配置 /etc/compute_rsyslog.conf，Postgres 通过 /dev/log 软链到 /var/db/postgres/rsyslogpipe 写日志。4 个 sysinit（只在启动阶段跑一次，不常驻）：cgconfigparser 建 cgroup neon-postgres（vm-monitor 靠这个做资源限制），chmod-resize-swap 和 chmod-set-disk-quota 把这两个特权脚本改成 0711（compute_ctl 通过 sudoers 白名单以 root 跑它们，其他人只能执行不能读），rsyslogd-socket-symlink 建 /dev/log → rsyslogpipe 软链。compute_ctl 进程内还嵌着几个 tokio task / 后台线程，它们不是独立进程但常驻：两个 HTTP server（external 3080、internal 3081，http/server.rs），configurator 热变更循环（configurator.rs:13 configurator_main_loop 等 ConfigurationPending / RefreshConfigurationPending），compute-monitor（源码注释里叫 compute-monitor，跟踪 PG 最近活跃时间戳），vm-monitor（libs/vm_monitor，仅当 AUTOSCALING 环境变量置位时才起，只 linux 上跑，需要 cgroup v2，跟 VM autoscaling 协议协商 downscale / 请求 upscale）。数据面调用链：客户端 → proxy → 可选 local_proxy → pgbouncer → postgres（5432）；控制面：cplane → compute_ctl 3080（JWT），Pod 内 neon 扩展 / local_proxy → compute_ctl 3081（无鉴权）；观测：4 个 exporter + rsyslog；日志 stderr 走 virtio-port /dev/virtio-ports/tech.neon.log.0，PG 走 syslog 管道。")
+
 
 # ─────── Slide 6: Compute 状态机 ───────
 p += 1
@@ -1525,6 +2020,7 @@ std("s-comp-sm", "COMPUTE", "compute_ctl 状态机 —— ComputeStatus 全 11 �
       "<span style=\"font-family:" + MONO + "\">/terminate</span> 后重建。",
       fs=10, color=DIM, lh=1.62),
 ], p, morph=True, notes="这是 compute_ctl 的状态机，跟控制面侧 endpoint 的 init/active/suspended/stopped/released 是两套完全不同的东西。枚举定义在 libs/compute_api/src/responses.rs:174-202，实例状态存在 ComputeState.status（compute_tools/src/compute.rs:176），初值 Empty（:215），所有迁移统一走 set_status（:229 内层 / :1178 外层封装），每次迁移都 notify_all 唤醒等在 state_changed 条件变量上的线程，外部通过 GET :3080/status 观测。官方图见 compute_tools/README.md:40-64，一共 11 个状态，但那张图缺了 ConfigurationPending→Init 这条边。11 个状态逐个说：Empty —— 启动时没带 spec，等控制面推；ConfigurationPending —— 收到了配置请求（有 spec），等 configurator 线程处理；Init —— 正在做首次启动（拉 basebackup、写 conf、start_postgres、首次 apply_spec_sql）；Running —— 配好了在跑；Configuration —— 正在应用新 spec；Failed —— 启动或配置失败，compute 快要退出、或者等控制面来终止它；TerminationPendingFast —— 收到终止请求，停 PG 之后额外等 30s 再从 /terminate 返回，留窗口给控制面抓状态和日志；TerminationPendingImmediate —— 同上但不等那 30s，立即返回；Terminated —— PG 已停；RefreshConfigurationPending —— 有人请求刷新 spec；RefreshConfiguration —— 正在应用刷新（互斥，此时再来 signal_refresh_configuration 会返 500）。启动实际有三条路径，官方 README 的图只画了其中两条，漏了最常见的那条。（① CLI 带 spec）compute_ctl 启动时 pspec 已就绪，run()（compute.rs:627）跳过 wait_spec 直接 start_compute，Empty→Init→Running。（② 冷启动等控制面推 —— 这是生产上最常见的路径，也是 README 图里没有的那条边 ConfigurationPending→Init）run() 发现没有 CLI spec，调 wait_spec（compute.rs:752）阻塞在 state_changed 条件变量上，循环条件是 while state.status != ConfigurationPending（:755）；控制面 POST /configure 进来，handler 在 configure.rs:52 把状态置成 ConfigurationPending 并 notify_all，主线程被唤醒拿到 spec 返回，紧接着 run() 在 :680 调 start_compute，start_compute 一进来就在 compute.rs:827 set_status(Init)，于是日志上就是 empty → configuration-pending → init → running，全部挂在同一个 /configure 的 HTTP span 下（configure.rs:44 特意把 tracing span 传给主线程，正是为了让 start_compute 显示为该请求的子 span）。关键点：这条路径上处理 ConfigurationPending 的是主线程而不是 configurator 线程——configurator 线程是在 start_compute 内部才 launch 的（compute.rs:992 launch_configurator，在 start_postgres 之前），所以冷启动的首个 ConfigurationPending 根本没有 configurator 可以抢，只能由 wait_spec 消费；也因此这次不走 Configuration 状态、不走 reconfigure()，而是走完整的冷启动（prepare_pgdata → start_postgres → configure_as_primary）。（③ Running 再收 /configure）compute 已经在跑，configure.rs:37 的门槛放行 Running，状态 Running→ConfigurationPending，这时 configurator 线程已经在跑并阻塞在 configurator.rs:23-29/35-37 上，被唤醒后走 :41-57：置 Configuration → reconfigure() → 成功 Running / 失败 Failed。这条才是「热改配置」路径，只重写 conf + reload + 跑 SQL，不重启 PG。所以同一个 ConfigurationPending 状态有两个可能的消费者，取决于 configurator 线程有没有起来，这就是为什么 ConfigurationPending 既能到 Init（②）又能到 Configuration（③）。Empty 的另外两条出边：有 CLI spec 直接 Init（①）、也可以直接被 /terminate 打到 TerminationPending*（本页图上只画了 Running 的终止边）。Init 失败 → Failed，成功 → Running。Configuration 失败 → Failed，成功 → Running。两个 pending 入口的触发者：（1）ConfigurationPending 由 POST :3080/configure 触发，门槛 Empty | Running（configure.rs:37）；从 Empty 进来是冷启动（主线程 wait_spec 消费，下一跳 Init），从 Running 进来是热改配置（configurator 线程消费，下一跳 Configuration）。控制面下发 spec、PS/SK 拓扑回调（notify-attach/notify-safekeepers）、PS 巡检补偿 job 都走这条路。（2）RefreshConfigurationPending 由 POST :3081/refresh_configuration 触发，门槛 Running | Failed | RefreshConfigurationPending（compute.rs:2048-2058），Init 静默忽略，其余报错。目前唯一还在调这个接口的是 Postgres 自己（pgxn/neon/libpagestore.c hadron_request_configuration_refresh，仅 lakebase_mode 生效），backend 跟 pageserver 交互异常时自触发——同步 pageserver_receive 与异步 pageserver_try_receive 两个收包函数里，对 PQgetCopyData 返回 -1（COPY 流被对端关闭/EOF）、-2（读 COPY 失败）、其它意外值三种断连都会戳 refresh（同步版 :1286/:1293/:1299，异步版 :1367/:1374/:1381），另外 :1169 重连次数超阈值时也会戳；异步版函数末尾 :1390 还有一处兜底，当 refresh 请求本身也失败时把 refresh 升级为 cancel query；控制面侧的所有调用方已全部切到 /configure。RefreshConfiguration 成功回 Running，失败退回 RefreshConfigurationPending 重试（configurator.rs:159/181）。Failed → RefreshConfigurationPending 这条边状态机上允许但实际无法真正恢复：reconfigure()（compute.rs:2089-2176）全程假设 Postgres 在跑——只做重写 conf + pg_reload_conf + apply_spec_sql，从不 start_postgres；PG 没起来时这些操作必然失败并自旋在 RefreshConfigurationPending，或者因为新拉到的 spec 的 pageserver_conninfo 跟当前相同被 configurator.rs:125-138 的去重逻辑直接跳过、漂白成 Running 但 PG 仍然没启动。所以 Failed 的正道恢复路径是控制面识别 Failed 后走 /terminate → 重建（走完整冷启动 start_compute）。TerminationPendingFast 的 30s 不是等 PG 停，是 PG 已停完之后额外的观察窗口（compute.rs:1146-1155 delay_exit），给控制面时间抓状态和日志。")
+
 
 # ─────── Slide 6.5: /configure 之后 compute_ctl 与 PG 都做了什么 ───────
 p += 1
@@ -1638,7 +2134,6 @@ std("s-cfg-seq", "COMPUTE", "POST /configure 之后：compute_ctl 与 PG 的这 
 ], p, notes="这一页把一次真实冷启动（request_id=75f6a4a6-61f7-45b5-9be6-800a6ed19019，07:29:42.374873Z 收到请求，code=200 latency=2068）按 compute_ctl 侧和 Postgres 侧两条泳道拆开讲，所有环节都能在 compute_tools/src/compute.rs、http/routes/configure.rs、spec_apply.rs 里找到对应行号。第一步，HTTP 层。POST :3080/configure 带完整 spec 和 JWT 进来，handler 在 configure.rs:37 先做门槛校验，只有 Empty 或 Running 才放行，否则返回 invalid_status；然后在 :44 把当前 tracing span 存到 state.startup_span，这是故意的，为的是让后面主线程跑的 start_compute 显示成这个 HTTP 请求的子 span（所以日志里是 HTTP{...}:start_compute: 这种嵌套形式）；:46-50 存 spec；:52 set_status(ConfigurationPending) 并 notify_all；最后 :61-79 起一个 spawn_blocking 阻塞等状态变成 Running，如果看到 Failed 就返回错误。所以从控制面视角看，这是一个会挂两秒的同步调用。第二步，主线程接手。主线程本来阻塞在 wait_spec（compute.rs:752）的条件变量上，循环条件是 while state.status != ConfigurationPending（:755），被唤醒后在 :759 打「got spec, continue configuration」，记录 wait_for_spec_ms 并重置 start_time（这样启动耗时不含等 spec 的时间），返回 run() 后在 :680 调 start_compute，start_compute 一进来就在 :827 set_status(Init)。这就是日志上 empty → configuration-pending → init 的来历，处理这个 ConfigurationPending 的是主线程而非 configurator 线程。第三步，PG 启动前的并发准备（compute.rs:848-998）。核心是 prepare_pgdata，在 :873-876 通过 spawn_blocking_child 丢进 pre_tasks JoinSet：内部先 create_pgdata（:1611）清建数据目录，再 write_postgres_conf（:1612）写 postgresql.conf，然后按 mode 决定 LSN —— Primary 会先 check_safekeepers_synced，不满足就 sync_safekeepers_with_retries，打「safekeepers synced at LSN 0/12ACB950」（:1626-1638），Static 用给定 LSN，Replica 用 Lsn(0)；接着 get_basebackup（:1649）从 pageserver 拉 basebackup 铺到 PGDATA，最后 update_pg_hba（:1660）。同期还有 resize_swap（:879-895）和 set_disk_quota（:897-911），这两个必须在 Postgres 起来之前做完，否则 swapoff 会打到启动过程上。另外两件事是丢到后台不等的：tune_pgbouncer（:913-929，源码注释明确写了 so that we don't block the main thread that starts Postgres）和 local_proxy::configure（:931-947），还有 rsyslog / audit log 相关配置（:949-988）。然后 :991 launch_monitor、:992 launch_configurator 起两个后台线程 —— 注意 configurator 是在这里才起来的，比 set Init 晚、比 start_postgres 早，这正是冷启动首个 ConfigurationPending 抢不到 configurator、必须由 wait_spec 消费的原因。:996-998 是 pre_tasks 的 barrier，等所有前置任务收敛。第四步，start_postgres（:1002 → :1789-1837）。lakebase_mode 下拼 DatabricksEnvVars（:1792-1811），否则注入 NEON_AUTH_TOKEN（:1812-1816）；:1819-1824 用 maybe_cgexec 拉起 postgres -D $PGDATA，stderr 走管道；:1825 记 PG_PID；:1828-1829 handle_postgres_logs 把 PG 的 stderr 接进 compute_ctl 的日志流（所以后面所有 [NEON]/[WP]/[NEON_SMGR] 前缀的行其实都是 PG 打的，只是从 compute_ctl 转出来）；:1831 wait_for_postgres 轮询等 postmaster 就绪。PG 侧这一段做的事按日志顺序是：加载 pgxn/neon 扩展并注册 custom resource manager「neon」ID 134、取 vault key；发现 neon.signal 文件，读出 prev LSN 0/12ACB918，打「starting with neon basebackup at LSN 0/12ACB950」；启动 communicator 线程（负责跟 pageserver 的 GetPage 通信）；listen 0.0.0.0:5432、::、以及 unix socket；walproposer 起来后读 neon.safekeepers 拿到 3 个 safekeeper（200100/200101/200103），从 mconf 拿到 generation 3，跟 quorum 2/3 完成投票，elected term 20，epochStartLsn 0/12ACB950，选 safekeeper-0 作为 donor，然后「WAL proposer starts streaming」；最后 ready to accept connections。要点是「可连」和「可写」不是一个时刻：走完 walproposer 选举、拿到 term 并开始 streaming，写入才真正安全。第五步，configure_as_primary（:1010 → :2179-2210）。它先 assert mode == Primary，然后 :2183 判 if !pspec.spec.skip_pg_catalog_updates —— 这就是拓扑回调（butterfly 的 apply_pod_topology_configuration）置 true 时能跳掉的整段。不跳的时候：:2188 用 with_compute_ctl_tmp_override 临时写一个 neon.max_cluster_size=-1 的 override 文件，:2189 pg_reload_conf 让它生效（避免建库建表时撞集群大小配额），:2191 apply_config，出来后 :2197-2205 再写 neon.disable_logical_replication_subscribers=false 并 reload。apply_config（:1972-2040）里的关键是 :2003 调 apply_spec_sql，按 spec_apply.rs 里排好的 phase 顺序跑：预删库 phase、per-database phase、然后是 HandleOtherExtensions / HandleNeonExtension /（lakebase 下还有 HandleDatabricksAuthExtension、AddDatabricksGrants、CreateDatabricksMisc）/ CreateAvailabilityCheck / DropRoles，可选的 FinalizeDropLogicalSubscriptions 和 audit 相关 phase 排在最后（:291-334），phase 循环在 :336-348，最末尾 :358-359 才调 run_bootstrap_template —— 源码注释解释了为什么放在所有 catalog phase 之后：这样 bootstrap 脚本可以依赖 neon 扩展已装好，且 bootstrap 失败不会连带把 extension phase 冲掉，neon.* 监控视图仍然可用。日志里这次是 run_bootstrap_template{template=\"supabase\"}: bootstrap template already applied, skipping，说明幂等表 neon.compute_bootstrap 里已经有记录。apply_config 里还有一件容易看错的事：handle_migrations 是 :2016 tokio::spawn 出去的，源码注释写着 Run migrations separately to not hold up cold starts，所以它不占冷启动时延，日志上出现在 200 返回之后。configure_as_primary 最后 :2207 调 post_apply_config，这一步在 if 外面，即使 skip_pg_catalog_updates=true 也会执行。第六步，收尾。:1020-1038 算三个 metric：start_postgres_ms（从 start_compute 起到 PG 起来）、config_ms（catalog 对账耗时）、total_startup_ms（相对 state.start_time，即 wait_spec 之后重置过的那个）；:1039 set_status(Running)；:1042 打「compute start finished」带 metrics 和 postmaster_pid；:1044 spawn_extension_stats_task（对应日志里的 [NEON_EXT_STAT] 扩展清单）；:1046-1049 autoprewarm；:1050-1052 spawn_lfc_offload_task。set Running 触发条件变量，第一步里那个阻塞的 handler 线程醒来，返回 200，latency=2068。整体上这一页想说明的是：冷启动的 /configure 是重量级同步调用，控制面等的这两秒里包含了跨 safekeeper、pageserver、Postgres 三方的完整编排；而热改配置路径（Running 再收 /configure，走 configurator 线程的 reconfigure）只做其中的 conf 重写 + reload + apply_spec_sql，压根不碰 basebackup 和 start_postgres。")
 
 
-
 # ─────── Slide 7: Bootstrap Template ───────
 p += 1
 std("s-boot", "COMPUTE", "Bootstrap Template 机制（本地 Fork 特性）", [
@@ -1717,6 +2212,7 @@ std("s-basebackup", "COMPUTE", "basebackup：无状态 Compute 的冷启动包",
       fs=12, color=DIM, lh=1.65),
 ], p, notes="basebackup 是无状态 compute 的冷启动包，与 pg_basebackup 无关（代码注释明确吐槽命名）。内容只有非关系型数据：现场合成的 global/pg_control、SLRU(pg_xact clog / pg_multixact offsets+members)、目录骨架+PG_VERSION+pg_filenode.map relmap、two-phase 文件、aux files、PGDATA_SPECIAL_FILES、pg_hba.conf、一个 dummy WAL segment、neon.signal 与 zenith.signal（写 PREV LSN 供 PG 拼 xl_prev）。唯一例外是 unlogged 表的 init fork 会带且同时当 main fork 发一份，因为 PG reinit.c 依赖。生成方式 send_basebackup_tarball，所有内容都是从 layer GetPage 现拼，所以能取任意历史 LSN，这是分支和 PITR 的地基。prev_lsn 限制：PS 只保留最新记录的前驱，非时间线末尾只能填 Lsn(0)。参数 full_backup 才带关系文件（调试导出用）、replica 走 hot standby 变体、gzip 可选。BasebackupCache 在本地磁盘缓存固定参数组合(gzip=true,full=false,replica=false)的成品 tar，后台异步 prepare，加速 scale-to-zero 唤醒。设计意义：启动时间与数据量解耦，包大小只随库表数量和 SLRU 大小增长；关系数据留给 GetPage 按需拉；shard 0 自足所以只问 shard 0。代价是 SLRU 大时包变大。代码：pageserver/src/basebackup.rs:102 send_basebackup_tarball，:788 signal 文件，pageserver/src/basebackup_cache.rs。")
 
+
 # ─────── compute spec ───────
 p += 1
 std("s-compute-spec", "COMPUTE", "ComputeSpec：一份「期望状态」文档，热加载不重启", [
@@ -1772,6 +2268,7 @@ std("s-compute-spec", "COMPUTE", "ComputeSpec：一份「期望状态」文档�
       "• 版本：butterfly 侧 <span style=\"font-family:" + MONO + "\">spec_version/spec_changed_at</span> 注入 JSON（Rust struct 不含，serde 忽略未知字段），数据变更 bump_spec_version + 失效缓存",
       fs=11.5, color=DIM, lh=1.66),
 ], p, notes="ComputeSpec（libs/compute_api/src/spec.rs:35）是声明式期望状态文档。主要字段：cluster（Cluster spec.rs:524：roles/databases/postgresql_conf/settings GenericOption 列表）、delta_operations（DeltaOp DROP/RENAME 等命令式增量）、tenant_id/timeline_id、mode（ComputeMode Primary/Replica/Static(lsn) spec.rs:470）、pageserver_connection_info（分片连接 spec.rs:245，旧字段 pageserver_connstring）、safekeeper_connstrings + safekeepers_generation、storage_auth_token、remote_extensions（RemoteExtSpec）、pgbouncer_settings、local_proxy_config（JWT）、skip_pg_catalog_updates、reconfigure_concurrency、drop_subscriptions_before_start、audit_log_level、autoprewarm/offload_lfc_interval_seconds、suspend_timeout_seconds、bootstrap_template、format_version/operation_uuid/features。compute_ctl 消费：get_config_from_control_plane（compute_tools/src/spec.rs:77）GET {base}/compute/api/v2/computes/{compute_id}/spec。start_compute（compute.rs:793）：前置下载 remote extensions、prepare_pgdata、按需 swap resize/disk quota。prepare_pgdata（compute.rs:1601）写 postgresql.conf → sync safekeepers 取 LSN → 拉 basebackup → 更新 pg_hba/pg_ident。apply_config（compute.rs:1972）跑 apply_spec_sql（spec_apply.rs:40）驱动 ApplySpecPhase 有序枚举（CreatePrivilegedRole...CreateAndAlterRoles...CreateAndAlterDatabases...HandleNeonExtension...DropRoles...），bootstrap_template SQL 最后跑（spec_apply.rs:358 run_bootstrap_template:1381）；handle_migrations（spec_apply.rs:243）异步跑固定 append-only 迁移列表不阻塞冷启动。reconfigure（compute.rs:2089）活时改配置重跑 apply_spec_sql + pg_ctl reload 不重启。skip_pg_catalog_updates 是行为开关：置 true 时 reconfigure（compute.rs:2146）和 configure_as_primary（compute.rs:2183）两个入口都跳过整段 apply_spec_sql——即不做 CREATE/ALTER ROLE、CREATE/DROP DATABASE、extension 对账，也不跑 bootstrap_template（run_bootstrap_template 是 apply_spec_sql 内 spec_apply.rs:358 的唯一调用点，被一并跳过），只剩重写 postgresql.conf + pg_reload_conf。butterfly 的 PS/SK 拓扑回调（apply_pod_topology_configuration）正是靠置 skip_pg_catalog_updates=true 让 /configure 只热更 conf 而不误触 catalog 全量对账和 bootstrap 重放。Butterfly 生成：lib_compute_spec.py:576 get_compute_spec 先 Redis 缓存否则 _build_spec_dict（504）组装，_build_roles（46）从 SCRAM 密文、_build_settings（218）按 ComputeFlavor calculate_pg_settings_for_memory 算 GUC，_build_pageserver_connection_info（465）建分片 map。下发两路：poll = api_compute_spec.py:163 GET spec 直接返回 body（compute_ctl 轮询该 URL）；push = lib_pod_runtime_configurator.py PodRuntimeConfigurator.configure 按 compute status 选 POST /configure（全量阻塞，port 3080，configure.rs:21，状态 ConfigurationPending 阻塞到 Running）或 POST /refresh_configuration（非阻塞，refresh_configuration.rs 只翻状态 RefreshConfigurationPending，configurator.rs 只比对 pageserver_conninfo 变才 reconfigure，port 3081）。configurator_main_loop（configurator.rs:13）监听两种 pending。角色/库变更必须 /configure 才立即生效（lib_compute_configure.py 注释 9-21）。版本：Endpoint.spec_version（models.py:324）emitted 为 spec_version/spec_changed_at 注入 JSON dict（lib_compute_spec.py:539），Rust ComputeSpec 只有 format_version:f32 和 operation_uuid，serde 忽略未知字段（spec.rs:38）；bump_spec_version（lib_endpoint_core.py:31）数据变更时 +1 并 mark_endpoint_spec_changed 失效 Redis 缓存。")
+
 
 # ─────── lakebase_mode ───────
 p += 1
@@ -1863,6 +2360,7 @@ std("s-lfc", "COMPUTE", "LFC：Local File Cache", [
       fs=12.5, color=DIM, lh=1.6),
 ], p, notes="LFC 是 compute 本地磁盘页缓存，读路径 shared_buffers→prefetch→LFC→Pageserver。单文件+共享hash map+LRU，chunk=128页=1MiB。启动O_TRUNC重建不保留状态，靠 prewarm/offload 机制跨 suspend 保温：导出chunk-key状态压缩上传到endpoint storage，下次启动autoprewarm回放。GUC: max_file_cache_size硬上限, file_cache_size_limit软上限可在线调, file_cache_path默认file.cache")
 
+
 # ─────── DDL Forwarding ───────
 p += 1
 std("s-ddl-fwd", "COMPUTE", "DDL Forwarding：库/角色变更实时联动控制面", [
@@ -1915,6 +2413,7 @@ std("s-ddl-fwd", "COMPUTE", "DDL Forwarding：库/角色变更实时联动控制
       fs=12, color=DIM, lh=1.6),
 ], p, notes="DDL Forwarding：用户直接执行 CREATE DATABASE/DROP ROLE 等，pgxn/neon 插件 ProcessUtility_hook 拦截记到 DdlHashTable，子事务用哈希表栈处理 SAVEPOINT（PushTable/MergeTable/PopTable），事务 PRE_COMMIT 时 NeonXactCallback 调 SendDeltasToControlPlane，curl PATCH 到 neon.console_url?endpoint_id=xxx，Bearer per-compute JWT（NEON_CONTROL_PLANE_TOKEN），body {dbs:[],roles:[]} op=set/del + name/old_name/owner/password。控制面 upsert neon_pg_databases/neon_pg_roles 按 (branch_id,name) 幂等。防双写循环：compute_ctl 执行 spec DDL 前 SET neon.forward_ddl=false。token 与 writer 身份绑定，换 writer 递增 writer_generation 使旧 token 失效。已知缺陷：转发后事务仍可能 abort 未处理。源码 pgxn/neon/neon_ddl_handler.c，控制面 handlers/compute_callback/hook_ddl_notify.py。")
 
+
 # ─────── Slide 16: Safekeeper ───────
 p += 1
 std("s-sk1", "SAFEKEEPER", "WAL 服务：Paxos-like 复制", [
@@ -1959,6 +2458,74 @@ std("s-sk1", "SAFEKEEPER", "WAL 服务：Paxos-like 复制", [
       "• <b>形式化验证</b>：safekeeper/spec/ 目录有 TLA+ 规范",
       fs=13, color=DIM, lh=1.75),
 ], p, notes="Paxos 角色映射（docs/rfcs/004-durability.md:162-163）：Compute walproposer = Proposer + Learner（一身二任），Safekeeper = Acceptor，Pageserver 不在共识内，是下游 WAL 消费者。walservice.md:123-125 也明写 proposer=compute、acceptor=safekeeper。Learner 为什么是 Compute：walproposer 从 quorum 收集 flush_lsn 计算 commit_lsn（GetAcknowledgedByQuorumWALPosition walproposer.c:1994），即学到哪段 WAL 已被多数派选定，据此 ACK client commit。Pageserver 虽然也消费 WAL，但它不参与投票、commit_lsn 的推进不等它。Safekeeper Paxos-like 复制：3 副本，quorum=2，term/last_log_term/commit_lsn，TLA+ 规范。数据流路径：稳态是 Compute walproposer 推向 3 台 SK，SK 之间不主动互连；故障恢复时落后的 SK 从对等 SK 拉 WAL，见 safekeeper/src/recovery.rs recovery_main_loop 每 2s（CHECK_INTERVAL_MS=2000）自检，recovery_needed 选 (last_log_term, flush_lsn) 严格领先且 term==last_log_term 的 peer 做 donor，且有活的 compute 在流时 donors 强制置空避免抢；recover() 先 HTTP GET /v1/tenant/{}/timeline/{} 拿 donor term_history，本地 VoteRequest 得自己 term_history，TermHistory::find_highest_common_point 求最高公共点截断本地 WAL、发 ProposerElected；recovery_stream 用 Postgres 物理复制协议连 donor pg 端口发 START_REPLICATION PHYSICAL {lsn} (term='{term}')，注释明确 It will make safekeeper give out not committed WAL (up to flush_lsn)，能追未 committed 尾巴，S3 上 offloaded WAL 只有已 committed 段做不到。S3 offload 服务的是别的目的：timeline_eviction 冷 timeline 驱逐、Pageserver 灾难恢复。pull_timeline.rs 是另一个整表 tar 打包路径，用于新增 SK 成员 / 成员变更 RFC 035，不是正常追赶。")
+
+
+# ─────── Slide 16a: Safekeeper 子系统内部架构 ───────
+p += 1
+std("s-sk-arch", "SAFEKEEPER", "Safekeeper 子系统内部架构", [
+    T("ska-desc", 96, 164, 1088, 28,
+      "一个 <b>pg 协议接入层</b> + 每 timeline 一份的 <b>共识状态机 / 收发通道 / 调度中枢</b> + 本地 WAL 存储与 S3 offload。"
+      "<span style='color:" + FAINT + "'>（源码：safekeeper/src/）</span>",
+      fs=13, color=DIM, lh=1.5),
+    # ── 两个调用方 ──
+    R("ska-comp", 96, 200, 300, 44, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.5)"),
+    T("ska-comp-t", 96, 206, 300, 20, "Compute · walproposer", fs=13.5, fw=800, color=AC, align="center"),
+    T("ska-comp-s", 96, 226, 300, 16, "Proposer + Learner", fs=10, color=FAINT, align="center", ff=MONO),
+    R("ska-ps", 884, 200, 300, 44, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.5)"),
+    T("ska-ps-t", 884, 206, 300, 20, "Pageserver · WAL 消费者", fs=13.5, fw=800, color="#7CB3F4", align="center"),
+    T("ska-ps-s", 884, 226, 300, 16, "不在共识内", fs=10, color=FAINT, align="center", ff=MONO),
+    LN("ska-a1", 246, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("ska-a1l", 96, 252, 200, 18, "① START_WAL_PUSH", fs=10, fw=700, color=AC, ff=MONO),
+    LN("ska-a2", 1034, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("ska-a2l", 984, 252, 200, 18, "② START_REPLICATION", fs=10, fw=700, color="#7CB3F4", align="right", ff=MONO),
+    # ── ① 接入层 ──
+    R("ska-listen-bg", 96, 278, 1088, 52, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("ska-listen-h", 116, 286, 420, 20, "① 接入层 · wal_service", fs=12.5, fw=800, color=AC),
+    T("ska-listen-b", 116, 306, 1048, 20,
+      "pg_listener :5432（+ tenant-only listener）→ SafekeeperPostgresHandler 解析命令："
+      "START_WAL_PUSH / START_REPLICATION / IDENTIFY_SYSTEM / TIMELINE_STATUS；每连接一个 tokio task",
+      fs=11, color=DIM, lh=1.4),
+    # ── ② per-timeline ──
+    R("ska-tl-bg", 96, 342, 1088, 186, fill="rgba(255,158,138,0.05)", stroke="rgba(255,158,138,0.3)"),
+    T("ska-tl-h", 116, 350, 700, 20, "② per-timeline 对象与任务", fs=12.5, fw=800, color=AC2),
+    T("ska-tl-h2", 800, 350, 364, 20, "每个 timeline 一份 · 随 timeline 数线性增长", fs=10.5, color=FAINT, align="right"),
+    R("ska-acc", 116, 378, 330, 100, fill="rgba(255,158,138,0.12)", stroke="rgba(255,158,138,0.45)"),
+    T("ska-acc-t", 116, 386, 330, 20, "WalAcceptor（写）", fs=13, fw=800, color=AC2, align="center"),
+    T("ska-acc-b", 126, 410, 310, 60,
+      "每 compute 连接一个<br>AppendRequest → process_msg<br>1s flush · 断连时 flush", fs=10.5, color=DIM, align="center", lh=1.6),
+    R("ska-skc", 473, 378, 330, 100, fill="rgba(0,229,153,0.14)", stroke="rgba(0,229,153,0.5)"),
+    T("ska-skc-t", 473, 386, 330, 20, "SafeKeeper 共识状态机", fs=13, fw=800, color=AC, align="center"),
+    T("ska-skc-b", 483, 410, 310, 60,
+      "Greeting / VoteRequest /<br>Elected / AppendRequest<br>→ PhysicalStorage 写 + flush", fs=10.5, color=DIM, align="center", lh=1.6),
+    R("ska-snd", 830, 378, 334, 100, fill="rgba(124,179,244,0.12)", stroke="rgba(124,179,244,0.45)"),
+    T("ska-snd-t", 830, 386, 334, 20, "WalSender（读）", fs=13, fw=800, color="#7CB3F4", align="center"),
+    T("ska-snd-b", 840, 410, 314, 60,
+      "Vanilla 或 Interpreted（分片）<br>StreamingWalReader → WalReader<br>本地优先，S3 兜底", fs=10.5, color=DIM, align="center", lh=1.6),
+    LN("ska-x1", 446, 428, 27, 0, stroke=A_NEU, sw=2, thick=9),
+    LN("ska-x2", 830, 428, -27, 0, stroke=A_NEU, sw=2, thick=9),
+    R("ska-mgr-bg", 116, 486, 1048, 34, fill="rgba(200,158,255,0.08)", stroke="rgba(200,158,255,0.3)", radius=8),
+    T("ska-mgr", 130, 494, 1020, 20,
+      "timeline_manager · main_task 300ms 调度中枢：整段备份 → control file 落盘 → WAL 回收 → partial 备份 → 驱逐检查；peer recovery 也由它 spawn",
+      fs=10.5, fw=600, color="#C89EFF", lh=1.4),
+    # ── ③ 持久化 ──
+    R("ska-disk", 96, 544, 534, 62, fill="rgba(255,255,255,0.035)", stroke=EDGE),
+    T("ska-disk-t", 116, 552, 500, 20, "③ 本地磁盘 · timeline_dir", fs=12, fw=800, color=FG),
+    T("ska-disk-b", 116, 574, 500, 24,
+      "WAL segments（末段 .partial）· safekeeper.control(.partial)（crc32c + durable_rename）", fs=10, color=DIM, lh=1.4),
+    R("ska-s3", 650, 544, 534, 62, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("ska-s3-t", 670, 552, 500, 20, "S3 offload", fs=12, fw=800, color=AC),
+    T("ska-s3-b", 670, 574, 500, 24,
+      "整段备份（offloader 选举，仅一台传）· partial 备份 15m · eviction 整 timeline 卸远端", fs=10, color=DIM, lh=1.4),
+    # ── 底部关键点 ──
+    R("ska-note-bg", 96, 618, 1088, 52, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("ska-note-h", 112, 628, 96, 18, "两条路径", fs=11.5, fw=800, color=AC, lh=1.3),
+    T("ska-note", 216, 626, 952, 40,
+      "<b>写</b>：Compute → 接入层 → WalAcceptor → SafeKeeper 共识 → PhysicalStorage → control file　　"
+      "<b>读</b>：Pageserver → WalSender → StreamingWalReader → WalReader（本地优先，S3 兜底）<br>"
+      "<b>恢复</b>：落后 SK 每 2s 扫描 donor，用物理复制协议从对端 SK 拉缺失 WAL（不走 S3）",
+      fs=10.5, color=DIM, lh=1.55),
+], p, notes="Safekeeper 内部架构（源码 safekeeper/src/，全部 file:line 核实）。进程模型：bin/safekeeper.rs:285 是 current_thread 的 tokio main，真正的活在 5 个专用多线程 runtime 上——WAL_SERVICE_RUNTIME(lib.rs:216)、HTTP_RUNTIME(:224)、BROKER_RUNTIME worker_threads(2)(:232)、WAL_BACKUP_RUNTIME(:241)、BACKGROUND_RUNTIME worker_threads(1)(:250)。start_safekeeper(bin/safekeeper.rs:482) 绑 pg listener(:496)、可选 tenant-only listener(:501-517)、http(:523)/https(:528)，建 WalBackup(:539)、GlobalTimelines(:541)，再 spawn 一组长驻任务放进 FuturesUnordered(:549)：wal_service::task_main(:611)、timeline 表 tombstone 清理 24h(:628-639)、hadron 磁盘水位(:651-681)、tenant-only WAL service(:684-700)、http(:702-711)、broker::task_main(:727-735)、metrics(:738-754)；最后 select! 等任一任务失败或信号后 process::exit(:772-784)。全局单例：GlobalTimelines{state: Mutex<GlobalTimelinesState>}(timelines_global_map.rs:146)，state 里存 timelines: HashMap<TenantTimelineId, GlobalMapTimeline>、timeline/tenant tombstones、broker_active_set: Arc<TimelinesSet>、global_rate_limiter、wal_backup(:40-60)。接入层：wal_service.rs:28 task_main accept 循环，:45 issue_connection_id 分配 u32 conn id，:48 spawn handle_socket；handle_socket(:61) set_nodelay(:69)、TimeoutReader 600s(:76)、MeasuredStream 流量计量(:90)、按 Scope::Tenant 选 auth key(:100-108)，建 SafekeeperPostgresHandler(:109) 与 PostgresBackend(:116)，跑 pgbackend.run(:120)。handler.rs:51-65 Commands 枚举 StartWalPush/StartReplication/IdentifySystem/TimelineStatus，:306-351 process_query 分发；:497 is_walproposer_recovery 匹配 appname。per-timeline 对象：Timeline(timeline.rs:445-490) 持 RwLock<SharedState{sk, peers_info, wal_removal_on_hold}>(:304-312)，StateSK 三态 Loaded(Offloaded)/Empty(:147-152)；WalReceivers(receive_wal.rs:41-166) 与 WalSenders(send_wal.rs:51-417) 都是 per-timeline、被 Timeline 用 Arc 持有。写路径：handle_start_wal_push(:221) 写 CopyBothResponse(:233)，建 MSG_QUEUE_SIZE=256 / REPLY_QUEUE_SIZE=16 通道(:188-189,241-242)，read_first_message 允许时建 timeline(:263-265,331-378)，订阅 pageserver_feedback(:268-272)；WalAcceptor(:520) run(:562) 注册 walreceiver，FLUSH_INTERVAL=1s、METRICS_INTERVAL=5s，AppendRequest 转 NoFlushAppendRequest 调 tli.process_msg，断连 flush。共识：SafeKeeper(safekeeper.rs:868-883) 控制所有 WAL 盘写与 control file 更新；消息 Greeting/VoteRequest/Elected/AppendRequest/NoFlushAppendRequest/FlushWAL(:367-374)，process_msg 分发(:937-966)；handle_elected(:1106) 用 TermHistory::find_highest_common_point 校验分歧点(:1142-1173)、初始化首段(:1193-1197)、truncate_wal(:1200)；handle_append_request(:1293) 禁止非顺序写/空洞(:1331-1346)、wal_store.write_wal(:1352)、按需 flush(:1359)、update_commit_lsn(:1365)。读路径：handle_start_replication(send_wal.rs:477) 注册 WalSenderState Vanilla/Interpreted(:487-510)，term 有值用 EndWatch::Flush 否则 Commit(:517-521)，写 CopyBothResponse(:542)，get_walreader(:544)，跑 Vanilla WalSender 或 Interpreted sender/reader(:550-668)；ReplyReader 处理 'h'/'r'/'z' 标签(:988-1046)。分片读：send_interpreted_wal.rs:72 InterpretedWalReader 按 shard 扇出，:257 spawn，:400 run_impl 解码过滤后下发。读底层：wal_reader_stream.rs:37 StreamingWalReader，wal_storage.rs:659 WalReader 本地段优先、S3 兜底，:832 open_wal_file 先 .partial 再 final。磁盘：wal_storage.rs:1-8 段名同 pg_wal、末段 .partial；:296 open_or_create 先写 waltmp 再 durable_rename 成 .partial；:340 段写满时 .partial→final 改名；control_file.rs:23-30 SK_MAGIC=0xcafeceef、SK_FORMAT_VERSION=10、CONTROL_FILE_NAME=safekeeper.control、CHECKSUM_SIZE=4，:195 persist 写 .partial 再 durable_rename；state.rs:26-72 TimelinePersistentState 字段。S3：wal_backup.rs:69 update_task 选 offloader（:206-249 determine_offloader 过滤 local_start_lsn<=backup_lsn 的对端，按 sk_id 偏移排序取唯一一台），:278 WalBackupTask::run 盯 commit_lsn_watch，:404 backup_lsn_range 用 FuturesOrdered 并行传整段；wal_backup_partial.rs:429 main_task 等 flush_lsn 变化最多 partial_backup_timeout，:1-21 文档给出文件名 Segment_Term_Flush_Commit_skNN.partial，:450 MAX_SIMULTANEOUS_SEGMENTS=10。驱逐：timeline_eviction.rs:33 ready_for_eviction、:148 do_eviction、:168 unevict→redownload_partial_segment。恢复：recovery.rs:38 recovery_main，:196 recovery_main_loop 每 CHECK_INTERVAL_MS=2000 探一次，:67 recovery_needed 选严格领先且 term==last_log_term 的 donor，:236 recover 走 HTTP GET /v1/tenant/{t}/timeline/{id} 拿 term_history + VoteRequest + find_highest_common_point + Elected，:347 recovery_stream 用 tokio_postgres 以 appname safekeeper_{id}、ReplicationMode::Physical 发 START_REPLICATION PHYSICAL {lsn} (term='{term}') 起本地 WalAcceptor(conn_id=None)。调度中枢：timeline_manager.rs:235 main_task，REFRESH_INTERVAL=300ms(:93)，每轮 state_snapshot → update_backup → update_is_active → update_control_file_save → update_wal_removal → update_partial_backup → 驱逐检查(:278-370)，:266 若开 peer recovery 则 spawn recovery_main。broker：broker.rs:37 push_loop 每 PUSH_INTERVAL_MSEC=1000 广播 SafekeeperTimelineInfo，:91 pull_loop 订阅，:147 discover_loop，:229 task_main 每 RETRY_INTERVAL_MSEC=1000 重启子任务。HTTP：http/routes.rs:703 make_router，路由含 /v1/status、/v1/utilization、timeline CRUD、pull_timeline、copy、membership、control_file PATCH、checkpoint、digest、term_bump、backup_partial_reset、record_safekeeper_info 等(:736-811)。默认值：lib.rs:59-91 DEFAULT_HEARTBEAT_TIMEOUT=5s、MAX_OFFLOADER_LAG=128MB、PARTIAL_BACKUP_TIMEOUT=15m、CONTROL_FILE_SAVE_INTERVAL=300s、EVICTION_MIN_RESIDENT=partial_backup_timeout、GLOBAL_DISK_CHECK_INTERVAL=60s。")
+
 
 # ─────── Slide 17: LSN 概念 ───────
 p += 1
@@ -2022,6 +2589,7 @@ std("s-lsn", "SAFEKEEPER", "Safekeeper 的 6 个持久 LSN + 1 个派生值", [
       "<span style='color:" + FAINT + "'>（wal_storage.rs:215）</span>",
       fs=11.5, color=DIM, lh=1.6),
 ], p, notes="Safekeeper LSN 全表，对齐 safekeeper/src/state.rs:44-64 的 TimelinePersistentState：6 个持久字段 timeline_start_lsn / local_start_lsn / commit_lsn / backup_lsn / peer_horizon_lsn / remote_consistent_lsn，外加派生的 flush_lsn = max(wal_store.flush_lsn(), timeline_start_lsn)（safekeeper.rs:932），flush_lsn 不落 control file。术语纠正：旧 docs/safekeeper-protocol.md 里的 RestartLSN 就是今天的 peer_horizon_lsn，代码中并无 restart_lsn 字段（basebackup.rs 里的 restart_lsn 是 PG 复制槽的，无关）。同时纠正上一版「RestartLSN 之前的 WAL 可截断」的说法：真正的回收 horizon 见 remove_wal.rs:calc_horizon_lsn = min(cfile_remote_consistent_lsn, cfile_backup_lsn, cfile_commit_lsn, flush_lsn)，若 walsenders_keep_horizon 开启再 min 最慢 walsender 的 laggard_lsn；peer_horizon_lsn 完全不参与。用 cfile_* 持久值而非 inmem 是为了让正常状态不那么意外（源码注释原话）。last_written_lsn 已挪到 s-read-lsn（Compute 侧 LwLSN cache），remote_consistent_lsn 在 s-ps-lsn 也有 PS 视角的覆盖。")
+
 
 # ─────── Safekeeper 成员迁移流程 ───────
 p += 1
@@ -2093,6 +2661,108 @@ std("s-sk-migrate", "SAFEKEEPER", "SK 成员迁移：generation 双阶段递增�
 ], p, notes="SK 成员迁移 9 步（RFC 035 + safekeeper_service.rs:migrate_to_new_sk_set）：generation 双阶段递增：① 起 joint（步骤 1-3，gen n→n+1，CAS 到 storcon PG 的 timelines 表）② 传播 joint（步骤 4-7：PUT membership 到旧集合拿 sync_position、pull_timeline 初始化新 SK、bump_term 当前未实现、PUT membership 到新集合并等 quorum 追齐 sync_position）③ 提交 final（步骤 8-9，gen n+1→n+2，写 new_conf + exclude ops 队列，finish 阶段 PUT final + reconciler 处理 exclude + 通知 cplane）。SK 侧被动规则：看到更高 gen 就切换并持久化 control file；收到更低 gen 消息一律拒绝（防脑裂核心）。步骤 8 之后迁移不可回滚。")
 
 
+# ─────── Slide 9: Pageserver 概述 ───────
+p += 1
+std("s-ps1", "PAGESERVER", "Pageserver — 存储引擎核心", [
+    T("ps-quote", 96, 172, 1088, 46,
+      "&ldquo;Scalable storage backend for the compute nodes&rdquo;　— docs/pageserver.md",
+      fs=15, fw=500, color=FAINT, ff=MONO, lh=1.5),
+    *card("ps-r1", 96, 236, 350, 190,
+          "① 服务读请求", [
+              "响应 Compute 的",
+              "GetPage@LSN(key, lsn)",
+              "",
+              "按需重建任意版本的",
+              "8KB 页面",
+          ], fs=15, headfs=17),
+    *card("ps-r2", 465, 236, 350, 190,
+          "② 摄入 WAL", [
+              "从 Safekeeper 拉取",
+              "streaming replication",
+              "",
+              "解码 → 按 key 分桶",
+              "→ 写 Layer 文件",
+          ], hc=AC2, fs=15, headfs=17),
+    *card("ps-r3", 834, 236, 350, 190,
+          "③ 上传对象存储", [
+              "Layer 文件上传",
+              "S3 / GCS / Azure Blob",
+              "",
+              "S3 是唯一持久化底座",
+              "（无 Pageserver 副本）",
+          ], hc="#7CB3F4", fs=15, headfs=17),
+    T("ps-note", 96, 452, 1088, 110,
+      "<b>关键设计：</b>S3 是所有 timeline 数据唯一的持久化存储底座 —— Pageserver 本身没有副本。"
+      "本地磁盘仅作为 layer 缓存；可配置 Secondary Pageserver 热备加速故障切换，本身不承担持久化。<br>"
+      "独立的容错 WAL 服务（Safekeeper）用于降低写延迟：commit 不需要等 Pageserver 或 S3。",
+      fs=15, color=DIM, lh=1.8),
+], p, notes="Pageserver 三大职责：GetPage@LSN、WAL 摄入、S3 上传。S3 是 timeline 数据唯一持久化底座，本地磁盘仅为 layer 缓存。")
+
+
+# ─────── Slide 8a: Pageserver 子系统内部架构 ───────
+p += 1
+std("s-ps-arch", "PAGESERVER", "Pageserver 子系统内部架构", [
+    T("psa-desc", 96, 164, 1088, 28,
+      "四层结构：<b>4 个专用 tokio runtime</b>（接入）→ <b>TenantManager</b>（全局注册表）→ "
+      "<b>TenantShard</b>（per-tenant 三循环）→ <b>Timeline</b>（per-timeline：LayerMap + walredo + 上传队列）。"
+      "<span style='color:" + FAINT + "'>（源码：pageserver/src/）</span>",
+      fs=13, color=DIM, lh=1.5),
+    # ── 两个调用方 ──
+    R("psa-comp", 96, 200, 300, 44, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.5)"),
+    T("psa-comp-t", 96, 206, 300, 20, "Compute · GetPage@LSN", fs=13.5, fw=800, color=AC, align="center"),
+    T("psa-comp-s", 96, 226, 300, 16, "pagestream v2/v3 · gRPC", fs=10, color=FAINT, align="center", ff=MONO),
+    R("psa-sk", 884, 200, 300, 44, fill="rgba(255,158,138,0.10)", stroke="rgba(255,158,138,0.5)"),
+    T("psa-sk-t", 884, 206, 300, 20, "Safekeeper · 拉 WAL", fs=13.5, fw=800, color=AC2, align="center"),
+    T("psa-sk-s", 884, 226, 300, 16, "physical replication", fs=10, color=FAINT, align="center", ff=MONO),
+    LN("psa-a1", 246, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("psa-a1l", 96, 252, 200, 18, "① 读请求", fs=10, fw=700, color=AC, ff=MONO),
+    LN("psa-a2", 1034, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("psa-a2l", 984, 252, 200, 18, "② WAL 摄入", fs=10, fw=700, color=AC2, align="right", ff=MONO),
+    # ── ① 进程模型 ──
+    R("psa-proc-bg", 96, 278, 1088, 52, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("psa-proc-h", 116, 286, 480, 20, "① 进程模型 · 4 个专用 tokio runtime", fs=12.5, fw=800, color=AC),
+    T("psa-proc-b", 116, 306, 1048, 20,
+      "compute-request（GetPage / basebackup / import）· mgmt-request（HTTP API）· walreceiver（拉 WAL）· background（flush / GC / compaction / 上传）；"
+      "外加 TenantManager 全局注册表 + RemoteStorage client + DeletionQueue",
+      fs=11, color=DIM, lh=1.4),
+    # ── ② 对象层级 ──
+    R("psa-obj-bg", 96, 342, 1088, 186, fill="rgba(255,158,138,0.05)", stroke="rgba(255,158,138,0.3)"),
+    T("psa-obj-h", 116, 350, 700, 20, "② 对象层级与后台任务", fs=12.5, fw=800, color=AC2),
+    T("psa-obj-h2", 800, 350, 364, 20, "Tenant（项目）→ Timeline（分支）二级模型", fs=10.5, color=FAINT, align="right"),
+    R("psa-ts", 116, 378, 330, 132, fill="rgba(255,158,138,0.12)", stroke="rgba(255,158,138,0.45)"),
+    T("psa-ts-t", 116, 386, 330, 20, "TenantShard（per-tenant）", fs=13, fw=800, color=AC2, align="center"),
+    T("psa-ts-b", 126, 412, 310, 90,
+      "compaction_loop · 20s<br>gc_loop · 1h<br>housekeeping · 20s<br>（并发受信号量限流）", fs=10.5, color=DIM, align="center", lh=1.7),
+    LN("psa-x1", 446, 440, 27, 0, stroke=A_NEU, sw=2, thick=9),
+    R("psa-tl", 473, 378, 691, 132, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.45)"),
+    T("psa-tl-t", 473, 386, 691, 20, "Timeline（per-timeline）", fs=13, fw=800, color=AC, align="center"),
+    R("psa-tl1", 489, 410, 210, 92, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.35)", radius=8),
+    T("psa-tl1-t", 489, 418, 210, 18, "LayerMap", fs=11.5, fw=800, color=AC, align="center"),
+    T("psa-tl1-b", 495, 442, 198, 54, "open + frozen<br>L0 / L1<br>LockedLayerManager", fs=9.5, color=DIM, align="center", lh=1.5),
+    R("psa-tl2", 713, 410, 210, 92, fill="rgba(200,158,255,0.10)", stroke="rgba(200,158,255,0.35)", radius=8),
+    T("psa-tl2-t", 713, 418, 210, 18, "walredo_mgr", fs=11.5, fw=800, color="#C89EFF", align="center"),
+    T("psa-tl2-b", 719, 442, 198, 54, "seccomp 沙箱<br>回放 redo<br>重建页面", fs=9.5, color=DIM, align="center", lh=1.5),
+    R("psa-tl3", 937, 410, 211, 92, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.35)", radius=8),
+    T("psa-tl3-t", 937, 418, 211, 18, "RemoteTimelineClient", fs=11.5, fw=800, color="#7CB3F4", align="center"),
+    T("psa-tl3-b", 943, 442, 199, 54, "上传队列<br>index_part.json<br>→ S3", fs=9.5, color=DIM, align="center", lh=1.5),
+    # ── ③ 存储 ──
+    R("psa-store1", 96, 544, 534, 62, fill="rgba(255,255,255,0.035)", stroke=EDGE),
+    T("psa-store1-t", 116, 552, 500, 20, "③ 本地磁盘", fs=12, fw=800, color=FG),
+    T("psa-store1-b", 116, 574, 500, 24,
+      "tenants/&lt;id&gt;/timelines/&lt;id&gt;/：layer 文件 + ephemeral 临时文件 · config-v1 · heatmap-v1.json", fs=10, color=DIM, lh=1.4),
+    R("psa-store2", 650, 544, 534, 62, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("psa-store2-t", 670, 552, 500, 20, "S3（唯一持久化底座）", fs=12, fw=800, color=AC),
+    T("psa-store2-b", 670, 574, 500, 24,
+      "layer 文件 + index_part.json（权威清单，无需 LIST）· tenant manifest · initdb archive", fs=10, color=DIM, lh=1.4),
+    # ── 底部两条路径 ──
+    R("psa-note-bg", 96, 618, 1088, 52, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("psa-note-h", 112, 628, 96, 18, "两条路径", fs=11.5, fw=800, color=AC, lh=1.3),
+    T("psa-note", 216, 626, 952, 40,
+      "<b>读</b>：Compute → page_service → Timeline::get → LayerFringe 遍历 LayerMap → Layer / InMemoryLayer → walredo → 页<br>"
+      "<b>写</b>：SK → WalReceiver → WalIngest → commit → put_batch → InMemoryLayer → freeze → flush_loop → DeltaLayer → 上传队列 → S3",
+      fs=10.5, color=DIM, lh=1.55),
+], p, notes="Pageserver 内部架构（源码 pageserver/src/，file:line 核实）。启动：bin/pageserver.rs:76 main → initialize_config(:227) 读 pageserver.toml + identity.toml → 建 tenants/ 目录并 syncfs(:171-204) → virtual_file::init(:208) → page_cache::init(:219) → start_pageserver(:337)；后者认领 pageserver.pid(:386-394)、早绑 HTTP/HTTPS/pg/gRPC 监听(:402-435)、连 storage broker(:439)、建 remote storage client(:528)、feature resolver(:530)、deletion queue(:537)、mgr::init + init_tenant_mgr(:583-597)，再 spawn secondary 任务(:686)、disk-usage eviction(:699)、HTTP 路由(:709-768)、metrics(:771)、consumption metrics(:805)、page service(:830)、gRPC page service(:856-865)，最后阻塞等 shutdown 信号(:868-897)。4 个 tokio runtime（task_mgr.rs，pageserver_runtime! 宏 :197-215；设 NEON_PAGESERVER_USE_ONE_RUNTIME 则合并为 1，:153-186）：COMPUTE_REQUEST_RUNTIME 'compute request worker'(:217，GetPage/basebackup/import/layer 下载)、MGMT_REQUEST_RUNTIME 'mgmt request worker'(:218，HTTP API)、WALRECEIVER_RUNTIME 'walreceiver worker'(:219，WAL receiver + broker 更新)、BACKGROUND_RUNTIME 'background op worker'(:220，flush/GC/compaction/上传/初始加载)；worker 数取 TOKIO_WORKER_THREADS 否则 max(2,num_cpus)(:104-116)，栈 4MiB(:147-151)。任务注册表全局 TASKS: Mutex<HashMap<u64, Arc<PageServerTask>>>(task_mgr.rs:238)，TaskKind 枚举穷举所有任务类(:268-388)。attach 协议：controller_upcall_client.rs 实现 re-attach，mgr::init_load_generations(tenant/mgr.rs:340) 调 StorageControllerUpcallClient::re_attach 得知本 PS 该 attach 哪些 tenant-shard、什么 generation/mode(:352-366)；TenantStartupMode 区分 Attached/Secondary(mgr.rs:131)；upsert_location(mgr.rs:842) 是运行时 attach/detach 接口。全局注册表 TenantManager(tenant/mgr.rs:301)：tenants: RwLock<TenantsMap>，TenantsMap 把 TenantShardId 映射到 TenantSlot(Attached(Arc<TenantShard>)/Secondary(InProgress))(:71-102)；TenantSharedResources(tenant.rs:163) 持 broker_client/remote_storage/deletion_queue_client/l0_flush_global_state/basebackup_cache/feature_resolver。per-tenant：TenantShard(tenant.rs:261) 持 state watch、tenant_conf ArcSwap、generation、timelines: Mutex<HashMap<TimelineId, Arc<Timeline>>>、timelines_creating/offloaded/importing、remote_tenant_manifest、gc_cs、walredo_mgr(:330)、remote_storage、eviction_task_tenant_state、compaction_circuit_breaker、l0_compaction_trigger、cancel；生命周期 TenantState Attaching→Activating→Active/Broken/Stopping(tenant.rs:3426,3455-3506)。activate(tenant.rs:3446) → tasks::start_background_loops(tenant/tasks.rs:135) 在 BACKGROUND_RUNTIME 上 spawn 三个 per-tenant 循环：compaction_loop(TaskKind::Compaction，tasks.rs:138-162，loop :216)、gc_loop(TaskKind::GarbageCollector，:164-187，loop :343)、tenant_housekeeping_loop(TaskKind::TenantHousekeeping，:189-212，loop :427，冻结空闲 ephemeral layer、静默空闲 walredo)；两个信号量 CONCURRENT_BACKGROUND_TASKS(:32) 与 CONCURRENT_L0_COMPACTION_TASKS(:65) 限流，acquire_concurrency_permit(:109-132)。per-timeline：Timeline(tenant/timeline.rs:206) 持 layers: LockedLayerManager(:245)、walredo_mgr(:254)、remote_client: Arc<RemoteTimelineClient>(:258)、last_record_lsn: SeqWait(:273)、disk_consistent_lsn(:282)、ancestor(:286)、write_lock(:308)、flush_loop 通道(:311-321)、gc_info(:333)、walreceiver(:361)、gate/cancel、compaction_lock/gc_lock、pagestream_throttle(:418)；Timeline::activate(:2306) spawn：初始逻辑大小(:3784)、WAL receiver(launch_wal_receiver :2317/:3495)、eviction task(:2319，tenant/timeline/eviction_task.rs:50-77)、layer flush loop(maybe_spawn_flush_loop :3370-3420，flush_loop :4928)、on-demand 逻辑大小(:3970)、on-demand layer 下载(:7183)；任务清单注释在 :2322-2351。读路径：page_service::spawn(page_service.rs:137) 在 COMPUTE_REQUEST_RUNTIME 上起 libpq_listener_main(:216)，每连接 spawn page_service_conn_main(:261，TaskKind::PageRequestHandler)，:321 set TCP_NODELAY、:343 10 分钟读超时，建 PageServerHandler(:372) 跑 PostgresBackend(:386)；协议 PagestreamProtocolVersion V2/V3(:3011-3017)，命令串 pagestream_v2/v3(:2832-2873)，process_query(:3150) 分发到 handle_pagerequests(:1794)，有 serial(:1910) 与 pipelined(:1979) 两种执行策略；前端消息 PagestreamFeMessage::parse(:1010) 含 Exists/Nblocks/DbSize/GetSlruSegment/GetPage/Test(:1013-1272)；另有 gRPC GrpcPageServiceHandler(:3300) spawn(:3324)，Tonic 带 gzip/zstd、HTTP/2 keepalive、max_concurrent_streams=256(:3356-3399)。重建：Timeline::get(tenant/timeline.rs:1227) → get_vectored_impl(:1438) → get_vectored_init_fringe(:4627) 在 LayerManagerLockHolder::GetPage 下建 LayerFringe → get_vectored_reconstruct_data_timeline(:4670) 深度优先：从 LayerFringe 弹最高 LSN 层(storage_layer.rs:852-884)，调 ReadableLayer::get_values_reconstruct_data(:964)，按 layer map 搜索补 fringe 直到 keyspace 完整；ReadableLayer = PersistentLayer(Layer) | InMemoryLayer(storage_layer.rs:830-833)；delta/image 层返回 NeonWalRecord，Postgres redo 记录经 walredo 回放(timeline.rs:1550-1572,1699) 得到页。写路径：walingest.rs:6 文档 WAL receiver → wal_decoder → WalIngest → Repository；WalReceiver::start(tenant/timeline/walreceiver.rs:69) 在 WALRECEIVER_RUNTIME spawn wal_connection_manager(:82-118)，connection_manager_loop_step(connection_manager.rs:56) 订阅 storage broker 的 SK 更新(:102,319) 选 SK；handle_walreceiver_connection(walreceiver_connection.rs:116) 用 tokio_postgres 开物理复制连接(:145-161)、发 START_REPLICATION PHYSICAL <lsn>(:273)、旁挂 poller(:186-224)；流式循环读 RawInterpretedWalRecords(:337) 解码(:346)、可选连续性校验(:358-396)，timeline.begin_modification(:412)；WalIngest::new(walingest.rs:199) 载 checkpoint，ingest_record(:234) 处理元数据记录(:260-360)、modification.ingest_batch(:362-364)、更新 checkpoint(:366-371)；DatadirModification::commit(pgdatadir_mapping.rs:2867) 取 tline.writer(:2868)、合批、writer.put_batch(:2917)/delete_batch(:2921)/finish_write(:2934)、更新逻辑大小(:2938)；TimelineWriter::put_batch(tenant/timeline.rs:7880) 查 get_open_layer_action(:7830)，超 checkpoint 距离就 roll_layer(:7787)，否则写 open InMemoryLayer；InMemoryLayer::put_batch(inmemory_layer.rs:571) 把原始字节 append 到 EphemeralFile(:588) 并更新内存索引 RwLock<BTreeMap<CompactKey, VecMap<Lsn, IndexEntry>>>(:78)；freeze 由 LayerManager::try_freeze_in_memory_layer(timeline/layer_manager.rs:441) 把 open 挪到 frozen_layers；flush_loop(tenant/timeline.rs:4928) 把 frozen 写成 DeltaLayer(finish_flush_l0_layer，layer_manager.rs:505)，随后入远端上传队列。远端：RemoteTimelineClient(tenant/remote_timeline_client.rs:349) 跑在 BACKGROUND_RUNTIME(:396-401)，持 upload_queue: Mutex<UploadQueue>(:358)、storage_impl(:362)、deletion_queue_client(:364)；UploadQueue 三态 Uninitialized/Initialized/Stopped(upload_queue.rs:32-35)，UploadQueueInitialized 跟踪 dirty/clean IndexPart、in-progress、visible_remote_consistent_lsn(:55-86)；调度 API schedule_layer_file_upload(:1269)/schedule_index_upload(:1042)/schedule_barrier(:1543) 等；远端内容：index_part.json 的 IndexPart(remote_timeline_client/index.rs:29) 含 layer_metadata(:51)、disk_consistent_lsn(:56)、metadata: TimelineMetadata(:66)、deleted_at(:36)，是全部远端文件的权威清单、无需 S3 LIST(remote_timeline_client.rs:45-54)；另有 tenant manifest(manifest.rs:12)、layer 文件(remote_layer_path :2688)、initdb archive(:2721)、heatmap(:2751)。本地磁盘(config.rs:275-349)：<workdir>/tenants/(tenants_path :280)、deletion/(:284)、metadata.json(:288)、basebackup_cache/(:292)、pageserver.pid/toml、identity.toml；tenants/<tenant_shard_id>/(tenant_path :313) 含 config-v1(tenant_location_config_path :319)、heatmap-v1.json(tenant_heatmap_path :327)、timelines/(:332)/<timeline_id>/(timeline_path :337) 存 layer 文件与 ephemeral 临时文件；STORAGE_FORMAT_VERSION=3(lib.rs:53)。存储层：Layer = Arc<LayerInner>(storage_layer/layer.rs:93) 带下载/驱逐状态机(:71-85)，LayerKind = Delta | Image(:1875-1878)；DeltaLayer(delta_layer.rs:213)/ImageLayer(image_layer.rs:148)、DeltaLayerWriter(:655)/ImageLayerWriter(:1051)；InMemoryLayer(inmemory_layer.rs:47) 由 EphemeralFile(ephemeral_file.rs:30) 支撑，全局脏字节记账 GLOBAL_RESOURCES(:248,352)；LayerMap(tenant/layer_map.rs:71) 持 open_layer/next_open_layer_at(:77-78)、frozen_layers: VecDeque(:89)、historic 覆盖索引(:92)、l0_delta_layers(:98)，搜索 LayerMap::search(:448)；LayerManager = Open(OpenLayerManager{layer_map, layer_fmgr}) | Closed(timeline/layer_manager.rs:177-186,344-347)；不变量：每个 LayerMap desc 必有 LayerFileManager 条目(timeline.rs:229-244)。GC/Compaction/Eviction：compaction_loop(tasks.rs:216) 驱动 Timeline::compact(tenant/timeline.rs:2199)，L0 compaction 单独一遍(tasks.rs:89-92)，image 物化 create_image_layers(:5856)；gc_loop(tasks.rs:343) → Timeline::gc(:6785)，GcInfo(timeline.rs:483-500)/applied_gc_cutoff_lsn(:327)/gc_lock(:415)；per-timeline eviction_task(eviction_task.rs:79) 与全局 disk-usage eviction(disk_usage_eviction_task.rs:167，:357 迭代、:790 收集候选、:73 EvictionOrder)。secondary：SecondaryTenant(tenant/secondary.rs:90)、spawn_tasks(:374) 起 downloader(:390) 与 heatmap uploader(:410)，downloader 只下 heatmap 列出的层、从不写 WAL。walredo：PostgresRedoManager(walredo.rs:55) 用 ProcessOnceCell(:106) 合并懒启动，request_redo(:173) 按 RedoAttemptType(:141-155 ReadPage/LegacyCompaction/GcCompaction) 分派；WalRedoProcess::launch(walredo/process.rs:58) 起 postgres --wal-redo --tenant-shard-id <id>(:70-99)，env_clear，子进程在被信任前必须关掉除 stdin/stdout/stderr 外所有 FD 并套 seccomp 沙箱(:90-97)。HTTP：http/routes.rs:3992 make_router，跑在 MGMT_REQUEST_RUNTIME(bin/pageserver.rs:734-765)，路由含 /v1/status、/v1/tenant CRUD、location_config、timeline CRUD、compact/do_gc/checkpoint/detach_ancestor/offload、layer 下载与驱逐、block_gc/unblock_gc、heatmap_upload、import_basebackup、disk_usage_eviction/run、deletion_queue/flush、utilization、feature_flag 等(:4025-4275)。")
+
 
 # ─────── Pageserver LSN 术语表 ───────
 p += 1
@@ -2134,42 +2804,6 @@ std("s-ps-lsn", "PAGESERVER", "Pageserver 侧关键 LSN（timeline.rs / models.r
     )],
 ], p, notes="Pageserver LSN 术语表（从新到老）：last_record_lsn → prev_record_lsn → disk_consistent_lsn → remote_consistent_lsn(projected) → remote_consistent_lsn_visible（广播给 SK，SK 据此回收 WAL）→ min_readable_lsn = max(planned_gc_cutoff, applied_gc_cutoff)（创建分支/临时 endpoint 看这个）→ applied_gc_cutoff_lsn（GC 实际清理位置，≤ min_readable_lsn，因为 min_readable_lsn 是它和 planned 的 max）→ initdb_lsn（根 timeline 起点，永不变）。源码 timeline.rs:260-343、models.rs:1546-1579、routes.rs:470-501。")
 
-# ─────── Slide 9: Pageserver 概述 ───────
-p += 1
-std("s-ps1", "PAGESERVER", "Pageserver — 存储引擎核心", [
-    T("ps-quote", 96, 172, 1088, 46,
-      "&ldquo;Scalable storage backend for the compute nodes&rdquo;　— docs/pageserver.md",
-      fs=15, fw=500, color=FAINT, ff=MONO, lh=1.5),
-    *card("ps-r1", 96, 236, 350, 190,
-          "① 服务读请求", [
-              "响应 Compute 的",
-              "GetPage@LSN(key, lsn)",
-              "",
-              "按需重建任意版本的",
-              "8KB 页面",
-          ], fs=15, headfs=17),
-    *card("ps-r2", 465, 236, 350, 190,
-          "② 摄入 WAL", [
-              "从 Safekeeper 拉取",
-              "streaming replication",
-              "",
-              "解码 → 按 key 分桶",
-              "→ 写 Layer 文件",
-          ], hc=AC2, fs=15, headfs=17),
-    *card("ps-r3", 834, 236, 350, 190,
-          "③ 上传对象存储", [
-              "Layer 文件上传",
-              "S3 / GCS / Azure Blob",
-              "",
-              "S3 是唯一持久化底座",
-              "（无 Pageserver 副本）",
-          ], hc="#7CB3F4", fs=15, headfs=17),
-    T("ps-note", 96, 452, 1088, 110,
-      "<b>关键设计：</b>S3 是所有 timeline 数据唯一的持久化存储底座 —— Pageserver 本身没有副本。"
-      "本地磁盘仅作为 layer 缓存；可配置 Secondary Pageserver 热备加速故障切换，本身不承担持久化。<br>"
-      "独立的容错 WAL 服务（Safekeeper）用于降低写延迟：commit 不需要等 Pageserver 或 S3。",
-      fs=15, color=DIM, lh=1.8),
-], p, notes="Pageserver 三大职责：GetPage@LSN、WAL 摄入、S3 上传。S3 是 timeline 数据唯一持久化底座，本地磁盘仅为 layer 缓存。")
 
 # ─────── Slide 9: Tenant / Timeline 模型 ───────
 p += 1
@@ -2211,6 +2845,83 @@ std("s-ps-model", "PAGESERVER", "多租户模型：Tenant / Timeline", [
               "　彻底避免 split-brain 覆盖（无需 STONITH）",
           ], hc="#7CB3F4", fs=13, headfs=16),
 ], p, notes="Tenant/Timeline 二级模型：本地/远端目录路径的第一段实际是 tenant_shard_id（pageserver/src/config.rs:313 tenant_path、:337 timeline_path），不是裸 tenant_id。TenantShardId Display（libs/utils/src/shard.rs:206-215）：shard_count==0 时退化成裸 tenant_id.fmt 无后缀，这是 RFC 031（docs/rfcs/031-sharding-static.md:254）标注的\"backward compatibility\"特例；count>=1 时格式是 <tenant_id>-<shard_slug>，4 位 hex（shard_number, shard_count 各 2 位），RFC 031 举的例子就是\"a single-shard tenant's prefix will be 0001\"，即建议新建 tenant 从一开始就显式传 count=1，不要用 count=0 的兼容路径，方便后续 shard split 时前缀格式统一不需要隐式迁移。storage_controller do_tenant_create 的 ShardParameters::default() 是 count=0（libs/pageserver_api/src/models.rs:493-499），但这只是字面默认值，不代表推荐用法。Baidu 内部 butterfly 平台的 sdk_sc_tenant.py:46-59 每次创建 tenant 都显式传 shard_parameters.count=1、stripe_size=32768，与 RFC 建议一致，因此实际创建出来的 tenant_shard_id 一开始就带 -0001 后缀。TenantId 与 TimelineId 都是 128-bit 随机数，序列化为 32 位十六进制字符串（libs/utils/src/id.rs:24 struct Id([u8; 16]); TimelineId/TenantId 都是对它的 newtype 包装，id.rs:272 TimelineId(Id)）。Key 18 字节打平。Layer 文件名格式 key_start-key_end__lsn_start-lsn_end-generation，Generation 是 u32 序列化为 8 位 hex 后缀（libs/utils/src/generation.rs GenerationFileSuffix Display: write!(f, \"-{g:08x}\")），拼在 key_range/lsn_range 之后，通过 remote_timeline_client.rs 的 generation.get_suffix() 构造 S3 object key。示例 000000000000000000000000000000000000-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF__00000000014E8F20-00000000014E8F99-00000001 中末尾 -00000001 即 generation=1")
+
+
+# ─────── Slide 10: 存储引擎总览（LSM-like）───────
+p += 1
+std("s-ps-lsm", "PAGESERVER", "Pageserver 存储引擎：LSM-like 分层总览", [
+    T("psl-desc", 96, 164, 1088, 28,
+      "Pageserver 的存储引擎是<b>定制的 LSM 变体</b>：append-only 写、文件不可变、按 (Key, LSN) 二维分层。"
+      "这里是<b>整体流水线 + 设计动机</b>；机制细节见后续「Layer 文件」「InMemoryLayer」「Compaction &amp; GC」几页。",
+      fs=12.5, color=DIM, lh=1.5),
+
+    # ── 流水线：MemTable → L0 → L1 → S3 ──
+    R("psl-b1", 96, 206, 246, 116, fill="rgba(255,158,138,0.10)", stroke="rgba(255,158,138,0.45)"),
+    T("psl-b1t", 96, 214, 246, 22, "① MemTable", fs=14, fw=800, color=AC2, align="center"),
+    T("psl-b1s", 96, 238, 246, 16, "InMemoryLayer", fs=10, fw=600, color=FAINT, align="center", ff=MONO),
+    T("psl-b1b", 106, 260, 226, 54, "checkpoint_distance<br>256MB 触发<br>可溢出临时文件", fs=10, color=DIM, align="center", lh=1.5),
+
+    LN("psl-a1", 346, 264, 36, 0, thick=9),
+    T("psl-a1l", 324, 278, 80, 16, "flush", fs=9.5, fw=700, color=FAINT, align="center", ff=MONO),
+
+    R("psl-b2", 386, 206, 246, 116, fill="rgba(255,158,138,0.10)", stroke="rgba(255,158,138,0.45)"),
+    T("psl-b2t", 386, 214, 246, 22, "② L0 delta", fs=14, fw=800, color=AC2, align="center"),
+    T("psl-b2s", 386, 238, 246, 16, "全 key 范围", fs=10, fw=600, color=FAINT, align="center"),
+    T("psl-b2b", 396, 260, 226, 54, "LSN 递增<br>互相重叠<br>读放大最高", fs=10, color=DIM, align="center", lh=1.5),
+
+    LN("psl-a2", 636, 264, 36, 0, thick=9),
+    T("psl-a2l", 604, 278, 100, 16, "compaction", fs=9.5, fw=700, color=FAINT, align="center", ff=MONO),
+
+    R("psl-b3", 676, 206, 246, 116, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.45)"),
+    T("psl-b3t", 676, 214, 246, 22, "③ L1 delta + image", fs=14, fw=800, color=AC, align="center"),
+    T("psl-b3s", 676, 238, 246, 16, "按 key 切分", fs=10, fw=600, color=FAINT, align="center"),
+    T("psl-b3b", 686, 260, 226, 54, "互不重叠<br>image 物化快照<br>读放大低", fs=10, color=DIM, align="center", lh=1.5),
+
+    LN("psl-a3", 926, 264, 36, 0, thick=9),
+    T("psl-a3l", 904, 278, 80, 16, "upload", fs=9.5, fw=700, color=FAINT, align="center", ff=MONO),
+
+    R("psl-b4", 966, 206, 218, 116, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.45)"),
+    T("psl-b4t", 966, 214, 218, 22, "④ S3", fs=14, fw=800, color="#7CB3F4", align="center"),
+    T("psl-b4s", 966, 238, 218, 16, "唯一持久化底座", fs=10, fw=600, color=FAINT, align="center"),
+    T("psl-b4b", 976, 260, 198, 54, "layer 文件<br>+ index_part.json", fs=10, color=DIM, align="center", lh=1.5),
+
+    # ── 两张对照卡 ──
+    *card("psl-c1", 96, 344, 530, 262, "为什么是 LSM-like，不是 B-tree", [
+        ("B-tree：原地改页 → 文件必须可变、随机写", AC2, 700),
+        "对象存储没有原地改、也没有便宜的 mv",
+        "",
+        ("LSM-like：新文件不可变，旧文件只删不改", AC, 700),
+        "→ 写完即整文件 PUT 上 S3，天然适配对象存储",
+        "→ CoW 分支零拷贝：不可变层按 (Key, LSN) 共享历史",
+        "→ GetPage@LSN / PITR：多版本内建在键空间里",
+        "",
+        ("RFC 014《Why LSM trees?》：immutable files fits well with storing on S3", FAINT),
+    ], hc=AC, fs=11.5),
+
+    *card("psl-c2", 656, 344, 528, 262, "读放大：从哪来、怎么压", [
+        ("来源：L0 覆盖全 key 范围且互相重叠", AC2, 700),
+        "读一个页要翻遍读 LSN 以下的每一层 L0",
+        "",
+        ("① L0→L1 compaction", AC, 700),
+        "merge-sort 成按 key 切分、互不重叠的 L1（128MB）",
+        ("② L1 image compaction", AC, 700),
+        "物化某 LSN 的页快照，读遇到 image 层即停止回溯",
+        ("③ GC", AC, 700),
+        "image 以下、超出 PITR 窗口的层可回收",
+        "",
+        ("触发：20s 轮询 + L0≥10 提前唤醒；image 需 ≥3 个 delta", FAINT),
+    ], hc=AC2, fs=11.5),
+
+    # ── 底部一句话 ──
+    R("psl-note-bg", 96, 616, 1088, 56, fill="rgba(0,229,153,0.08)", stroke="rgba(0,229,153,0.35)", radius=10),
+    T("psl-note-h", 112, 628, 96, 18, "一句话", fs=11.5, fw=800, color=AC, lh=1.3),
+    T("psl-note", 216, 624, 952, 44,
+      "<b>不可变文件</b>是整条设计的主线：一次性买到「S3 直传 + CoW 分支 + PITR 多版本」，"
+      "代价是读放大，用 <b>compaction 重排 + image 物化</b>来还。<br>"
+      "每个 timeline 一棵树，且是<b>非标准 LSM</b>：只有 L0/L1 两级、值存 <b>WAL redo 记录</b>而非 KV、键是 (Key, LSN) 二维。",
+      fs=11, color=DIM, lh=1.5),
+], p)
+
 
 # ─────── Slide 10: Layer 文件 ───────
 p += 1
@@ -2258,6 +2969,7 @@ std("s-ps-layer", "PAGESERVER", "Layer 文件：不可变的两级 LSM", [
       "• 文件<b>不可变、直接上传 S3</b>；本地磁盘只是缓存，冷分层天然到对象存储，不做 SSTable 本地长期驻留",
       fs=11, color=DIM, lh=1.6),
 ], p, notes="Layer 文件：Image（快照）+ Delta（增量），L0（全 key 空间）→ L1（按 key 切分），只有两级 LSM。补充：L1 内同一 key range 上 delta 可纵向叠 3~10 层（count_deltas 注释 layer_map.rs:843-845 'in practice between 3 and 10'），达 image_creation_threshold（默认 3）就物化 image 压平下面的 delta 栈，但层级标签仍只有 L0/L1 两个值，不存在 L2/L3。is_l0 判定见 layer_map.rs:793 is_delta_layer && key_range==Key::MIN..Key::MAX。compact_level0（compaction.rs:1839）doc 明确 'compact and reshuffle them as Level 1 files'，L0 进 L1 出一跳到底。数据变多的消化方式：L1 delta 按 key 切分变多（横向变宽 128MB 一份 compaction_target_size），以及 image 物化压平 delta 栈，都不是加深层数。")
+
 
 # ─────── Slide 10a: InMemoryLayer = pageserver 的 MemTable ───────
 p += 1
@@ -2317,6 +3029,7 @@ std("s-ps-inmem", "PAGESERVER", "写入缓冲 InMemoryLayer：pageserver 的 Mem
           ], hc=AC, fs=12, headfs=15),
 ], p, notes="pageserver 有 MemTable 等价物，就叫 InMemoryLayer（pageserver/src/tenant/storage_layer/inmemory_layer.rs）。层级对应：LSM active memtable ↔ LayerMap.open_layer:Option<Arc<InMemoryLayer>>（layer_manager.rs:395-429 get_layer_for_write，首条 WAL 到达时创建）；LSM immutable memtable ↔ LayerMap.frozen_layers:VecDeque<Arc<InMemoryLayer>>（layer_manager.rs:451-464 try_freeze_in_memory_layer：open_layer.freeze(end_lsn) 后 push_back 到 frozen_layers、清空 open_layer、next_open_layer_at=end_lsn）；memtable flush→SSTable ↔ flush_frozen_layer→create_delta_layer 生成 L0 delta（timeline.rs:5000 取 frozen_layers.front()，5158-5255 flush_frozen_layer）。关键差异：inmemory_layer.rs:1-5 注释明说 'The in-memory part of the name is a bit misleading: the actual page versions are held in an ephemeral file, not in memory. The metadata for each page version, i.e. its position in the file, is kept in memory'——真正在内存的只是 index:RwLock<BTreeMap<CompactKey,VecMap<Lsn,IndexEntry>>>（inmemory_layer.rs:70），IndexEntry 是 ephemeral file 内偏移；文件 append-only（EphemeralFile，走 page_cache）。freeze 触发：open_layer.tick()/checkpoint_distance（timeline.rs:2128-2164）。读路径优先级：ReadPathLayerId::InMemoryLayer 先查 open_layer+frozen_layers 再查磁盘（timeline.rs:658-697,2603-2608），与 LSM 先 memtable 后 SST 一致。所以严格说 pageserver 是三级：open_layer(可写,非纯内存)→frozen_layers(不可变待flush)→磁盘 L0/L1（真正的两级 LSM）。")
 
+
 # ─────── Slide 10b: 从文件名区分 L0 / L1（S3 视角）───────
 p += 1
 std("s-ps-layer-name", "PAGESERVER", "S3 上怎么区分 L0 / L1：光看文件名就够了", [
@@ -2362,6 +3075,7 @@ std("s-ps-layer-name", "PAGESERVER", "S3 上怎么区分 L0 / L1：光看文件�
           ], hc=AC, fs=12.5, headfs=15),
 ], p, notes="is_l0 判定：pageserver/src/tenant/layer_map.rs:792-795 pub fn is_l0(key_range,is_delta_layer){is_delta_layer && key_range==&(Key::MIN..Key::MAX)}。Key 18字节：libs/pageserver_api/src/key.rs:36 KEY_SIZE=18；Key::MAX/MIN定义:351-358/343-350，各字段取类型MAX/0；from_hex(:361)断言长度必须36 hex。文件名→字段单一数据源：DeltaLayerName::parse_str(layer_name.rs:63-107)直接解析__前后为key_range；PersistentLayerDesc::from_filename(layer_desc.rs:146-164)照搬无二次查表；LayerMap::is_l0再读这同一个key_range字段。index_part.json的LayerFileMetadata(remote_timeline_client/index.rs:234-244)只有file_size/generation/shard三个字段，没有is_l0，L0/L1永远现算，不存在与文件名不一致的情况。image vs delta文件名结构区分：delta Display(layer_name.rs:110-121)__后两个LSN一个'-'分隔；image Display(:209-218)__后只有一个LSN。用户提供5个文件里前4个key_end=FFFF...FFFF(=Key::MAX)是L0，第1个key_end=0300...0002(非全F)是L1，index_part.json-00000001是索引清单非layer文件，末尾-00000001是generation后缀。")
 
+
 # ─────── Slide 11: LayerMap ───────
 p += 1
 std("s-layermap", "PAGESERVER", "LayerMap：(Key, LSN) 二维查找索引", [
@@ -2401,6 +3115,7 @@ std("s-layermap", "PAGESERVER", "LayerMap：(Key, LSN) 二维查找索引", [
       "• 设计权衡见 Neon 博客 persistent-structures-in-neons-wal-indexing（代码注释直接引用）",
       fs=12, color=DIM, lh=1.65),
 ], p, notes="LayerMap 是读路径的 (key, LSN) 索引。核心是持久化红黑树 rpds::RedBlackTreeMapSync：树只索引 key 一维，LSN 维度用不可变结构的多版本表达，版本 clone O(1)。查询两步：BTreeMap 按 LSN 选 version O(log V)，再在该 version 的树里按 key 查 O(log N)，最后 select_layer 按 image > delta > in-memory 优先级选。L0 层 key 范围是全域，单独放 Vec 线性扫。compaction/GC 造成的回溯修改要靠 BufferedHistoricLayerCoverage 缓冲 + 重建。")
+
 
 # ─────── index_part.json ───────
 p += 1
@@ -2450,6 +3165,7 @@ std("s-indexpart", "PAGESERVER", "index_part.json：远端 timeline 的权威清
       "• 代价：index 是 timeline 级<b>写热点</b>，每批 layer 变更都要重传整份（生产上层数多时 index 自身可达 MB 级）",
       fs=12, color=DIM, lh=1.65),
 ], p, notes="index_part.json 是远端 timeline 的权威清单，Pageserver 靠它而不是 LIST S3 来重建状态。内容：layer_metadata 全部 layer 文件名+元数据（不变量：索引列出的必须已在S3）、disk_consistent_lsn、TimelineMetadata（含 ancestor/ancestor_lsn）、lineage 血缘、gc_blocking、gc_compaction 断点、deleted_at/archived_at/marked_invisible_at、rel_size_migration。version 当前 15，KNOWN_VERSIONS 1到15 都要能读，必须前后双向兼容。三个角色：①attach 时读它重建 LayerMap 所以本地空也能服务；②防脑裂裁决者，key 带 generation 后缀 index_part.json-<gen>，新 PS 取能读到的最高 generation，老 PS 写自己那份互不覆盖（RFC 025）；③GC 记账本，GC 只解链不删对象，真删走 deletion queue + validate 校验。不用 LIST 的原因：慢且贵、无法表达元信息、最终一致读不出一致快照。代价是 index 成为 timeline 级写热点，每次变更重传整份。代码：pageserver/src/tenant/remote_timeline_client/index.rs:29 struct IndexPart，:151 LATEST_VERSION=15，:157 FILE_NAME。")
+
 
 # ─────── 本地 tenant 目录 / config-v1 ───────
 p += 1
@@ -2556,6 +3272,7 @@ std("s-heatmap", "PAGESERVER", "heatmap-v1.json：attached 端产，secondary �
     ], fs=11, color=DIM, lh=1.5),
 ], p, notes="这一页讲 heatmap-v1.json 的完整生命周期，起点是一个常见误解：pageserver/src/lib.rs:297-298 的注释说它是 downloaded into the local tenant path while in secondary mode，但实际上 attached 端才是生产者，这条注释已经过时。常量 TENANT_HEATMAP_BASENAME 在 lib.rs:299，本地路径 PageServerConf::tenant_heatmap_path（config.rs:327-330）= tenants/<tenant_shard_id>/heatmap-v1.json，与 config-v1 同级；远端 key remote_heatmap_path（remote_timeline_client.rs:2751-2756）= tenants/{tenant_shard_id}/heatmap-v1.json，注意没有 generation 后缀，一个分片一个对象、原地覆盖。为什么 attached 目录里有：heatmap_uploader.rs:459-469 在上传成功之后把同一份 bytes 用 VirtualFile::crashsafe_overwrite 写到本地，源码注释写明 After a successful upload persist the fresh heatmap to disk. When restarting, the tenant will read the heatmap from disk and additively generate a new heatmap；如果热图是陈旧的，这种叠加生成会让 secondary 的盘上留住已被驱逐的 timeline。由 commit f9009d6b8（#10650）引入。消费入口是 tenant.rs:1640 的 read_on_disk_heatmap()（:1661-1683），产出 PreviousHeatmap::Active { heatmap, read_at, end_lsn }，让重启后第一张热图是旧图与当前常驻集的并集，不至于缩水到冷启动那点常驻层。受 pageserver 配置 load_previous_heatmap 控制（默认 true，config.rs:230-232）。注意上传被判 NoChange 时本地也不写（:408-410、:422-424），所以文件 mtime 反映的是\"热图有变化\"而不是每个周期。上传路径：周期来自 TenantConfig::heatmap_period（models.rs:736-738，humantime serde），pageserver 全局默认 Duration::ZERO 即禁用（libs/pageserver_api/src/config.rs:595-599、:951），get_heatmap_period() 把 0 解释成 None（tenant.rs:4206-4216）；真实环境里的值是 storage controller 注入的，ha_aware_config（reconciler.rs:1235-1246）在有 secondary 时塞 DEFAULT_HEATMAP_PERIOD=60s（reconciler.rs:29），没有 secondary 则强制 None——pageserver 自己并不检查有没有 secondary。任务在 BACKGROUND_RUNTIME 上以名字 heatmap uploads 启动（secondary.rs:409-423），入口 heatmap_uploader_task（heatmap_uploader.rs:32-53），并发度 heatmap_upload_concurrency 默认 8。调度只遍历 get_attached_active_tenant_shards()（attached 且 Active），首次上传带 period_warmup 抖动，之后 next_upload = now + period_jitter(period, 5)。跳过条件（upload_tenant_heatmap，:358-477）：AttachmentMode::Stale 直接跳过（:168-170，Stale 意味着另一个 location 才该负责热图；Single 和 Multi 都传）、generation 为 None 判 Skipped、gate 关闭判 Cancelled、任一 timeline 的 generate_heatmap() 返回 None（非 Active）就整租户 Skipped、md5 与上次相同判 NoChange 不写 S3、以及小租户特例：heatmap.get_stats().bytes < checkpoint_distance（默认 256 MiB）且只有 access_time 变化时（对 strip_atimes() 后的内容取 digest 比较）也判 NoChange。上传本身走 backoff::retry 包裹的 upload_storage_object。指标 pageserver_secondary_upload_heatmap{,_errors,_duration}。结构定义在 pageserver/src/tenant/secondary/heatmap.rs：HeatMapTenant（:12-28）字段 generation: Generation（:17，序列化成裸 u32，注释说只是用来发现两个 attached location 互相抢写的排障提示）、timelines: Vec<HeatMapTimeline>、upload_period_ms: Option<u128>（:26-27，带 #[serde(default)]，是给下载端的轮询频率提示）；HeatMapTimeline（:39-46）timeline_id（DisplayFromStr 所以是 JSON 字符串）+ 私有 layers；HeatMapLayer（:48-60）name: LayerName（序列化成层文件名字符串，不带本地的 -v1 也不带 generation 后缀）、metadata: LayerFileMetadata（index.rs:234-244，file_size + generation + shard，后两个都带 default/skip_serializing_if 所以未分片或无 generation 时会消失）、access_time: SystemTime（TimestampSeconds<i64>，unix 秒整数）、cold: bool（带 #[serde(default)]，源码 TODO 说目前还没有真正的热度打分）。版本兼容不靠类型（没有 HeatMapV1/V2 之分），版本号只在文件名里，靠逐字段 serde default 向后兼容，也没有 deny_unknown_fields。cold 的唯一生产者是 generate_unarchival_heatmap（timeline.rs:4286-4318），即 timeline 从 offload 状态恢复时生成的热图，目的是让 secondary 能预热又不被迫下载全部；正常 generate_heatmap（timeline.rs:4181-4283）对当前常驻且可见的层一律写 cold: false，从 PreviousHeatmap 继承来的层沿用旧值。cold 还决定排序：cold 最后、L0 次后、其余按 LSN 降序。access_time 来自 layer.latest_activity()（storage_layer/layer.rs:437-439）→ LayerAccessStats::latest_activity()（storage_layer.rs:1164-1171）：取最后一次访问时间，从未被访问过就退回最后一次 residence 变更时间（没变更过就是构造时间）；LayerAccessStats 把两个约 8 秒精度的 28 位时间戳和一个可见性 bit 打包进单个 AtomicU64。消费侧：任务名 secondary tenant downloads（secondary.rs:385-407），入口 downloader_task（downloader.rs:58-78），并发 secondary_download_concurrency 默认 1；跳过 config.warm 为 false 的 secondary。download_heatmap（:1036-1085）带上次的 ETag 做条件 GET，DownloadError::Unmodified 就整轮短路（:723-729）。拿到新图后先 crashsafe_overwrite 落本地（:756-775）再下层，这样下载中途重启仍有参照。upload_period_ms 有三处用途：存进 DownloadSummary、决定下一次轮询时间 next_download = now + period_jitter(upload_period, 5)、以及把本轮下载的 deadline 定在 now + upload_period*2，超时就以 UpdateError::Restart 中止并重读新图（issue 8182）。缺省 DEFAULT_DOWNLOAD_INTERVAL = 60_000 ms。cold 的影响：下载循环只遍历 into_hot_layers()，cold 层永不主动下载；prepare_timelines 用 hot_layers() 构建 layers_in_heatmap，所以某层翻成 cold 会让 secondary 把本地那份删掉；SecondaryProgress 的字节/层数统计也排除 cold。access_time 的影响：本地已有且 generation_file_size 相同但元数据/atime 变了就只 Touch；防抖动逻辑规定被本地驱逐过的层只有在 access_time > evicted_at 时才重新下载，否则 Skip；磁盘用量驱逐给 secondary 层排序用的 last_activity_ts 就是从热图传过来的主端 atime。HeatMapTenant.generation 在下载侧完全没有被读取，纯排障用。相关 HTTP 路由：POST /v1/tenant/:tenant_shard_id/heatmap_upload 强制立刻上传（routes.rs:2927-2939，会清掉 last_upload 让 digest 检查不能抑制它）；POST /v1/tenant/:tenant_shard_id/secondary/download?wait_ms=（:3026-3074，完成 200、仍在跑 202，body 是 SecondaryProgress）；GET /v1/tenant/:tenant_shard_id/secondary/status（:3135-3155，含 heatmap_mtime）；POST /v1/tenant/:t/timeline/:tl/download_heatmap_layers?concurrency=&recurse=（:1560-1595，这是 attached 租户的按需预热，用的是当场生成的内存热图而不是 S3 上那份，并且会包含 cold 层）；PUT location_config 带 flush_ms 时也会顺手触发一次上传。storage controller 侧有对应的转发路由，并在迁移优化校验发现 progress.heatmap_mtime 为空时用 kick_secondary_download 先传后下地催一把（service.rs:9095-9174）。删除：没有任何代码单独删本地热图文件，它随 tenant 目录一起被 safe_rename_tenant_dir 挪走；远端随 delete_prefix(remote_tenant_path) 一起删。storage_scrubber 把\"远端只剩 heatmap-v1.json\"的 tenant 特判成已知的历史删除 bug（garbage.rs:252-266）。最后是这份 dump 的读法：layers 里 metadata.shard 是 \"0001\"、generation 是 1，而目录后缀已经是 -0005、config-v1 里 location 已是 generation 2；这说明层的 shard 和 generation 是它被写下时的身份（出生证），不是当前 location 的身份——remote_layer_path 的文档注释（remote_timeline_client.rs:2683-2686）明确提醒远端路径里的 shard 分量不一定等于调用方的 TenantShardId，分裂后子分片会直接引用父分片的层，所以拼 key 必须用层自己的元数据。本地文件名末尾的 -00000001 与 metadata.generation=1 一致，也印证了这一点。另外两层的 access_time 完全相同，说明它们都还没被真正读过，latest_activity() 退回了同一次 residence 事件的时间戳。")
 
+
 # ─────── 读路径 LSN 定位 ───────
 p += 1
 std("s-read-lsn", "读路径", "Page → LSN：Compute 怎么知道该用什么 LSN 请求", [
@@ -2604,7 +3321,6 @@ std("s-read-lsn", "读路径", "Page → LSN：Compute 怎么知道该用什么 
 ], p, notes="Compute 侧通过 LwLSN Cache 跟踪每个 page 最后修改的 WAL LSN。写入时经 set_lwlsn_block_hook 更新缓存（key=BufferTag, val=XLogRecPtr），128K 条目 LRU。读时 neon_get_request_lsns() 查缓存：Primary 发 UINT64_MAX(要最新) + not_modified_since 供 PS 缓存优化；Replica 发 max(lwlsn, replay_lsn) 保证一致性快照。关键：LSN 粒度是 page 不是 row，行可见性仍靠 MVCC。代码：pgxn/neon/neon_lwlsncache.c（缓存）、pgxn/neon/pagestore_smgr.c:507（request_lsns 计算）。")
 
 
-
 p += 1
 std("s-bc", "协调层", "Storage Broker & Storage Controller", [
     *card("bc1", 96, 180, 528, 380,
@@ -2642,6 +3358,131 @@ std("s-bc", "协调层", "Storage Broker & Storage Controller", [
               "compute hook: notify-attach / notify-safekeepers",
           ], hc=AC, fs=13, headfs=18),
 ], p, notes="Storage Broker 无状态服务发现，SK publish / PS subscribe（+discovery pub）；Storage Controller 统一管理 PS 和 SK，reconciliation-loop 模式")
+
+
+# ─────── storage_broker 子系统内部架构 ───────
+p += 1
+std("s-broker-arch", "协调层", "storage_broker 子系统内部架构", [
+    T("bka-desc", 96, 164, 1088, 28,
+      "基于 <b>gRPC（tonic）+ Tokio broadcast</b> 的<b>纯内存 pub/sub 中枢</b>：SK 持续推 timeline 状态，PS 订阅消费；"
+      "<b>不落盘、不连 DB</b>，重启即空。<span style='color:" + FAINT + "'>（源码：storage_broker/src/）</span>",
+      fs=13, color=DIM, lh=1.5),
+    # ── 两个调用方 ──
+    R("bka-sk", 96, 200, 300, 44, fill="rgba(255,158,138,0.10)", stroke="rgba(255,158,138,0.5)"),
+    T("bka-sk-t", 96, 206, 300, 20, "Safekeeper · 发布方", fs=13.5, fw=800, color=AC2, align="center"),
+    T("bka-sk-s", 96, 226, 300, 16, "PublishSafekeeperInfo", fs=10, color=FAINT, align="center", ff=MONO),
+    R("bka-ps", 884, 200, 300, 44, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.5)"),
+    T("bka-ps-t", 884, 206, 300, 20, "Pageserver · 订阅方", fs=13.5, fw=800, color="#7CB3F4", align="center"),
+    T("bka-ps-s", 884, 226, 300, 16, "SubscribeSafekeeperInfo", fs=10, color=FAINT, align="center", ff=MONO),
+    LN("bka-a1", 246, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("bka-a1l", 96, 252, 260, 18, "① client-stream 推入", fs=10, fw=700, color=AC2, ff=MONO),
+    LN("bka-a2", 1034, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("bka-a2l", 924, 252, 260, 18, "④ server-stream 转发", fs=10, fw=700, color="#7CB3F4", align="right", ff=MONO),
+    # ── ① 接入层 ──
+    R("bka-grpc-bg", 96, 278, 1088, 52, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("bka-grpc-h", 116, 286, 560, 20, "① 接入层 · BrokerService（tonic / HTTP/2）", fs=12.5, fw=800, color=AC),
+    T("bka-grpc-b", 116, 306, 1048, 20,
+      "publish_safekeeper_info（client-stream 入）· subscribe_safekeeper_info（server-stream 出）· subscribe_by_filter · publish_one；gRPC 与 HTTP/1 复用同端口（按 content-type 分流），另有 /metrics /status",
+      fs=11, color=DIM, lh=1.4),
+    # ── ② 广播注册表 ──
+    R("bka-reg-bg", 96, 342, 1088, 186, fill="rgba(255,158,138,0.05)", stroke="rgba(255,158,138,0.3)"),
+    T("bka-reg-h", 116, 350, 700, 20, "② 内部广播 · Registry → SharedState", fs=12.5, fw=800, color=AC2),
+    T("bka-reg-h2", 760, 350, 404, 20, "Arc&lt;RwLock&lt;SharedState&gt;&gt; · 唯一存储", fs=10.5, color=FAINT, align="right"),
+    R("bka-all", 116, 378, 330, 100, fill="rgba(124,179,244,0.12)", stroke="rgba(124,179,244,0.45)"),
+    T("bka-all-t", 116, 386, 330, 20, "chan_to_all_subs", fs=12.5, fw=800, color="#7CB3F4", align="center"),
+    T("bka-all-b", 126, 410, 310, 60,
+      "全局 broadcast 通道<br>容量 16384<br>SubscriptionKey::All 的订阅者", fs=10.5, color=DIM, align="center", lh=1.6),
+    R("bka-send", 473, 378, 330, 100, fill="rgba(0,229,153,0.14)", stroke="rgba(0,229,153,0.5)"),
+    T("bka-send-t", 473, 386, 330, 20, "Registry::send_msg", fs=12.5, fw=800, color=AC, align="center"),
+    T("bka-send-b", 483, 410, 310, 60,
+      "每条消息先发全局通道<br>再按 ttid 发对应 timeline 通道<br>满则丢并计 dropped 指标", fs=10.5, color=DIM, align="center", lh=1.6),
+    R("bka-tl", 830, 378, 334, 100, fill="rgba(255,158,138,0.12)", stroke="rgba(255,158,138,0.45)"),
+    T("bka-tl-t", 830, 386, 334, 20, "chans_to_timeline_subs", fs=12, fw=800, color=AC2, align="center"),
+    T("bka-tl-b", 840, 410, 314, 60,
+      "HashMap&lt;ttid, broadcast&gt;<br>每 timeline 一通道 · 容量 32<br>无订阅者即删", fs=10.5, color=DIM, align="center", lh=1.6),
+    LN("bka-x1", 446, 428, 27, 0, stroke=A_NEU, sw=2, thick=9),
+    LN("bka-x2", 830, 428, -27, 0, stroke=A_NEU, sw=2, thick=9),
+    R("bka-key-bg", 116, 486, 1048, 34, fill="rgba(200,158,255,0.08)", stroke="rgba(200,158,255,0.3)", radius=8),
+    T("bka-key", 130, 494, 1020, 20,
+      "SubscriptionKey = All | Timeline(ttid)；注册即订阅对应通道，退出靠 Subscriber / Publisher 的 Drop 自动注销——无订阅者的 timeline 通道随手删除",
+      fs=10.5, fw=600, color="#C89EFF", lh=1.4),
+    # ── ③ 状态 ──
+    R("bka-state", 96, 544, 1088, 62, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("bka-state-t", 116, 552, 500, 20, "③ 状态 · 纯内存，无持久化", fs=12, fw=800, color=AC),
+    T("bka-state-b", 116, 574, 1048, 24,
+      "无文件 / DB import，SharedState 是唯一存储；进程退出直接 exit(0) 不落盘。唯一的磁盘访问是只读热加载 TLS 证书，与业务状态无关。",
+      fs=10, color=DIM, lh=1.4),
+    # ── 底部关键路径 ──
+    R("bka-note-bg", 96, 618, 1088, 52, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("bka-note-h", 112, 628, 96, 18, "关键路径", fs=11.5, fw=800, color=AC, lh=1.3),
+    T("bka-note", 216, 626, 952, 40,
+      "SK <b>PublishSafekeeperInfo</b> 流入 → Broker::publish_safekeeper_info → <b>Registry::send_msg</b> 扇出到全局通道 + per-ttid 通道 → "
+      "PS <b>subscribe_safekeeper_info</b> 流中 recv 转发 → walreceiver connection_manager 据此选 SK 拉 WAL。",
+      fs=10.5, color=DIM, lh=1.55),
+], p, notes="storage_broker 内部架构（源码 storage_broker/src/，file:line 核实）。本质：基于 gRPC(tonic) + Tokio broadcast 的纯内存 pub/sub 中枢，proto 定义 proto/broker.proto:7 service BrokerService，实现 src/bin/storage_broker.rs，共享库/客户端 src/lib.rs，指标 src/metrics.rs。① 接入层/gRPC：struct Broker{registry} :482，impl BrokerService :487；publish_safekeeper_info（客户端流入）:488 循环读 SafekeeperTimelineInfo 并 publisher.send_msg :502；subscribe_safekeeper_info（服务端流出）:514，register_subscriber + try_stream! 转发 :527-557；subscribe_by_filter（按类型/ttid 过滤）:568；publish_one（单条）:624。proto RPC：SubscribeSafekeeperInfo/PublishSafekeeperInfo/SubscribeByFilter/PublishOne（broker.proto:9-18）。gRPC 与 HTTP/1 复用同端口按 content-type: application/grpc 分流 :782-795，BrokerServiceServer::new :701。② 内部广播/注册表：struct SharedState :257 含 chans_to_timeline_subs: HashMap<TenantTimelineId, ChanToTimelineSub> :262 + 全局 chan_to_all_subs: broadcast::Sender<Message> :264；struct ChanToTimelineSub{chan: broadcast::Sender<Message>, num_subscribers} :249（每 timeline 一个 broadcast 通道，无订阅者时删 :348-350）；struct Registry{shared_state: Arc<RwLock<SharedState>>, timeline_chan_size} :358；扇出核心 Registry::send_msg :419 先发全局通道 :425 再按 ttid 发对应 timeline 通道 :429-436；register_subscriber :296-326；SubscriptionKey{All, Timeline(ttid)} :209；enum Message{SafekeeperTimelineInfo, SafekeeperDiscoveryRequest/Response} :117；通道容量 timeline=32（DEFAULT_CHAN_SIZE :63）、all-keys=16384 :64，满则丢消息计 BROADCAST_DROPPED_MESSAGES_TOTAL（metrics.rs:43、:542-544）。③ 发布/订阅方：发布方 safekeeper 推 SafekeeperTimelineInfo（broker.proto:28，唯一实际承载类型）；订阅方 pageserver walreceiver connection_manager（single-timeline 或 all），只消费 Message::SafekeeperTimelineInfo :537；客户端助手 connect()/BrokerClientChannel（lib.rs:34,42）、parse_proto_ttid（lib.rs:87）；生命周期用 Drop 自动注销 Subscriber::drop :454、Publisher::drop :476。④ 状态：全部状态仅存于 Arc<RwLock<SharedState>> :359,695，无磁盘/DB 读写，std::collections::HashMap + tokio broadcast 为唯一存储；唯一磁盘访问是只读 TLS 证书热加载（ssl_key_file/ssl_cert_file）:715-721；进程退出 std::process::exit(0) :690。入口 #[tokio::main] main :667，默认地址 127.0.0.1:50051（lib.rs:26），CLI --listen-addr/--listen-https-addr :81,83；HTTP/2 only，ALPN 协商 h2 :727-728，手写 accept loop + hyper auto::Builder :740-828；HTTP/1 旁路 GET /metrics :640、GET /status :652，其余 404 :656。")
+
+
+# ─────── storage_controller 子系统内部架构 ───────
+p += 1
+std("s-storcon-arch", "协调层", "storage_controller 子系统内部架构", [
+    T("sta-desc", 96, 164, 1088, 28,
+      "一个 <b>HTTP API</b> + 核心 <b>Service 内存状态</b>（intent/observed 对账）+ <b>独立 Postgres</b> 持久少量权威对象 + 一组<b>后台循环</b>；"
+      "出向调 PS/SK。<span style='color:" + FAINT + "'>（源码：storage_controller/src/）</span>",
+      fs=13, color=DIM, lh=1.5),
+    # ── 两个调用方 ──
+    R("sta-cp", 96, 200, 300, 44, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.5)"),
+    T("sta-cp-t", 96, 206, 300, 20, "Control Plane · cplane", fs=13.5, fw=800, color=AC, align="center"),
+    T("sta-cp-s", 96, 226, 300, 16, "v1 tenant CRUD / migrate", fs=10, color=FAINT, align="center", ff=MONO),
+    R("sta-ps", 884, 200, 300, 44, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.5)"),
+    T("sta-ps-t", 884, 206, 300, 20, "Pageserver · upcall", fs=13.5, fw=800, color="#7CB3F4", align="center"),
+    T("sta-ps-s", 884, 226, 300, 16, "re-attach / validate", fs=10, color=FAINT, align="center", ff=MONO),
+    LN("sta-a1", 246, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("sta-a1l", 96, 252, 220, 18, "① 下发期望", fs=10, fw=700, color=AC, ff=MONO),
+    LN("sta-a2", 1034, 244, 0, 30, stroke=A_NEU, sw=2),
+    T("sta-a2l", 964, 252, 220, 18, "② 校验 generation", fs=10, fw=700, color="#7CB3F4", align="right", ff=MONO),
+    # ── ① 接入层 ──
+    R("sta-http-bg", 96, 278, 1088, 50, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("sta-http-h", 116, 285, 560, 20, "① 接入层 · http.rs make_router + leadership.rs", fs=12.5, fw=800, color=AC),
+    T("sta-http-b", 116, 304, 1048, 20,
+      "/upcall/v1/{re-attach,validate}（PS）· control/v1/{node,tenant,metadata_health,safekeeper}（admin）· v1 tenant CRUD（cplane）；leader 选举走 DB controllers 表（非 K8s lease）",
+      fs=11, color=DIM, lh=1.4),
+    # ── ② Service 内存状态 ──
+    R("sta-svc-bg", 96, 340, 1088, 150, fill="rgba(255,158,138,0.05)", stroke="rgba(255,158,138,0.3)"),
+    T("sta-svc-h", 116, 348, 700, 20, "② 核心 Service · Arc&lt;RwLock&lt;ServiceState&gt;&gt;", fs=12.5, fw=800, color=AC2),
+    T("sta-svc-h2", 800, 348, 364, 20, "全部调度决策的内存真相", fs=10.5, color=FAINT, align="right"),
+    R("sta-ts", 116, 376, 254, 102, fill="rgba(255,158,138,0.12)", stroke="rgba(255,158,138,0.45)"),
+    T("sta-ts-t", 116, 384, 254, 18, "TenantShard", fs=12, fw=800, color=AC2, align="center"),
+    T("sta-ts-b", 124, 406, 238, 66, "policy · intent 期望<br>observed 实际<br>scheduling_policy", fs=9.5, color=DIM, align="center", lh=1.55),
+    R("sta-sch", 384, 376, 254, 102, fill="rgba(0,229,153,0.12)", stroke="rgba(0,229,153,0.45)"),
+    T("sta-sch-t", 384, 384, 254, 18, "Scheduler", fs=12, fw=800, color=AC, align="center"),
+    T("sta-sch-b", 392, 406, 238, 66, "按 AffinityScore +<br>节点利用率算<br>attach / secondary 落点", fs=9.5, color=DIM, align="center", lh=1.55),
+    R("sta-rec", 652, 376, 254, 102, fill="rgba(124,179,244,0.12)", stroke="rgba(124,179,244,0.45)"),
+    T("sta-rec-t", 652, 384, 254, 18, "Reconciler", fs=12, fw=800, color="#7CB3F4", align="center"),
+    T("sta-rec-b", 660, 406, 238, 66, "observed→intent<br>location_config 下发 PS<br>compute_notify cplane", fs=9.5, color=DIM, align="center", lh=1.55),
+    R("sta-node", 920, 376, 244, 102, fill="rgba(200,158,255,0.10)", stroke="rgba(200,158,255,0.45)"),
+    T("sta-node-t", 920, 384, 244, 18, "Node + Heartbeater", fs=12, fw=800, color="#C89EFF", align="center"),
+    T("sta-node-b", 928, 406, 228, 66, "PS/SK 注册表<br>心跳探活<br>Available/Offline", fs=9.5, color=DIM, align="center", lh=1.55),
+    # ── ③ 持久化 + ④ 出向 ──
+    R("sta-pg", 96, 502, 534, 72, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("sta-pg-t", 116, 510, 500, 18, "③ 持久化 · 独立 Postgres（diesel-async / bb8）", fs=12, fw=800, color=AC),
+    T("sta-pg-b", 116, 530, 500, 40,
+      "10 张表：controllers（leader）· nodes · tenant_shards ·<br>metadata_health · safekeepers · timelines · timeline_imports…", fs=9.5, color=DIM, lh=1.5),
+    R("sta-cli", 650, 502, 534, 72, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)"),
+    T("sta-cli-t", 670, 510, 500, 18, "④ 出向客户端", fs=12, fw=800, color="#7CB3F4"),
+    T("sta-cli-b", 670, 530, 500, 40,
+      "pageserver_client（location_config / shard_split）·<br>safekeeper_client · peer_client（controller↔controller 换届）", fs=9.5, color=DIM, lh=1.5),
+    # ── ⑤ 后台循环 + 关键路径 ──
+    R("sta-note-bg", 96, 586, 1088, 84, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("sta-note-h", 112, 596, 120, 18, "⑤ 后台循环", fs=11.5, fw=800, color=AC, lh=1.3),
+    T("sta-note1", 240, 594, 928, 24,
+      "background_reconcile → reconcile_all 逐 shard 比对 intent/observed · heartbeat 驱动 · drain/fill 节点运维 · safekeeper_reconciler 消费 pending_ops",
+      fs=10, color=DIM, lh=1.4),
+    T("sta-note-h2", 112, 640, 120, 18, "关键路径", fs=11.5, fw=800, color=AC, lh=1.3),
+    T("sta-note2", 240, 642, 928, 24,
+      "<b>对账</b>：reconcile_all 比对 → Reconciler PUT location_config 到 PS + 通知 cplane → ReconcileResult 经 mpsc 回填 observed；<b>upcall</b>：PS re-attach 递增 generation、validate 核验仍最新才信任。",
+      fs=10, color=DIM, lh=1.4),
+], p, notes="storage_controller 内部架构（源码 storage_controller/src/，file:line 核实）。更正：leader 选举是 Postgres(controllers 表) backed，不是 K8s lease。① 接入层 HTTP + leader 选举：main.rs:67/71 CLI listen/listen_https SocketAddr；main.rs:508 tcp_listener::bind + :510 http_utils::server::Server::new；main.rs:497 make_router(service,auth,build_info)；main.rs:492 Service::spawn。http.rs:2208 router build，路由类别：upcall（来自 pageserver）http.rs:2227 POST /upcall/v1/re-attach、:2230 POST /upcall/v1/validate、:2233/2240 timeline_import_status，处理器 :132 handle_re_attach、:149 handle_validate；control/v1 admin nodes :2328 POST node(register)、:2333 DELETE、:2343 PUT node/:id/config、:2353 node/:id/shards、:2377/2390 drain/fill、:2360 GET leader；control/v1 tenant :2446 migrate、:2473 shard_split、:2490 policy、:2497 preferred_azs、:2504 step_down；metadata_health :2398 update/:2405 unhealthy/:2412 outdated；safekeeper :2420-2438；v1 tenant CRUD（cplane）:2510 POST tenant、:2513 DELETE、:2523 config、:2529 location_config、:2565 timeline；debug/v1 + /metrics,/status,/live,/ready :2208-2324。leadership.rs:11 Leadership DB-backed（非 K8s lease）:42 step_down_current_leader、:74 become_leader、:96 current_leader、:120 request_step_down → peer_client 调对端，持久化在 controllers 表。② 核心 Service 内存状态：service.rs:517 struct Service → :518 inner: Arc<RwLock<ServiceState>>、:524 heartbeater_ps、:525 heartbeater_sk、:522 result_tx(mpsc)、:559 reconcilers_cancel、:565 reconcilers_gate；:224 struct ServiceState :227 tenants: BTreeMap<TenantShardId,TenantShard>、:229 nodes: Arc<HashMap<NodeId,Node>>、:235 scheduler、:233 safekeeper_reconcilers；tenant_shard.rs:76 TenantShard :78 policy: PlacementPolicy、:82 intent: IntentState、:87 observed: ObservedState、:157 scheduling_policy，to/from DB :1899/1941；scheduler.rs:308 Scheduler{nodes: HashMap<NodeId,SchedulerNode>}、:318 AffinityScore、:360 ScheduleContext，attach/secondary 评分 :161/232 用 utilization；reconciler.rs:35 Reconciler :40 intent: TargetState、:54 observed、:58 original_observed、:70 compute_notify_failure，入口 :836 reconcile()、:269 location_config()、:1030 compute_notify()、:357 maybe_live_migrate；node.rs:29 Node :30 availability、:31 scheduling，http/https/pg 地址；heartbeater.rs Heartbeater<Node,PageserverState> + <Safekeeper,SafekeeperState>，状态 :35/:47，delta :171/:320 标 Available/WarmingUp/Offline；compute_hook.rs:780 notify_attach_prepare、:952 notify_attach_background、:745 do_notify → POST shard location 给 cplane（:334 body）。③ 持久化 独立 Postgres(diesel-async)：persistence.rs:76 Persistence{connection_pool: Pool<AsyncPgConnection>}(bb8 :14)、:186 new(database_url)、migrations :247、SERIALIZABLE retry :260/343；schema.rs 10 表：controllers(leader :9)、nodes:44、tenant_shards:84、metadata_health:34、safekeepers:70、safekeeper_timeline_pending_ops:60、timelines:108、timeline_imports:100、hadron_safekeepers:16、hadron_timeline_safekeepers:26；关键 ops persistence.rs:638 re_attach(bump generations)、:729 increment_generation、:579 insert_tenant_shards、:543 load_active_tenant_shards、:370 insert_node、:385 list_nodes、:457 update_node_scheduling_policy。④ 出向客户端：pageserver_client.rs:52 PageserverClient :190 location_config、:66 tenant_delete、:288 tenant_shard_split、:156 tenant_secondary_download、:228 timeline_create、:117 tenant_timeline_describe；safekeeper_client.rs:15 SafekeeperClient :63 create_timeline、:134 pull_timeline、:106 switch_timeline_membership、:76 exclude_timeline、:163 get_utilization；peer_client.rs:63 PeerClient(controller→controller) :101 step_down → PUT control/v1/step_down 换届/重启；compute_hook.rs cplane notify 客户端见②。⑤ 后台循环（spawn 于 service.rs:1671，约 :2005-2025）：service.rs:1261 background_reconcile → :8685 reconcile_all → :8576 maybe_reconcile_shard/:8613 maybe_configured_reconcile_shard 逐 shard spawn reconciler，空闲时 :8810 optimize_all(:8862 plan + :8959 validate)；:1469 process_result + :1584 process_results 消费 ReconcileResult mpsc 回填 observed；:1284 spawn_heartbeat_driver → heartbeater_ps/sk.heartbeat，启动 :783 startup_reconcile + :1022 initial_heartbeat_round；background_node_operations.rs:25 Operation{Drain,Fill,Delete}、:43 OperationHandler 节点运维；service/safekeeper_reconciler.rs:31 SafekeeperReconcilers、:46 start_reconciler(per-SK)、:340 reconcile_one 消费 safekeeper_timeline_pending_ops；main.rs:547 可选 ChaosInjector。关键路径：对账 background_reconcile(service.rs:1261)→reconcile_all(:8685) 逐 TenantShard 比对 intent/observed，maybe_reconcile_shard(:8576) spawn Reconciler::reconcile(reconciler.rs:836)→location_config(:269) PUT 到 pageserver + compute_notify(:1030) 通知 cplane → ReconcileResult 经 mpsc → process_result(service.rs:1469) 更新内存 observed；upcall：pageserver POST /upcall/v1/re-attach(http.rs:2227→handle_re_attach:132→Service::re_attach→Persistence::re_attach:638 bump generation) 返回新 attachment，再 /upcall/v1/validate(http.rs:2230→handle_validate:149→Service::validate→validate_shard_generation:4233) 确认 generation 仍最新才信任 attachment。")
+
 
 # ─────── Storage Controller 的 PG 表结构 ───────
 p += 1
@@ -2702,10 +3543,270 @@ std("s-storcon-schema", "协调层", "Storage Controller 的元数据表（依�
           ], hc="#C89EFF", fs=11.5, headfs=15),
 ], p, notes="11 张表按 4 组归类。注意 hadron_safekeepers / hadron_timeline_safekeepers 来自上游 neondatabase/neon PR #12649（commit 8f627ea0a，2025-07-17），不是本 fork 新增；这两张表只有 schema.rs 声明和 migration 建表，没有任何 insert/select 代码，所以线上是空表。")
 
-# ─────── 防脑裂 ───────
+
+# ─────── 防脑裂：term / generation 双防线 ───────
+p += 1
+std("s-splitbrain", "协调层", "如何防止 Compute / Pageserver 脑裂", [
+    T("sb-desc", 96, 168, 1088, 36,
+      "网络分区、VM 挂起、软件 bug 都可能让「一个身份」同时活两个进程。Neon 不 STONITH，而用 <b>单调递增编号</b> 让老进程<b>写不进也覆盖不了</b>。",
+      fs=14, color=DIM, lh=1.5),
+    # Left panel: Compute / Safekeeper (term)
+    R("sb1-bg", 96, 216, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("sb1-n", 116, 228, 200, 18, "COMPUTE ↔ SAFEKEEPER", fs=11, fw=800, color=AC, ff=MONO),
+    T("sb1-h", 116, 250, 500, 22, "term：Paxos-like 单调轮次号", fs=15, fw=800, color=AC),
+    T("sb1-b", 116, 278, 500, 230,
+      "<b>场景</b>：老 compute 被认为挂了 → 拉起新 compute，但老 compute 又活过来<br><br>"
+      "<b>机制</b>：SK 侧持久化 <span style=\"font-family:" + MONO + "\">acceptor_state.term</span><br>"
+      "&nbsp;&nbsp;walproposer 启动先发 VoteRequest → 多数派 SK ACK 后<br>"
+      "&nbsp;&nbsp;term 单调递增（<span style=\"font-family:" + MONO + "\">safekeeper.rs:1078</span> 持久化到磁盘）<br><br>"
+      "<b>老 compute 的下场</b><br>"
+      "&nbsp;&nbsp;发 AppendRequest 携带旧 term → SK 见 <span style=\"font-family:" + MONO + "\">term &gt; msg.term</span><br>"
+      "&nbsp;&nbsp;→ 回 <b>term-only</b> 响应（<span style=\"font-family:" + MONO + "\">safekeeper.rs:1316</span>）<br>"
+      "&nbsp;&nbsp;→ walproposer 感知后<b>整个重新选举，不能续写</b><br><br>"
+      "任一 SK term 提升即触发全局 term 升级；<br>"
+      "generation 不匹配也会 <span style=\"font-family:" + MONO + "\">bail!</span> 直接拒绝（storcon 变更配置）",
+      fs=11.5, color=DIM, lh=1.7),
+    # Right panel: Pageserver (generation number)
+    R("sb2-bg", 656, 216, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
+    T("sb2-n", 676, 228, 200, 18, "PAGESERVER ↔ S3", fs=11, fw=800, color=AC2, ff=MONO),
+    T("sb2-h", 676, 250, 500, 22, "generation number：S3 key 后缀", fs=15, fw=800, color=AC2),
+    T("sb2-b", 676, 278, 500, 230,
+      "<b>场景</b>：PS 无响应 → 迁移 tenant 到 PS-B；但 PS-A 又活过来写 S3<br><br>"
+      "<b>机制</b>：Storage Controller 是 generation 的<b>唯一颁发者</b><br>"
+      "&nbsp;&nbsp;每次 attach / 重启 <span style=\"font-family:" + MONO + "\">/re-attach</span> → generation +1<br>"
+      "&nbsp;&nbsp;所有 layer / index S3 key 带 <b>hex 后缀</b>（8 字节 u32）<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">xxx.__.gen-000000A3</span><br><br>"
+      "<b>老 PS 的下场</b><br>"
+      "&nbsp;&nbsp;仍能上传，但 key 里带旧 generation → <b>永不冲突</b><br>"
+      "&nbsp;&nbsp;index_part.json 版本号最高者胜（新 PS 加载最新）<br>"
+      "&nbsp;&nbsp;<b>DELETE 前必须先 <span style=\"font-family:" + MONO + "\">/upcall/v1/validate</span></b><br>"
+      "&nbsp;&nbsp;storcon 核验 generation 仍最新才允许物理删除<br><br>"
+      "→ 老 PS 覆盖不了、删不掉，最坏留些垃圾 S3 对象，靠 tombstone/GC 清",
+      fs=11.5, color=DIM, lh=1.7),
+    # Bottom band: design principles
+    R("sb3-bg", 96, 530, 1088, 132, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("sb3-h", 116, 542, 600, 20, "共同的设计取舍", fs=13, fw=800, color=AC),
+    T("sb3-b", 116, 568, 1048, 88,
+      "• <b>不依赖 STONITH</b>：假设总能杀掉 EC2 实例不现实（VM 挂起、宿主机 hung） → 用<b>编号防御性写入</b>代替强制杀进程<br>"
+      "• <b>控制面单点颁发编号</b>：storcon 用一个内建 Postgres 强一致存 generation；SK 用 Paxos 自己维护 term —— <b>都不在存储节点上跑共识</b><br>"
+      "• <b>正确 &gt; 可用</b>：允许老进程继续跑一会，但保证它<b>写入的对象和新进程隔离</b>；数据完整性优于短暂多写<br>"
+      "• storcon <b>自己脑裂</b>（RFC 037）：靠 K8s Lease + 启动读取 leader → 有限期共存，随后自动收敛",
+      fs=12, color=DIM, lh=1.7),
+], p, notes="双条防线 —— Compute/SK 侧用 term（Paxos），PS/S3 侧用 generation number（storcon 颁发的单调计数器）。Compute 脑裂：SK 持久化 acceptor_state.term，老 walproposer 用旧 term 发 AppendRequest 被 SK 拒绝返回 term_only 触发重新选举，见 safekeeper/src/safekeeper.rs:1316 handle_append_request。Generation 不匹配也直接 bail! 拒绝（storcon 变更 mconf）。PS 脑裂：所有 S3 key 带 generation 后缀（8字节hex u32），迁移或重启 storcon /re-attach 会递增 generation，老 PS 仍可上传但 key 隔离永不冲突。DELETE 必须先经 /upcall/v1/validate 让 storcon 核验 generation 仍最新，见 pageserver/src/deletion_queue/validator.rs 与 storage_controller/src/service.rs:2535。设计取舍：不依赖 STONITH、控制面单点颁发编号（storcon 用内建 Postgres，SK 用 Paxos）、正确优先于可用、storcon 自己脑裂靠 K8s Lease + RFC 037。参考：RFC 025-generation-numbers.md、RFC 028-pageserver-migration.md、RFC 037-storage-controller-restarts.md。")
+
+
+# ─────── storage_scrubber：S3 对账与清理 ───────
+p += 1
+std("s-scrubber", "协调层", "storage_scrubber：S3 的对账人与清道夫", [
+    T("scb-desc", 96, 164, 1088, 28,
+      "直接读写 pageserver / safekeeper 的 S3 bucket，做 housekeeping 与对账；<b>不在任何请求路径上</b>，"
+      "是「GC 只解链、对象交给 scrubber 清理」那句话的答案。",
+      fs=12, color=DIM, lh=1.5),
+
+    *card("scb-c1", 96, 200, 530, 200, "为什么必须是独立工具", [
+        "S3 没有原子 mv、也没有跨对象事务",
+        ("→ 删除只能两阶段：① 解链 index_part.json ② 再删对象", FG, 700),
+        "中间任何失败都留下悬挂对象：占空间、无人认领",
+        "",
+        ("pageserver 自己删不安全：", AC2, 700),
+        "旧 generation 仍在写、in-flight 上传会复活对象",
+        "→ 需要一个能同时看 bucket + 问控制面的对账者",
+        "",
+        ("随主镜像分发：/usr/local/bin/storage_scrubber", FAINT),
+    ], hc=AC2, fs=11),
+
+    *card("scb-c2", 656, 200, 528, 200, "怎么判定是垃圾", [
+        "遍历 S3 tenant 前缀 × 问 Console Admin API",
+        ("GET /projects?tenant_id=…&show_deleted=true", FAINT),
+        ("→ deleted=true → DeletedInConsole", FG),
+        ("→ 404 / 0 条　 → MissingInConsole", FG),
+        ("→ 命中已知 bug → KnownBug", FG),
+        "",
+        "API 报错则整个 find 中止，绝不把错误当 missing",
+        "KnownBug 特例：远端只剩 heatmap-v1.json / initdb.tar.zst",
+    ], hc=AC, fs=11),
+
+    *card("scb-c3", 96, 410, 530, 262, "子命令（storage_scrubber &lt;cmd&gt;）", [
+        ("find-garbage", AC, 700),
+        "　扫 bucket × 问控制面，产出 garbage.json",
+        ("purge-garbage", AC, 700),
+        "　按 garbage list 删对象（默认 dry-run）",
+        ("scan-metadata", AC, 700),
+        "　统计 + index_part.json 一致性体检",
+        ("pageserver-physical-gc", AC, 700),
+        "　物理删旧 index / tenant manifest",
+        "　（Full 模式才删 ancestor layer）",
+        ("tenant-snapshot / find-large-objects / cron-job", AC, 700),
+        "　dump 快照 / 找大对象 / 串起前两者定时跑",
+    ], hc=AC, fs=11),
+
+    *card("scb-c4", 656, 410, 528, 262, "安全阀 · 闭环 · 定位", [
+        ("安全阀", AC, 700),
+        "purge 默认 dry-run，要 --delete 才真删",
+        "默认 DeletedOnly：只删「已确认删除」+ KnownBug",
+        "--min-age 按整个对象集 max(last_modified) 卡",
+        "bucket 名必须一致；active_tenant_count==0 → bail",
+        "",
+        ("闭环", "#C89EFF", 700),
+        "scan-metadata --post-to-storcon → storcon 落",
+        "metadata_health(healthy, last_scrubbed_at)",
+        "",
+        ("定位", AC, 700),
+        "不参与一致性；产物是「容量」与「可观测」，不是正确性",
+    ], hc="#C89EFF", fs=11),
+], p, notes="storage_scrubber 是 deck 里唯一不在请求路径上、直接伸手进 S3 bucket 的组件，编进主镜像（Dockerfile:123 构建 --bin storage_scrubber、:166 COPY 到 /usr/local/bin）。默认 S3 前缀 pageserver/v1/ 与 wal/（lib.rs:350-355）。"
+             "① 为什么必须有：S3 无原子 mv、无跨对象事务（RFC 022:33），删除只能两阶段——先改 index_part.json 解链、再删对象；中间失败留悬挂对象。pageserver 自己删不安全：旧 generation 仍可能写、in-flight 上传会复活对象，所以要一个能同时看 bucket + 问控制面的独立对账者。physical GC 源码注释自陈 not necessary for correctness，目的只是省容量 + 别让 listing 被垃圾拖慢（pageserver_physical_gc.rs:704-713）。"
+             "② 判定垃圾：遍历 S3 tenant 前缀（garbage.rs:189），逐租户问 Console Admin API GET /projects?tenant_id=&show_deleted=true（cloud_admin_api.rs:209-266）。deleted=true → DeletedInConsole；0 条 → MissingInConsole；>1 条 → Err 整体中止（:252-265）。API 错误是 propagate 不是吞掉（garbage.rs:207-222），绝不把错误当 missing。KnownBug 两类：远端只剩 heatmap-v1.json 的租户（历史删除 bug，PR 7928，garbage.rs:244-266）、只剩 initdb.tar.zst 的 timeline（WAL DR 早期 rollout，:277-313）；标 KnownBug 后即使在最保守的 DeletedOnly 下也可清（:570）。"
+             "③ 安全阀：purge 默认 dry-run，要 --delete（main.rs:30-31、259）；默认 PurgeMode::DeletedOnly 只删 DeletedInConsole + KnownBug（garbage.rs:564-572）；--min-age 无默认值、按整个对象集 max(last_modified) 卡（:600-628）；garbage list 的 bucket 名必须与客户端一致，active_tenant_count==0 直接 bail（拒绝清空），有垃圾 timeline 但 active_timeline_count==0 也 bail（:544-562）。"
+             "④ 闭环：scan-metadata --post-to-storcon 把 MetadataHealthUpdateRequest{healthy,unhealthy} POST 到 storcon 的 control/v1/metadata_health/update（main.rs:413-423、scan_pageserver_metadata.rs:129-134），storcon 过滤后落 metadata_health 表（storage_controller/src/service.rs:10055-10087）——就是 s-storcon-schema 里那行。"
+             "⑤ 体检规则（checks.rs）：index_part 版本不在 KNOWN_VERSIONS、disk_consistent_lsn 与 duplicated 不一致、无层且无 ancestor、file_size==0、index 引用但 S3 不存在（L0 算 warning）均为 error；layer map 校验失败、旧版本结构为 warning；零引用的 orphan layer 不算 corruption，可闲时清理（checks.rs:250-254）。"
+             "⑥ physical GC（pageserver_physical_gc.rs:61-71）：GcMode 有 DryRun / IndicesOnly(默认) / Full；IndicesOnly 与 Full 都删旧 generation 的 index 与 tenant manifest，只有 Full 删 ancestor layer，且 Full 必须带 --controller-api/--controller-jwt 否则拒绝跑（main.rs:358-369）。删前要过：能解析、generation 有代差（candidate >= latest 判 bug 拒删、== latest-1 跳过）、min-age、零引用、控制面 shard 列表一致且无 is_splitting。cron-job 依次跑 physical-gc + scan-metadata（main.rs:319-349）。"
+             "⑦ 凭据：S3（REMOTE_STORAGE_CONFIG 或 AWS_PROFILE/REGION/BUCKET）、Console Admin API token（CLOUD_ADMIN_API_URL/TOKEN）、controller JWT（scope scrubber/admin）。")
+
+
+# ─────── storage_scrubber 子系统内部架构 ───────
+p += 1
+std("s-scrubber-arch", "协调层", "storage_scrubber 子系统内部架构", [
+    T("sca-desc", 96, 164, 1088, 28,
+      "一个 <b>clap CLI</b> + <b>三个外部连接</b>（S3 / Console Admin API / storcon）驱动的<b>扫描引擎</b>；"
+      "<b>无本地状态</b>，真相直接读写 S3。<span style='color:" + FAINT + "'>（源码：storage_scrubber/src/）</span>",
+      fs=13, color=DIM, lh=1.5),
+    # ── ① 接入层 + 三连接 ──
+    R("sca-cli-bg", 96, 200, 1088, 76, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("sca-cli-h", 116, 208, 560, 20, "① 接入层 · main.rs CLI（clap）+ 三个外部连接", fs=12.5, fw=800, color=AC),
+    R("sca-c-s3", 116, 232, 338, 36, fill="rgba(0,229,153,0.10)", stroke="rgba(0,229,153,0.4)", radius=8),
+    T("sca-c-s3t", 116, 240, 338, 20, "S3 · remote_storage 客户端", fs=11, fw=700, color=AC, align="center"),
+    R("sca-c-adm", 466, 232, 338, 36, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.4)", radius=8),
+    T("sca-c-admt", 466, 240, 338, 20, "Console Admin API（对账控制面）", fs=11, fw=700, color="#7CB3F4", align="center"),
+    R("sca-c-sc", 816, 232, 348, 36, fill="rgba(200,158,255,0.10)", stroke="rgba(200,158,255,0.4)", radius=8),
+    T("sca-c-sct", 816, 240, 348, 20, "storage_controller（JWT · 回写）", fs=11, fw=700, color="#C89EFF", align="center"),
+    # ── ② 扫描引擎 ──
+    R("sca-eng-bg", 96, 288, 1088, 196, fill="rgba(255,158,138,0.05)", stroke="rgba(255,158,138,0.3)"),
+    T("sca-eng-h", 116, 296, 700, 20, "② 扫描引擎 · 直接遍历 S3 前缀", fs=12.5, fw=800, color=AC2),
+    T("sca-eng-h2", 760, 296, 404, 20, "buffer_unordered 并发 · tokio 多线程", fs=10.5, color=FAINT, align="right"),
+    R("sca-ms", 116, 324, 336, 70, fill="rgba(255,158,138,0.10)", stroke="rgba(255,158,138,0.4)", radius=8),
+    T("sca-ms-t", 116, 332, 336, 18, "metadata_stream.rs", fs=11.5, fw=800, color=AC2, align="center", ff=MONO),
+    T("sca-ms-b", 126, 354, 316, 36, "LIST 流：stream_tenants /<br>tenant_shards / tenant_timelines", fs=9.5, color=DIM, align="center", lh=1.5),
+    R("sca-ck", 466, 324, 336, 70, fill="rgba(0,229,153,0.12)", stroke="rgba(0,229,153,0.45)", radius=8),
+    T("sca-ck-t", 466, 332, 336, 18, "checks.rs", fs=11.5, fw=800, color=AC, align="center", ff=MONO),
+    T("sca-ck-b", 476, 354, 316, 36, "解析 index_part.json<br>一致性体检 → error / warning", fs=9.5, color=DIM, align="center", lh=1.5),
+    R("sca-gb", 816, 324, 348, 70, fill="rgba(124,179,244,0.10)", stroke="rgba(124,179,244,0.4)", radius=8),
+    T("sca-gb-t", 816, 332, 348, 18, "garbage.rs", fs=11.5, fw=800, color="#7CB3F4", align="center", ff=MONO),
+    T("sca-gb-b", 826, 354, 328, 36, "问控制面交叉核对<br>not-in-console → GarbageList", fs=9.5, color=DIM, align="center", lh=1.5),
+    R("sca-pg", 116, 402, 510, 70, fill="rgba(200,158,255,0.10)", stroke="rgba(200,158,255,0.4)", radius=8),
+    T("sca-pg-t", 116, 410, 510, 18, "pageserver_physical_gc.rs · scan_*_metadata.rs", fs=11, fw=800, color="#C89EFF", align="center", ff=MONO),
+    T("sca-pg-b", 126, 432, 490, 36, "GcMode DryRun/IndicesOnly/Full（Full 需 storcon 核对分片）<br>scan 累计 MetadataSummary", fs=9.5, color=DIM, align="center", lh=1.5),
+    R("sca-misc", 640, 402, 524, 70, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
+    T("sca-misc-t", 640, 410, 524, 18, "find_large_objects.rs · tenant_snapshot.rs", fs=11, fw=800, color=FG, align="center", ff=MONO),
+    T("sca-misc-b", 650, 432, 504, 36, "找大对象 · 把 layer + index 下到本地目录<br>（唯一会写本地盘的子命令）", fs=9.5, color=DIM, align="center", lh=1.5),
+    # ── ③ 输出与闭环 ──
+    R("sca-out1", 96, 496, 534, 60, fill="rgba(124,179,244,0.08)", stroke="rgba(124,179,244,0.3)"),
+    T("sca-out1-t", 116, 504, 500, 18, "③ 闭环 · 回写 storcon", fs=12, fw=800, color="#7CB3F4"),
+    T("sca-out1-b", 116, 524, 500, 24,
+      "scan-metadata → MetadataHealthUpdateRequest<br>POST control/v1/metadata_health/update", fs=9.5, color=DIM, lh=1.4),
+    R("sca-out2", 650, 496, 534, 60, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)"),
+    T("sca-out2-t", 670, 504, 500, 18, "产物 · garbage.json", fs=12, fw=800, color=AC),
+    T("sca-out2-b", 670, 524, 500, 24,
+      "find-garbage 产出 → purge-garbage 消费<br>（默认 dry-run，--delete 才真删）", fs=9.5, color=DIM, lh=1.4),
+    # ── ④ 状态 + 关键路径 ──
+    R("sca-note-bg", 96, 570, 1088, 100, fill="rgba(0,229,153,0.05)", stroke="rgba(0,229,153,0.26)", radius=10),
+    T("sca-note-h", 112, 580, 120, 18, "④ 无状态", fs=11.5, fw=800, color=AC, lh=1.3),
+    T("sca-note1", 240, 578, 928, 36,
+      "无本地 DB：全部真相直接在 S3 上读写（GenericRemoteStorage）；本地产物仅 garbage.json / 可选 ./logs / tenant-snapshot 的输出目录。"
+      "safekeeper scan 可选的 Postgres 连接是外部 debug-dump 源，不是 scrubber 自己的状态。",
+      fs=10, color=DIM, lh=1.5),
+    T("sca-note-h2", 112, 638, 120, 18, "关键路径", fs=11.5, fw=800, color=AC, lh=1.3),
+    T("sca-note2", 240, 640, 928, 24,
+      "<b>cron-job</b>：pageserver-physical-gc（GcMode）→ scan-metadata → build_health_update → POST metadata_health/update —— 全程由 S3 listing 驱动，无本地持久化。",
+      fs=10, color=DIM, lh=1.4),
+], p, notes="storage_scrubber 内部架构（源码 storage_scrubber/src/，file:line 核实）。本质：无状态对账/清理工具，直连 S3。① 接入层/CLI + 三连接：main.rs:23 struct Cli(clap Parser)、:50 enum Command、:128 #[tokio::main] main、:130 Cli::parse → :132 BucketConfig::from_env → :177 match 分发；配置类型在 lib.rs：S3Target:44、RootTarget:139（enum Pageserver/Safekeeper）、BucketConfig:227 + from_env:230、NodeKind:102。连接1 S3/remote_storage：lib.rs:369 init_remote 建 GenericRemoteStorage::from_config :394 配 RootTarget，重试包装 stream_objects_with_retries:399 / list_objects_with_retries:442 / download_object_with_retries:480。连接2 Console Admin API（cloud_admin_api.rs）：lib.rs:299 ConsoleConfig + from_env:305（CLOUD_ADMIN_API_URL/TOKEN）；客户端 cloud_admin_api.rs:73 CloudAdminApiClient + new:200，bearer-auth reqwest，find_tenant_project:209、list_projects:268。连接3 storage_controller（JWT）：lib.rs:285 ControllerClientConfig（controller_api URL + controller_jwt）→ build_client:294 返回 control_api::Client，main.rs:168 构建，需 JWT scope scrubber/admin（main.rs:38）。② 扫描引擎：metadata_stream.rs async S3 LIST 流 stream_tenants:17 / stream_tenants_maybe_prefix:24 / stream_tenant_shards:49 / stream_tenant_timelines:92 / stream_listing:148（走 tenants/<id>/timelines/<id> 前缀）；checks.rs 一致性规则 branch_cleanup_and_check_errors:55 产 errors/warnings、list_timeline_blobs:360/:398 解析 index_part.json → BlobDataParseResult:325、TimelineAnalysis:27、TenantObjectListing:245、list_tenant_manifests:577；scan_pageserver_metadata.rs 编排 scan_pageserver_metadata:138 串 stream_tenants→stream_tenant_timelines→list_timeline_blobs→branch_cleanup_and_check_errors，累计 MetadataSummary:21；scan_safekeeper_metadata.rs scan_safekeeper_metadata:84，输入 DatabaseOrList:68（tokio_postgres 连 :263 debug-dump DB），MetadataSummary:28；garbage.rs find_garbage:115→find_garbage_inner:157 载 list_projects:170 入 ConsoleCache:150，流式 tenants，not-in-console → GarbageList:51（GarbageReason:28、GarbageEntity:39），PurgeMode:400、purge_garbage:527；pageserver_physical_gc.rs pageserver_physical_gc:714、GcMode:62（DryRun/IndicesOnly/Full，Full 需 controller 并经 dispatch::<_,TenantDescribeResponse> 到 control/v1/tenant/{id} :200 核对分片），GcSummary:35；find_large_objects.rs find_large_objects:46、LargeObject:35/LargeObjectListing:42；tenant_snapshot.rs SnapshotDownloader:23 + new:33/download:218（把 layers+index 下到本地目录）。③ 输出与闭环：scan-metadata→storcon POST，scan_pageserver_metadata.rs:129 build_health_update_request 建 MetadataHealthUpdateRequest，main.rs:413-423 经 client.dispatch(POST, control/v1/metadata_health/update, body) 发出（需 --post + --controller-api）；garbage.json garbage.rs:133 tokio::fs::write(serde_json::to_vec_pretty(&GarbageList))（默认 garbage.json，main.rs:60），garbage.rs:534 serde_json::from_slice::<GarbageList> 在 purge_garbage 消费（--delete 才删，main.rs:259）。④ 状态：无本地 DB，全部真相直接读写 S3（lib.rs:394 GenericRemoteStorage）；本地产物仅 garbage.json、可选 ./logs/（lib.rs:336）、tenant-snapshot 输出目录；safekeeper scan 可选 Postgres connstr 是外部 debug-dump 源非 scrubber 状态；运行时 tokio multi-thread（Cargo.toml tokio features macros,rt-multi-thread，main.rs:128 #[tokio::main]），并发 buffer_unordered。关键路径 cron-job：main.rs:319 run_cron_job pageserver_physical_gc(GcMode)→scan_pageserver_metadata→build_health_update_request→POST control/v1/metadata_health/update，全程 S3 listing 驱动无本地持久化。另注：此页讲内部结构/数据流，子命令目录见 s-scrubber 页。")
+
 
 p += 1
-divider("s-div4", 5, "核心原理深度剖析", p)
+divider("s-div4", 6, "核心原理深度剖析", p)
+
+
+# ─────── Slide 10c: pg_current_wal_lsn 在整条 LSN 链路里的位置 ───────
+p += 1
+std("s-lsn-chain", "PAGESERVER", "一条 WAL 的完整生命周期：8 个 LSN 检查点", [
+    T("lc-desc", 96, 172, 1088, 40,
+      "<span style=\"font-family:" + MONO + "\">SELECT pg_current_wal_lsn();</span> 返回的只是<b>最靠前、最不保险</b>的那个检查点——"
+      "compute 本机写到 OS 但未必 fsync，跟 Neon 的持久化保证无关。",
+      fs=14, color=DIM, lh=1.6),
+    *[e for i, (mono, desc, note, c) in enumerate([
+        ("GetXLogInsertRecPtr()", "compute 内存 reserve/insert", "最大值，纯内存态", AC2),
+        ("pg_current_wal_lsn()", "compute 写到 OS，未必 fsync", "GetXLogWriteRecPtr()／本题问的就是它", AC2),
+        ("pg_current_wal_flush_lsn()", "compute 本地已 fsync", "GetFlushRecPtr()", AC2),
+        ("availableLsn", "walproposer 已打包待发 SK", "walproposer.c:246", "#C89EFF"),
+        ("flushLSN", "某 Safekeeper 本地已 fsync", "safekeeper-protocol.md:36", "#C89EFF"),
+        ("commitLSN", "多数派确认 → client 收到 COMMIT OK", "quorum=2 of 3，容灾边界", AC),
+        ("last_record_lsn", "Pageserver 已处理到此", "内存可读，WAL receiver 批提交", "#7CB3F4"),
+        ("disk_consistent_lsn", "PS 本地磁盘落盘确认", "冻结层 flush 完成", "#7CB3F4"),
+        ("remote_consistent_lsn", "S3 上传确认（visible）", "最落后，但唯一真正 crash-durable", "#7CB3F4"),
+    ]) for e in (
+        R(f"lc{i}bg", 96, 226 + i * 42, 1088, 36, fill="rgba(255,255,255,0.035)", stroke="none", sw=0, radius=8),
+        T(f"lc{i}m", 116, 233 + i * 42, 270, 22, mono, fs=13, fw=700, color=c, ff=MONO),
+        T(f"lc{i}d", 398, 234 + i * 42, 330, 20, desc, fs=13, fw=500, color=FG),
+        T(f"lc{i}n", 738, 234 + i * 42, 430, 20, note, fs=11.5, fw=500, color=FAINT),
+    )],
+    T("lc-note", 96, 616, 1088, 40,
+      "<b>不等号方向</b>：Insert ≥ Write(<span style=\"font-family:" + MONO + "\">pg_current_wal_lsn</span>) ≥ Flush ≥ availableLsn ≥ flushLSN ≥ commitLSN ≥ last_record_lsn ≥ disk_consistent_lsn ≥ remote_consistent_lsn。"
+      "每往下一级都是更强的持久化/可见性承诺，也离 compute 越远。",
+      fs=12.5, color=AC, lh=1.5),
+], p, notes="pg_current_wal_lsn() = GetXLogWriteRecPtr()，src/backend/access/transam/xlogfuncs.c:279,289；未经Neon改动的原生Postgres函数(diff REL_16_1 vs REL_16_STABLE_neon的xlogfuncs.c为空)。返回LogwrtResult.Write（xlog.c:9230-9238），写到OS但未必fsync，注释xlogfuncs.c:271-276明确'written out to the kernel, but is not necessarily synced to disk'。对比：pg_current_wal_insert_lsn()→GetXLogInsertRecPtr()(xlog.c:9214-9225)最大；pg_current_wal_flush_lsn()→GetFlushRecPtr()(xlog.c:6280-6294)。walproposer只消费GetFlushRecPtr作为本地信号(walproposer_pg.c:923-930 walprop_pg_get_flush_rec_ptr,walproposer.c:296-301轮询检测新WAL广播,availableLsn在WalProposerBroadcast处bump走proposer.c:242-248)，从不修改这些getter。docs/glossary.md:107-128完整LSN链路定义；docs/safekeeper-protocol.md:8-9,36 flushLSN/commitLSN定义；pageserver/src/tenant/timeline.rs:267,1720-1721 last_record_lsn，:282,5320 disk_consistent_lsn。全链路不等式：Insert≥Write(pg_current_wal_lsn)≥Flush(pg_current_wal_flush_lsn)≥availableLsn≥flushLSN≥commitLSN≥last_record_lsn≥disk_consistent_lsn≥remote_consistent_lsn。")
+
+
+# ─────── Neon 的两种 checkpoint ───────
+p += 1
+std("s-checkpoint", "COMPUTE", "Neon 也有 checkpoint 吗：有，但分裂成两个层面", [
+    T("ck-desc", 96, 158, 1088, 44,
+      "有，但「checkpoint」在 Neon 里裂成两件事：<b>pageserver 的 LSM flush 阈值</b>（真正高频、起作用）"
+      "与 <b>compute 里被架构弱化的 PG checkpoint</b>（不再管崩溃恢复和脏页落盘）。",
+      fs=13, color=DIM, lh=1.55),
+    # left — pageserver checkpoint_distance
+    R("ck1-bg", 96, 212, 530, 250, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("ck1-h", 116, 224, 494, 22, "① Pageserver：checkpoint_distance（LSM flush）", fs=12.5, fw=800, color=AC),
+    *TL("ck1-b", 116, 254, 500, 200, [
+        ("config.rs：", DIM),
+        ("· checkpoint_distance 默认 256 MB（:851）", FG, 700),
+        ("· checkpoint_timeout 默认 10 分钟（:852）", FG, 700),
+        "",
+        ("作用：InMemoryLayer（ephemeral=MemTable）", AC, 700),
+        ("&nbsp;&nbsp;写满 256MB 或距上次满 10min → freeze+flush", DIM),
+        ("&nbsp;&nbsp;滚成一个 L0 delta layer 落盘 / 传 S3", DIM),
+        "",
+        ("本质 = LSM memtable flush 阈值，不是 PG checkpoint", "#F4C77C", 700),
+        ("&nbsp;&nbsp;名字沿用，频率远高于传统 PG checkpoint", DIM),
+        ("&nbsp;&nbsp;呼应 s-flush-policy / s-ps-inmem", DIM),
+    ], fs=11, lh=1.5),
+    # right — compute PG checkpoint weakened
+    R("ck2-bg", 656, 212, 530, 250, fill=PANEL, stroke=EDGE, radius=12),
+    T("ck2-h", 676, 224, 494, 22, "② Compute：PG checkpoint 被存算分离掏空", fs=12.5, fw=800, color="#7CB3F4"),
+    *TL("ck2-b", 676, 254, 500, 200, [
+        ("内核改动（core_changes.md）：", DIM),
+        ("· Allow startup without checkpoint record", "#7CB3F4", 700),
+        ("&nbsp;&nbsp;compute 无状态，启动走 basebackup +", DIM),
+        ("&nbsp;&nbsp;从 SK/PS 拉 WAL，不依赖本地 checkpoint", DIM),
+        "",
+        ("两个经典职责都被架构掏空：", AC2, 700),
+        ("· 「限制恢复回放的 WAL 量」→ 不需要", FG),
+        ("&nbsp;&nbsp;恢复不从本地 checkpoint 起", DIM),
+        ("· 「把脏页刷进数据文件」→ 不需要", FG),
+        ("&nbsp;&nbsp;没有本地权威数据文件，页都在 PS", DIM),
+        ("checkpointer 进程还在，但已非持久性关键路径", "#FF9E8A"),
+    ], fs=11, lh=1.5),
+    # bottom — comparison
+    R("ck-b-bg", 96, 478, 1090, 144, fill=PANEL, stroke=EDGE, radius=10),
+    T("ck-b-h", 116, 490, 1000, 20, "对比 · 持久性与恢复的职责搬家了", fs=13, fw=800, color="#C89EFF"),
+    T("ck-b-b", 116, 516, 1050, 98,
+      "• <b>持久性靠谁</b>：原生 PG = checkpoint + WAL fsync 到本地盘；<b>Neon = WAL 落 safekeeper 法定多数</b>（见 <span style=\"font-family:" + MONO + "\">s-sk1</span>），与 compute checkpoint 无关。<br>"
+      "• <b>崩溃恢复起点</b>：原生 PG = 最后一个 checkpoint record；<b>Neon = basebackup + 远端拉 WAL</b>，无需本地 checkpoint record。<br>"
+      "• <b>高频「落盘点」</b>：原生 PG = checkpoint 刷脏页进数据文件；<b>Neon = pageserver checkpoint_distance（256MB）滚 InMemoryLayer→L0</b>。<br>"
+      "<b style='color:" + AC + "'>一句话</b>：Neon 有 checkpoint，但真正起作用的是 PS 的 LSM flush 阈值；compute 里 PG 的传统 checkpoint 因存算分离 + WAL 法定多数持久化，已不再承担崩溃恢复与脏页落盘。",
+      fs=11.5, color=DIM, lh=1.6),
+], p, notes="回答『Neon 也有 checkpoint 吗』：有，但 checkpoint 在 Neon 里裂成两个不同层面，和原生 PG 含义不同。① Pageserver 侧 checkpoint_distance——这才是 Neon 真正高频的 checkpoint。libs/pageserver_api/src/config.rs：checkpoint_distance: u64 默认 256MB（DEFAULT_CHECKPOINT_DISTANCE = 256*1024*1024，:851）；checkpoint_timeout 默认 10 分钟（:852）。控制 InMemoryLayer（ephemeral，pageserver 的 MemTable）何时 freeze+flush 成一个 L0 delta layer：写入累计到 256MB，或距上次满 10 分钟，就滚一层落盘/传 S3。跟 s-flush-policy（Ephemeral Layer 滚动策略）、s-ps-inmem 同一回事，是存储引擎的检查点，对应 LSM 的 memtable flush，不是 PG 的 checkpoint；名字沿用 PG 的 checkpoint 但本质是 LSM flush 阈值，频率远高于传统 PG checkpoint。② Compute（patched PG）侧传统 checkpoint 被大幅弱化。docs/core_changes.md 两条相关内核改动：Allow startup without checkpoint record——原生 PG 崩溃恢复必须从最后一个 checkpoint record 开始回放 WAL，Neon compute 无状态，启动走 basebackup + 从 safekeeper/pageserver 拉 WAL，不依赖本地 checkpoint record 也能起来；compute 本地盘只是缓存，dirty page 不需要像原生 PG 靠 checkpoint 刷回数据文件，因为没有本地权威数据文件，页都在 pageserver，持久性由 WAL 落 safekeeper 法定多数保证（s-sk1）不是 checkpoint。所以 compute 里 checkpoint 两个经典职责都被架构掏空：限制崩溃恢复要回放的 WAL 量→不需要（恢复不从本地 checkpoint 起）；把脏页刷进数据文件→不需要（没有本地数据文件）。PG 的 checkpointer 进程还在（WAL 里仍有 checkpoint record，walproposer 相关逻辑还要处理）但对持久性/恢复不再是关键路径。对比：持久性靠——原生 PG = checkpoint + WAL fsync 到本地；Neon = WAL 落 safekeeper 法定多数。崩溃恢复起点——原生 PG = 最后一个 checkpoint record；Neon = basebackup + 远端拉 WAL 无需本地 checkpoint。高频落盘点——原生 PG = checkpoint 刷脏页；Neon = pageserver checkpoint_distance（256MB）滚 InMemoryLayer→L0。结论：Neon 有 checkpoint，但真正起作用的是 pageserver 的 checkpoint_distance（LSM flush 阈值）；compute 里 PG 的传统 checkpoint 因存算分离 + WAL 法定多数持久化已不再承担崩溃恢复和脏页落盘职责。呼应 s-flush-policy / s-ps-inmem / s-core-compute / s-sk1 / s-lsn-chain。")
+
+
 # ─────── Slide 10b: 落盘 → 上传 S3 的时机策略 ───────
 p += 1
 std("s-flush-policy", "PAGESERVER", "为什么 S3 有延迟：Ephemeral Layer 的滚动策略", [
@@ -2758,6 +3859,7 @@ std("s-flush-policy", "PAGESERVER", "为什么 S3 有延迟：Ephemeral Layer �
       fs=12, color=DIM, lh=1.7),
 ], p, notes="should_roll() pageserver/src/tenant/timeline.rs:2672-2719，三触发条件：LSN距离/层大小达 checkpoint_distance，或 opened_at 超过 checkpoint_timeout。默认值 libs/pageserver_api/src/config.rs:851(DEFAULT_CHECKPOINT_DISTANCE=256MiB),852(DEFAULT_CHECKPOINT_TIMEOUT=10m),861(DEFAULT_COMPACTION_PERIOD=20s)。housekeeping loop: pageserver/src/tenant/tasks.rs:427-451 tenant_housekeeping_loop，sleep_jitter(period, 5%)后调用tenant.housekeeping()→maybe_freeze_ephemeral_layer (timeline.rs:2148-2178)。flush_loop: timeline.rs:4928+，flush_frozen_layer写本地delta文件→schedule_uploads (timeline.rs:5334,5366-5370)。上传调度: remote_timeline_client.rs:1269-1279 schedule_layer_file_upload→launch_queued_tasks(2022)异步发起S3 PUT，无额外批处理定时器。一致性LSN: disk_consistent_lsn(timeline.rs:282,5320)本地磁盘确认；remote_consistent_lsn_projected/_visible(remote_timeline_client.rs:533,544,111-118,2393-2401)，_visible只在上传确认+generation非陈旧后前移，是这个值通报给SK允许裁剪WAL。ingest批处理 DEFAULT_INGEST_BATCH_SIZE=100 (config.rs:688)，只影响PS内部可读性与S3无关。")
 
+
 # ─────── Slide 10a-2: L0 → L1 compaction 触发时机 ───────
 p += 1
 std("s-l0-compact-trigger", "PAGESERVER", "L0 什么时候变成 L1：计数阈值 + 事件驱动", [
@@ -2808,124 +3910,150 @@ std("s-l0-compact-trigger", "PAGESERVER", "L0 什么时候变成 L1：计数阈�
       fs=12, color=DIM, lh=1.7),
 ], p, notes="compaction_loop: pageserver/src/tenant/tasks.rs:216，wake条件取先到者：sleep(period)(tasks.rs:255,240,period来自get_compaction_period默认DEFAULT_COMPACTION_PERIOD=20s config.rs:861)，或l0_compaction_trigger.notified()(tasks.rs:256)，或上轮失败backoff(tasks.rs:254)。触发通知：timeline.rs:5055 l0_count>=get_compaction_threshold()后, :5056 notify_one()立即唤醒无需等满一个period。tasks.rs:277-278循环结果为YieldForL0/Pending时自我重新notify接着跑。阈值：compaction_threshold定义config.rs:533，默认DEFAULT_COMPACTION_THRESHOLD=10(config.rs:862,920)。检查代码compaction.rs:1902-1903 if level0_deltas.is_empty()||level0_deltas.len()<threshold提前返回(compact_level0_phase1起始:1883,提前返回:1938)。get_compaction_threshold() timeline.rs:2883。背压联动：l0_flush_delay_threshold(get_l0_flush_delay_threshold timeline.rs:2929-2957)默认=3×compaction_threshold=30(DEFAULT_L0_FLUSH_DELAY_FACTOR=3,timeline.rs:2932)，达到后flush变2倍慢(timeline.rs:5062)；l0_flush_stall_threshold(timeline.rs:2959-3007)默认DEFAULT_L0_FLUSH_STALL_FACTOR=0即禁用(timeline.rs:2963)，开启后l0_count>=阈值时完全阻塞flush(timeline.rs:5010-5011)，两者都clamp到>=compaction_threshold(timeline.rs:2955,3006)。合并算法compact_level0(compaction.rs:1840)委托compact_level0_phase1(:1883)：按起始LSN排序(:1967)取连续LSN run无空洞(:1970-2014)；delta_size_limit=max(compaction_upper_limit,compaction_threshold)*checkpoint_distance(:1983-1987)超限则fully_compacted=false留下一轮(:2002-2013)；k-way合并用MergeIterator::create_with_options(:2156-2162,来自storage_layer/merge_iterator.rs,import at:59)按key/LSN顺序产出target_file_size大小的新L1 delta layer。")
 
-# ─────── Slide 10c: pg_current_wal_lsn 在整条 LSN 链路里的位置 ───────
-p += 1
-std("s-lsn-chain", "PAGESERVER", "一条 WAL 的完整生命周期：8 个 LSN 检查点", [
-    T("lc-desc", 96, 172, 1088, 40,
-      "<span style=\"font-family:" + MONO + "\">SELECT pg_current_wal_lsn();</span> 返回的只是<b>最靠前、最不保险</b>的那个检查点——"
-      "compute 本机写到 OS 但未必 fsync，跟 Neon 的持久化保证无关。",
-      fs=14, color=DIM, lh=1.6),
-    *[e for i, (mono, desc, note, c) in enumerate([
-        ("GetXLogInsertRecPtr()", "compute 内存 reserve/insert", "最大值，纯内存态", AC2),
-        ("pg_current_wal_lsn()", "compute 写到 OS，未必 fsync", "GetXLogWriteRecPtr()／本题问的就是它", AC2),
-        ("pg_current_wal_flush_lsn()", "compute 本地已 fsync", "GetFlushRecPtr()", AC2),
-        ("availableLsn", "walproposer 已打包待发 SK", "walproposer.c:246", "#C89EFF"),
-        ("flushLSN", "某 Safekeeper 本地已 fsync", "safekeeper-protocol.md:36", "#C89EFF"),
-        ("commitLSN", "多数派确认 → client 收到 COMMIT OK", "quorum=2 of 3，容灾边界", AC),
-        ("last_record_lsn", "Pageserver 已处理到此", "内存可读，WAL receiver 批提交", "#7CB3F4"),
-        ("disk_consistent_lsn", "PS 本地磁盘落盘确认", "冻结层 flush 完成", "#7CB3F4"),
-        ("remote_consistent_lsn", "S3 上传确认（visible）", "最落后，但唯一真正 crash-durable", "#7CB3F4"),
-    ]) for e in (
-        R(f"lc{i}bg", 96, 226 + i * 42, 1088, 36, fill="rgba(255,255,255,0.035)", stroke="none", sw=0, radius=8),
-        T(f"lc{i}m", 116, 233 + i * 42, 270, 22, mono, fs=13, fw=700, color=c, ff=MONO),
-        T(f"lc{i}d", 398, 234 + i * 42, 330, 20, desc, fs=13, fw=500, color=FG),
-        T(f"lc{i}n", 738, 234 + i * 42, 430, 20, note, fs=11.5, fw=500, color=FAINT),
-    )],
-    T("lc-note", 96, 616, 1088, 40,
-      "<b>不等号方向</b>：Insert ≥ Write(<span style=\"font-family:" + MONO + "\">pg_current_wal_lsn</span>) ≥ Flush ≥ availableLsn ≥ flushLSN ≥ commitLSN ≥ last_record_lsn ≥ disk_consistent_lsn ≥ remote_consistent_lsn。"
-      "每往下一级都是更强的持久化/可见性承诺，也离 compute 越远。",
-      fs=12.5, color=AC, lh=1.5),
-], p, notes="pg_current_wal_lsn() = GetXLogWriteRecPtr()，src/backend/access/transam/xlogfuncs.c:279,289；未经Neon改动的原生Postgres函数(diff REL_16_1 vs REL_16_STABLE_neon的xlogfuncs.c为空)。返回LogwrtResult.Write（xlog.c:9230-9238），写到OS但未必fsync，注释xlogfuncs.c:271-276明确'written out to the kernel, but is not necessarily synced to disk'。对比：pg_current_wal_insert_lsn()→GetXLogInsertRecPtr()(xlog.c:9214-9225)最大；pg_current_wal_flush_lsn()→GetFlushRecPtr()(xlog.c:6280-6294)。walproposer只消费GetFlushRecPtr作为本地信号(walproposer_pg.c:923-930 walprop_pg_get_flush_rec_ptr,walproposer.c:296-301轮询检测新WAL广播,availableLsn在WalProposerBroadcast处bump走proposer.c:242-248)，从不修改这些getter。docs/glossary.md:107-128完整LSN链路定义；docs/safekeeper-protocol.md:8-9,36 flushLSN/commitLSN定义；pageserver/src/tenant/timeline.rs:267,1720-1721 last_record_lsn，:282,5320 disk_consistent_lsn。全链路不等式：Insert≥Write(pg_current_wal_lsn)≥Flush(pg_current_wal_flush_lsn)≥availableLsn≥flushLSN≥commitLSN≥last_record_lsn≥disk_consistent_lsn≥remote_consistent_lsn。")
 
-# ─────── Slide 13: WAL Redo 沙箱 ───────
+# ─────── Slide 14: Compaction & GC ───────
 p += 1
-std("s-walredo", "PAGESERVER", "WAL Redo：每租户独立的 seccomp 沙箱", [
-    T("wr-desc", 96, 175, 1088, 60,
-      "重建历史版本的页需要执行 Postgres WAL redo 代码 —— 这些代码不能信任跨租户数据。<br>"
-      "Neon 的方案：<b>每个 tenant 懒启动一个独立的 postgres 子进程做 redo，seccomp(2) 限制到最小系统调用集；进程长驻复用，空闲 180s 后回收</b>。",
-      fs=15, color=DIM, lh=1.7),
-    # diagram
-    R("wrd-ps", 96, 260, 260, 260, fill="rgba(0,229,153,0.08)", stroke="rgba(0,229,153,0.4)"),
-    T("wrd-pst", 96, 274, 260, 24, "Pageserver 主进程", fs=14, fw=700, color=AC, align="center"),
-    T("wrd-psn", 116, 310, 220, 200,
-      "GetPage 请求<br>→ 查 LayerMap<br>→ 读取 image + deltas<br>→ 通过 pipe 发送给 redo 子进程<br>→ 收回重建后的 8KB page",
-      fs=12, color=DIM, lh=1.7),
-    # arrows
-    LN("wrd-a1", 356, 340, 100, 0, stroke=A_ORG, sw=2),
-    T("wrd-a1t", 356, 316, 100, 20, "pipe (stdin)", fs=11, fw=700, color=A_ORG, align="center"),
-    LN("wrd-a2", 456, 390, -100, 0, stroke=A_GRN, sw=2),
-    T("wrd-a2t", 356, 396, 100, 20, "pipe (stdout)", fs=11, fw=700, color=A_GRN, align="center"),
-    # redo child 1
-    R("wrd-c1", 466, 260, 320, 120, fill="rgba(255,158,138,0.08)", stroke="rgba(255,158,138,0.4)"),
-    T("wrd-c1t", 466, 272, 320, 22, "tenant A: postgres --wal-redo (seccomp)", fs=12, fw=700, color=AC2, align="center", ff=MONO),
-    T("wrd-c1b", 486, 300, 280, 74,
-      "• 仅允许 read/write pipe<br>• 无网络、无 fs、无 fork<br>• 首请求 lazy spawn，长驻复用<br>• 崩溃不影响其他 tenant",
-      fs=11, color=DIM, lh=1.6),
-    R("wrd-c2", 466, 400, 320, 120, fill="rgba(255,158,138,0.05)", stroke="rgba(255,158,138,0.3)"),
-    T("wrd-c2t", 466, 412, 320, 22, "tenant B: postgres --wal-redo (seccomp)", fs=12, fw=700, color=AC2, align="center", ff=MONO),
-    T("wrd-c2b", 486, 440, 280, 74,
-      "• 独立进程 / 独立地址空间<br>• 恶意 WAL 无法越权<br>• 空闲 180s 被回收，下次重启<br>• 复用官方 Postgres redo 代码",
-      fs=11, color=DIM, lh=1.6),
-    # explanation
-    R("wrd-note", 820, 260, 366, 260, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)"),
-    T("wrd-noteh", 840, 276, 320, 22, "为什么这样设计？", fs=14, fw=700, color="#7CB3F4"),
-    T("wrd-noteb", 840, 306, 326, 210,
-      "① 直接把 pg redo 编入 pageserver → 一个 tenant 的坏 WAL 能<b>破坏所有 tenant</b><br><br>"
-      "② 抽象成 Rust 重写 → 数万行 pg C 代码，<b>维护成本爆炸</b><br><br>"
-      "③ Neon 选择：<b>复用官方 pg redo</b> + 沙箱进程隔离 —— 稳定性与安全兼得",
-      fs=12, color=DIM, lh=1.7),
-], p, notes="每 tenant 至多一个 seccomp 沙箱 postgres 进程做 WAL redo；首请求 lazy spawn、长驻复用、空闲 180s 由 housekeeping 循环回收（tenant.rs WALREDO_IDLE_TIMEOUT）。")
+std("s-compact", "PAGESERVER", "Compaction & GC 关键参数", [
+    T("cp-desc", 96, 170, 1088, 40,
+      "所有默认值来自 pageserver config，可 per-tenant override。",
+      fs=15, color=DIM, lh=1.5),
+    # table
+    R("cpt-bg", 96, 220, 528, 380, fill=PANEL, stroke=EDGE, radius=12),
+    T("cpt-h", 116, 236, 496, 26, "Compaction", fs=17, fw=800, color=AC),
+    *[T(f"cpt-l{i}", 116, 274 + i * 40, 496, 26,
+        f'<span style="color:#00E599;font-family:{MONO};font-weight:700">{k}</span>&nbsp;&nbsp;{v}',
 
-# ─────── WAL Redo 沙箱细节 ───────
+        fs=14, color=DIM, lh=1.3)
+      for i, (k, v) in enumerate([
+          ("checkpoint_distance", "= <b>256 MB</b>（open layer 大小）"),
+          ("checkpoint_timeout", "= <b>10 min</b>"),
+          ("compaction_period", "= <b>20 s</b>（扫描周期）"),
+          ("compaction_threshold", "= <b>10</b> 个 L0 触发合并"),
+          ("compaction_upper_limit", "= <b>20</b> 个 L0 单次上限"),
+          ("compaction_target_size", "= <b>128 MB</b> (L1 目标)"),
+          ("image_creation_threshold", "= <b>3</b> 个 delta → 物化 image"),
+          ("背压：l0_flush_delay", "≥ <b>30</b> 层 → flush 延迟 2×"),
+      ])],
+    R("gc-bg", 656, 220, 528, 380, fill=PANEL, stroke=EDGE, radius=12),
+    T("gc-h", 676, 236, 496, 26, "GC & 保留策略", fs=17, fw=800, color=AC2),
+    *[T(f"gc-l{i}", 676, 274 + i * 40, 496, 26,
+        f'<span style="color:#FF9E8A;font-family:{MONO};font-weight:700">{k}</span>&nbsp;&nbsp;{v}',
+
+        fs=14, color=DIM, lh=1.3)
+      for i, (k, v) in enumerate([
+          ("gc_period", "= <b>1 h</b>"),
+          ("pitr_interval", "= <b>7 天</b> (默认保留窗口)"),
+          ("gc_horizon", "= <b>64 MB</b> WAL"),
+          ("max_replication_write_lag", "= <b>500 MB</b>"),
+          ("max_replication_flush_lag", "= <b>10 GB</b>"),
+          ("page_cache_size", "= <b>64 MB</b> (跨 tenant 共享)"),
+          ("熔断器", "连续 <b>5 次</b> compact 失败 → 禁 24h"),
+          ("CONCURRENT_BG_TASKS", "= <b>3/4 × CPU</b>"),
+      ])],
+], p, notes="Compaction 关键参数：256MB/10min/L0=10/L1=128MB/image_thr=3；GC：7 天 PITR，5 次失败熔断")
+
+
+# ─────── Timeline 分支 GC ───────
 p += 1
-std("s-walredo-sec", "PAGESERVER", "沙箱边界细节：seccomp 白名单、加固与逃逸风险", [
-    *card("wrs1", 96, 172, 528, 244,
-          "① syscall 白名单（walredoproc.c:174-206）", [
-              "<span style=\"font-family:" + MONO + "\">exit_group / read / write / select / pselect6</span>　硬需求",
-              "<span style=\"font-family:" + MONO + "\">brk</span>　内存分配（glibc 只走 brk）",
-              "<span style=\"font-family:" + MONO + "\">mmap / munmap</span>　仅 musl 下放开（无 mallopt）",
-              "<span style=\"font-family:" + MONO + "\">getpid</span>（assert 失败路径）<span style=\"font-family:" + MONO + "\">futex</span>（errbacktrace）",
-              "",
-              "<b>就这些。</b>没有 open/openat、没有任何 socket 调用、",
-              "没有 fork/execve/clone、没有 ptrace",
-              "默认动作 <b>SCMP_ACT_TRAP</b> → SIGSYS → 打印",
-              "<span style=\"font-family:" + MONO + "\">seccomp: bad syscall &lt;n&gt;</span> 后 <span style=\"font-family:" + MONO + "\">_exit(1)</span>",
-          ], hc=AC2, fs=13, headfs=15),
-    *card("wrs2", 656, 172, 528, 244,
-          "② 进沙箱前的额外加固", [
-              "<span style=\"font-family:" + MONO + "\">close_range(3, ~0U, 0)</span>　关掉 PS 泄漏的所有 FD",
-              "<span style=\"font-family:" + MONO + "\">mallopt(M_MMAP_MAX, 0)</span>　逼 malloc 只用 brk，",
-              "&nbsp;&nbsp;这样 <b>连 mmap 都不必放开</b>",
-              "Rust 侧 <span style=\"font-family:" + MONO + "\">.env_clear()</span>，只留 LD_LIBRARY_PATH / *SAN",
-              "",
-              "<b>自检式加载</b>（seccomp.c:111-171）：先验证 openat 可用",
-              "→ 装只 trap openat 的测试 filter → 确认真被 trap",
-              "→ 才装正式 deny handler + 全量白名单",
-              "<b>时机</b>：延迟到主循环前才 enter，让启动路径不必上榜",
-          ], hc="#7CB3F4", fs=13, headfs=15),
-    *card("wrs3", 96, 430, 528, 214,
-          "③ 逃逸风险 & 明确没做的事", [
-              "<b>无 namespace、无 chroot</b> —— 文件系统隔离<b>只</b>靠不放",
-              "&nbsp;&nbsp;开 open/openat；chroot + mount ns 仍是 TODO（seccomp.c:67-73）",
-              "seccomp <b>只看 syscall 号，基本不查参数</b> → 已放开的",
-              "&nbsp;&nbsp;read/write 上依然可以乱来",
-              "stderr <b>无长度上限</b>：process.rs:133 明写「不信任子进程",
-              "&nbsp;&nbsp;限制 stderr 长度，目前可无界 Vec 分配」→ 可打爆 PS 内存",
-              "用 TRAP 而非 <span style=\"font-family:" + MONO + "\">SCMP_ACT_KILL_PROCESS</span>，是 open question",
-              "<span style=\"font-family:" + MONO + "\">--disable-seccomp</span> 可把沙箱整体关掉",
-          ], hc="#FFD54A", fs=12.5, headfs=15),
-    *card("wrs4", 656, 430, 528, 214,
-          "④ 租户隔离边界到哪为止", [
-              "<b>一 tenant shard 一进程</b>：PostgresRedoManager，",
-              "&nbsp;&nbsp;tenant.rs:1364；heavier_once_cell 合并并发 launch",
-              "<b>信任模型</b>（process.rs:90-97）：首个 redo 请求<b>之前</b>可信，",
-              "&nbsp;&nbsp;之后不可信 —— 前提是它已关 FD 且已自沙箱",
-              "被劫持的进程<b>能看到的只有本 tenant 的数据</b>",
-              "<span style=\"font-family:" + MONO + "\">redo_block_filter</span>：WAL 记录碰到非目标页 → warn + 忽略",
-              "<span style=\"font-family:" + MONO + "\">NoLeakChild</span>：drop 即 SIGKILL + wait；detach 用 gate 兜底",
-              "<b>注</b>：仓库内无公开的越权事故记录，以上是设计防线",
-          ], hc=AC, fs=12.5, headfs=15),
-], p, notes="沙箱细节全部对齐源码：白名单在 pgxn/neon_walredo/walredoproc.c:174-206（allowed_syscalls[]），默认动作 SCMP_ACT_TRAP 在 seccomp.c:167，deny handler seccomp.c:240-262 打印 seccomp: bad syscall 并 _exit(1)。#if 0 里的 shmctl/shmdt/unlink 是「优雅 shutdown 才需要」的调用，Neon 选择不放开、改用 _exit(0) 直接退（walredoproc.c:410-419）。enter_seccomp_mode 在 walredoproc.c:208-227：先 close_range(3,~0U,0) 因为 pageserver 可能漏 FD，再 mallopt(M_MMAP_MAX,0) 让 glibc malloc 只用 brk（MALLOC_NO_MMAP 定义在 62-65）。seccomp_load_rules 有自检：装 SIGSYS handler → 确认 openat 正常 → 装只 trap openat 的测试 filter → 确认 trap 触发 → 才装真 handler 和全量 filter。Rust 侧 WalRedoProcess::launch 在 process.rs:58-99：argv 是 postgres --wal-redo --tenant-shard-id，三管道，env_clear 只留 LD_LIBRARY_PATH/DYLD_LIBRARY_PATH/ASAN/UBSAN。风险面：没有 namespace/chroot，seccomp.c:67-73 把它列为未实现想法；stderr 无界是已知 TODO（process.rs:133）；--disable-seccomp 可关（walredoproc.c:346-350）。完整威胁模型见 docs/pageserver-walredo.md:13-45，设计取舍见 docs/core_changes.md:238-254。")
+std("s-gc", "PAGESERVER", "Timeline / 分支 GC：谁能被回收", [
+    T("gcx-desc", 96, 170, 1088, 44,
+      "GC 删的是<b>整个历史 layer 文件</b>，不做文件内部裁剪。"
+      "<span style=\"font-family:" + MONO + "\">tasks.rs gc_loop → gc_iteration → Timeline::gc_timeline</span>",
+      fs=14, color=DIM, lh=1.5),
+    R("gcx1-bg", 96, 222, 530, 262, fill=PANEL, stroke=EDGE, radius=12),
+    T("gcx1-h", 116, 238, 490, 24, "两条 cutoff 取更保守的那条", fs=16, fw=800, color=AC),
+    T("gcx1-b", 116, 272, 490, 202,
+      "<span style=\"font-family:" + MONO + "\">space</span> ← <b>gc_horizon</b>（默认 64 MiB WAL）<br>"
+      "&nbsp;&nbsp;= last_record_lsn − horizon<br>"
+      "<span style=\"font-family:" + MONO + "\">time</span> ← <b>pitr_interval</b>（默认 7 天）<br>"
+      "&nbsp;&nbsp;时间戳反查 LSN<br><br>"
+      "<span style=\"font-family:" + MONO + "\">GcCutoffs::select_min() = min(space, time)</span><br>"
+      "→ PITR 还没算出来时<b>什么都不能删</b><br><br>"
+      "<b>gc_period</b> 默认 1 h；设为 0 或 gc_horizon=0 则关闭<br>"
+      "以上均可 per-tenant override",
+      fs=12.5, color=DIM, lh=1.6),
+    R("gcx2-bg", 656, 222, 530, 262, fill=PANEL, stroke=EDGE, radius=12),
+    T("gcx2-h", 676, 238, 490, 24, "子分支如何钉住祖先数据", fs=16, fw=800, color=AC2),
+    T("gcx2-b", 676, 272, 490, 202,
+      "祖先 timeline 的 <span style=\"font-family:" + MONO + "\">GcInfo.retain_lsns</span> 记录所有<br>"
+      "子分支的分叉点：<span style=\"font-family:" + MONO + "\">Vec&lt;(Lsn, TimelineId, ..)&gt;</span><br>"
+      "• 子 Timeline 构造时 <span style=\"font-family:" + MONO + "\">insert_child()</span> 登记<br>"
+      "• 析构时 remove_child 摘除<br>"
+      "• GC 取 <b>max_retain_lsn</b>，凡 layer 起始 LSN ≤ 它<br>"
+      "&nbsp;&nbsp;一律保留（计入 layers_needed_by_branches）<br><br>"
+      "<b>只锁分叉点之前</b>：起始 LSN &gt; max_retain_lsn 的层<br>"
+      "&nbsp;&nbsp;仍按 cutoff 正常 GC，<b>不是整条历史都锁住</b><br>"
+      "建分支时持 gc_cs 锁并校验 GC cutoff，防与 GC 竞态",
+      fs=12.5, color=DIM, lh=1.6),
+    R("gcx3-bg", 96, 492, 1088, 170, fill=PANEL, stroke=EDGE, radius=10),
+    T("gcx3-h", 116, 504, 600, 20, "删除条件（五条全满足）· 与 S3 的关系 · 手工入口", fs=13, fw=800, color=AC),
+    T("gcx3-b", 116, 530, 1048, 125,
+      "<b>删一层要同时满足</b>：① 早于 space_cutoff　② 早于 time_cutoff(PITR)　③ 起始 LSN 高于所有子分支分叉点 max_retain_lsn<br>"
+      "&nbsp;&nbsp;④ 不被有效 LSN lease 覆盖　⑤ 有更新的 image layer <b>完整覆盖</b>其 key 范围<br>"
+      "<b>S3 侧不是立刻 DELETE</b>：schedule_gc_update 只把 layer 从 index_part.json <b>解链</b>，对象暂时悬挂，交给 scrubber 清理<br>"
+      "&nbsp;&nbsp;（对比 delete_timeline 走 remote_client.delete_all()，是真删）<br>"
+      "<b>手工入口</b>：PUT …/do_gc 立即触发 · DELETE …/timeline/&lt;id&gt; 删分支 · …/detach_ancestor 脱离祖先 · gc_blocking 暂停 GC",
+      fs=12, color=DIM, lh=1.65),
+], p, notes="GC 两条 cutoff 取 min：space 来自 gc_horizon(默认64MiB WAL)，time 来自 pitr_interval(默认7天)；PITR 未算出时不能删任何东西。gc_period 默认 1h。子分支通过祖先的 GcInfo.retain_lsns 钉住历史：GC 取 max_retain_lsn，只有起始 LSN 小于等于分叉点的 layer 才保留；起始 LSN 高于 max_retain_lsn 的层仍按 cutoff 正常回收，不是整条历史永久保留。删一层需五条件全满足，包括必须有更新的 image layer 完整覆盖其 key 范围。S3 侧 GC 只从 index_part.json 解链不立即删对象，留给 scrubber；delete_timeline 才是真删。")
+
+
+# ─────── History Window / pitr_interval 配在哪 ───────
+p += 1
+std("s-pitr-cfg", "PAGESERVER", "History Window 配在哪：一路从控制台落到 pageserver 的 GC", [
+    T("pit-desc", 96, 164, 1088, 40,
+      "官网那个「History window」滑块，最终只改了一个东西：<b>pageserver 的 tenant 配置 "
+      "<span style=\"font-family:" + MONO + "\">pitr_interval</span></b>。"
+      "它不「多存 WAL」，而是<b>拦住 GC</b>。",
+      fs=13, color=DIM, lh=1.5),
+    *card("pit1", 96, 210, 530, 202,
+          "① 用户面：per-project 设置", [
+              ("控制台 Settings → Instant restore 滑块", AC, 700),
+              "API：PATCH /api/v2/projects/{id}",
+              "&nbsp;&nbsp;{\"history_retention_seconds\": 604800}",
+              "Free <b>6 h</b>（且 1 GB 上限）· Launch 默认 <b>1 天</b>/上限 7 天",
+              "Scale 上限 <b>30 天</b>；改动对项目内<b>所有分支</b>生效",
+              ("独立计费项 History：$0.20/GB-月", AC2),
+              ("置 0 = 关掉 instant restore 与 time travel", FAINT),
+          ], hc=AC, fs=11.5, headfs=14.5),
+    *card("pit2", 660, 210, 524, 202,
+          "② 存储面：tenant config 字段", [
+              ("config.rs:571 pub pitr_interval: Duration", "#7CB3F4", 700),
+              "PS 自身默认 DEFAULT_PITR_INTERVAL = <b>\"7 days\"</b>",
+              "两层解析（tenant.rs:4192 get_pitr_interval）：",
+              "&nbsp;&nbsp;tenant_conf.pitr_interval",
+              "&nbsp;&nbsp;&nbsp;&nbsp;.unwrap_or(default_tenant_conf.pitr_interval)",
+              ("时间维度的兄弟是体积维度 gc_horizon（64 MiB）", AC2),
+              ("同族还有 gc_period（1 h，扫描周期）", FAINT),
+          ], hc="#7CB3F4", fs=11.5, headfs=14.5),
+    *card("pit3", 96, 426, 530, 202,
+          "③ 下发：storage controller 是前门", [
+              ("PATCH | PUT /v1/tenant/config（http.rs:2516）", AC2, 700),
+              "service.rs:3345 tenant_config_set 持 ConfigSet 独占锁",
+              "→ set_tenant_config_and_reconcile",
+              "→ persistence.update_tenant_shard → reconcile 到各分片",
+              "补丁语义：FieldPatch&lt;String&gt; + humantime::parse_duration",
+              ("PS 上有同名路由（routes.rs:4045），直连会被", "#FF8080", 700),
+              ("下次 reconcile 覆盖；storcon 视 TenantConfig 为不透明块", "#FF8080"),
+          ], hc=AC2, fs=11.5, headfs=14.5),
+    *card("pit4", 660, 426, 524, 202,
+          "④ 生效：GC 的时间 cutoff", [
+              ("gc_loop → refresh_gc_info → find_gc_cutoffs", "#C89EFF", 700),
+              "时间戳→LSN 靠<b>二分查 commit timestamp</b>（非精确）",
+              "pitr ≠ 0 且查到 ⇒ <b>time cutoff 权威，gc_horizon 被忽略</b>",
+              "pitr = 0 <b>不等于</b>不留：space 取 max(默认 7 天 cutoff,",
+              "&nbsp;&nbsp;gc_horizon cutoff)，避免空闲库无限留史",
+              ("非 shard0 不会算时间戳，改下载 shard0 的", FAINT),
+              ("index_part 取 latest_gc_cutoff_lsn 跟随", FAINT),
+          ], hc="#C89EFF", fs=11.5, headfs=14.5),
+    R("pit-band-bg", 96, 644, 1088, 40, fill="rgba(255,158,138,0.05)",
+      stroke="rgba(255,158,138,0.26)", radius=10),
+    T("pit-band", 112, 656, 1056, 22,
+      "别找错组件：<b>safekeeper 与此无关</b>——SK 的 WAL 截断看 "
+      "<span style=\"font-family:" + MONO + "\">calc_horizon_lsn</span>"
+      "（remote_consistent_lsn / backup_lsn），窗口拉长影响的是 PS 上 layer 留存与 synthetic_size。",
+      fs=11, color=DIM, lh=1.5),
+], p, notes="这一页回答「官网文档里的 history window 到底配在哪个组件」。答案：它是 pageserver 的 tenant 级配置 pitr_interval，控制面只是它的前端。① 用户面：Neon 控制台 Settings → Instant restore 有个 History window 滑块，也可以走公有 API PATCH /api/v2/projects/{project_id} 带 {\"project\": {\"history_retention_seconds\": N}}（秒，21600=6h / 86400=1天 / 604800=7天 / 2592000=30天）。这是 per-project 设置，对项目内所有分支生效。plan 限制：Free 默认也是上限 6 小时且历史容量封顶 1 GB；Launch 默认 1 天、上限 7 天；Scale 上限 30 天。留下来的 WAL 在 dashboard 上是独立的 History 用量口径，按 $0.20/GB-月 计（Free 不收但有 1GB 帽），置 0 就等于关掉 instant restore 和 time travel query。官方对生产的建议是拉到 7 天，理由是有些误操作要好几天才被发现。注意 history window 管的是分支数据的时间点恢复，和「删掉的项目还能恢复多久」是两件不同的事。② 存储面：字段定义在 libs/pageserver_api/src/config.rs:571-577，pub pitr_interval: Duration，注释写明 Determines how much history is retained, to allow branching and read replicas at an older point in time … Page versions older than this are garbage collected away；pageserver 自己的默认值 DEFAULT_PITR_INTERVAL = \"7 days\"（config.rs:892），docs/settings.md:110-112 也这么写。解析是两层 fallback，pageserver/src/tenant.rs:4192-4197 的 get_pitr_interval()：tenant_conf.pitr_interval.unwrap_or(self.conf.default_tenant_conf.pitr_interval)，即 per-tenant 覆盖优先，否则用 pageserver.toml 里的全局 default_tenant_conf。它和体积维度的 gc_horizon（默认 64 MiB WAL）、扫描周期 gc_period（默认 1 h）是同一族参数，详见 Compaction & GC 关键参数 与 Timeline/分支 GC 两页。③ 下发链路：PATCH 和 PUT /v1/tenant/config 这两个路由在 pageserver（pageserver/src/http/routes.rs:4045-4049，handler :1906-1975）和 storage controller（storage_controller/src/http.rs:2516-2528，另有 GET /v1/tenant/:tenant_id/config）上都存在，生产环境走 storcon：service.rs:3345-3372 的 tenant_config_set 先拿 TenantOperations::ConfigSet 的租户级独占锁、maybe_load_tenant，再 set_tenant_config_and_reconcile → persistence.update_tenant_shard(TenantFilter::Tenant(tenant_id), None, Some(config), None, ...) 落到 storcon 自己的 PG，然后 reconcile 到该 tenant 的所有分片。直接 PATCH pageserver 会在下一次 reconcile 时被 storcon 的持久值覆盖。storcon 对 TenantConfig 是完全不透明地存转，它源码里没有 pitr_interval 这个符号。补丁语义：models.rs:604 pitr_interval: FieldPatch<String>，应用时用 humantime::parse_duration 解析（:879-881）；全量 PUT 那条路是 Option<Duration>（:713）。neon_local 也认这个 setting（control_plane/src/pageserver.rs:471-474）。④ 生效路径：pitr_interval 不会让系统「多存 WAL」，它是通过限制 GC 来间接保留历史。tasks.rs 的 gc_loop → gc_iteration → refresh_gc_info（tenant.rs:4688-4704）把 pitr 传给 Timeline::find_gc_cutoffs(now, space_cutoff, pitr, ...)（timeline.rs:6715-6777）。时间戳→LSN 的换算在 find_gc_time_cutoff（timeline.rs:6620）里，只有 shard zero 能做（它有 SLRU 数据），实现是 pgdatadir_mapping.rs:963 的 find_lsn_for_timestamp，对 [max(gc_cutoff, ancestor_lsn), last_record_lsn] 区间按 8 字节对齐做二分，比较每个 LSN 处的 latest commit timestamp；源码注释明确说这个结果 is not exact，因为 commit 时间戳并不保证有序。四个分支的语义值得记住：pitr≠0 且查到时间戳 → GcCutoffs { time: Some(time_cutoff), space: time_cutoff }，即 Ignore size based retention and make time cutoff authoritative，gc_horizon 被彻底忽略；pitr≠0 但查不到（Past/NoData）→ 保守地把 time 定在已应用的 gc cutoff 上、仍尊重 space；pitr=0 且查到 → space 取 max(按 DEFAULT_PITR_INTERVAL 算出的 cutoff, space_cutoff)，注释写明这是为了 size-based retention 不会在空闲库上永久保留历史，所以 pitr=0 并不等于「立刻可以全删」；pitr=0 且查不到 → 退回纯 space。非 shard0 的分片不做时间戳查找，而是 download_foreign_index 拉 shard0 的 index_part，取 metadata.latest_gc_cutoff_lsn 作为自己的 cutoff 跟随。此外 pitr 还参与 compaction：compaction.rs:1484-1512 的 get_force_image_creation_lsn 用 pitr_interval 做分母决定强制生成 image layer 的位置，:1516-1540 的分片祖先层重写也以 pitr cutoff 为界。最后强调组件边界：safekeeper 不是这个参数的落点，SK 的 WAL 回收看 calc_horizon_lsn（min over remote_consistent_lsn / backup_lsn / commit_lsn / flush_lsn，见 Safekeeper 的 6 个持久 LSN 那页），跟 pitr_interval 没有关系；history window 拉长真正的代价发生在 pageserver 侧的 layer 留存量与 synthetic_size 计费。")
+
 
 # ─────── 背压 ───────
 p += 1
@@ -2991,146 +4119,98 @@ std("s-bp", "全链路", "背压：三层限速把写入速度钉在存储能力
       fs=11.5, color=DIM, lh=1.6),
 ], p, notes="背压分三层。①Compute侧：三个 max_replication_*_lag GUC，单位MB，write=500MB(对last_received_lsn) flush=10GB(对disk_consistent_lsn) apply=0关闭(对remote_consistent_lsn)。关于 apply_lag 语义：判断条件是 myFlushLsn > applyPtr + max_replication_apply_lag*MB 即本地已flush的LSN超前 remote_consistent_lsn(=已持久化到S3的最新LSN) 超过阈值才节流（walproposer_pg.c:546-548），不是等追平；=0 时该检查直接跳过(关闭)。开启的语义是限制写入速度不超前S3持久化进度太多，从而钳制 compute 崩溃/灾难恢复时的丢失窗口（强容灾），普通业务不需要。注意 apply_lag 只钳制写事务速度，不影响读：Primary 读走 neon_get_request_lsns 的 UINT64_MAX 路径仍能读到刚写入未持久化的数据。applyPtr=min_ps_feedback.remote_consistent_lsn(walproposer_pg.c:791)。实现是挂在 ProcessInterrupts 回调 backpressure_throttling_impl 上(walproposer_pg.c:625)，用户 backend 自己 pg_usleep(10ms/BACK_PRESSURE_DELAY) 后返回 true 导致反复重入，只卡写事务(am_walsender 和无事务ID即只读事务豁免，但 CREATE INDEX CONCURRENTLY 因 PROC_IN_SAFE_IC 仍节流)，多shard取最慢的。②PS摄入侧：l0_flush_delay_threshold 默认3倍compaction_threshold=30层，触发后延迟一次flush耗时即2倍慢；l0_flush_stall_threshold 默认关闭，触发则完全阻塞，compaction失败时豁免防死锁。传导路径是 ephemeral layer roll 时等 flush 完成从而卡住 ingest。③读路径：wait_lsn 等LSN追平默认超时300s；l0_flush 全局 Semaphore=num_cpus 限并发；timeline_get_throttle leaky bucket 默认禁用。运维要点：无超时上限，PS挂了写会无限期节流；用 neon.backpressure_throttling_time() 观测；flush_lag 小于 checkpoint 间隔会硬死锁。")
 
-# ─────── Slide 14: Compaction & GC ───────
+
+# ─────── Slide 13: WAL Redo 沙箱 ───────
 p += 1
-std("s-compact", "PAGESERVER", "Compaction & GC 关键参数", [
-    T("cp-desc", 96, 170, 1088, 40,
-      "所有默认值来自 pageserver config，可 per-tenant override。",
-      fs=15, color=DIM, lh=1.5),
-    # table
-    R("cpt-bg", 96, 220, 528, 380, fill=PANEL, stroke=EDGE, radius=12),
-    T("cpt-h", 116, 236, 496, 26, "Compaction", fs=17, fw=800, color=AC),
-    *[T(f"cpt-l{i}", 116, 274 + i * 40, 496, 26,
-        f'<span style="color:#00E599;font-family:{MONO};font-weight:700">{k}</span>&nbsp;&nbsp;{v}',
+std("s-walredo", "PAGESERVER", "WAL Redo：每租户独立的 seccomp 沙箱", [
+    T("wr-desc", 96, 175, 1088, 60,
+      "重建历史版本的页需要执行 Postgres WAL redo 代码 —— 这些代码不能信任跨租户数据。<br>"
+      "Neon 的方案：<b>每个 tenant 懒启动一个独立的 postgres 子进程做 redo，seccomp(2) 限制到最小系统调用集；进程长驻复用，空闲 180s 后回收</b>。",
+      fs=15, color=DIM, lh=1.7),
+    # diagram
+    R("wrd-ps", 96, 260, 260, 260, fill="rgba(0,229,153,0.08)", stroke="rgba(0,229,153,0.4)"),
+    T("wrd-pst", 96, 274, 260, 24, "Pageserver 主进程", fs=14, fw=700, color=AC, align="center"),
+    T("wrd-psn", 116, 310, 220, 200,
+      "GetPage 请求<br>→ 查 LayerMap<br>→ 读取 image + deltas<br>→ 通过 pipe 发送给 redo 子进程<br>→ 收回重建后的 8KB page",
+      fs=12, color=DIM, lh=1.7),
+    # arrows
+    LN("wrd-a1", 356, 340, 100, 0, stroke=A_ORG, sw=2),
+    T("wrd-a1t", 356, 316, 100, 20, "pipe (stdin)", fs=11, fw=700, color=A_ORG, align="center"),
+    LN("wrd-a2", 456, 390, -100, 0, stroke=A_GRN, sw=2),
+    T("wrd-a2t", 356, 396, 100, 20, "pipe (stdout)", fs=11, fw=700, color=A_GRN, align="center"),
+    # redo child 1
+    R("wrd-c1", 466, 260, 320, 120, fill="rgba(255,158,138,0.08)", stroke="rgba(255,158,138,0.4)"),
+    T("wrd-c1t", 466, 272, 320, 22, "tenant A: postgres --wal-redo (seccomp)", fs=12, fw=700, color=AC2, align="center", ff=MONO),
+    T("wrd-c1b", 486, 300, 280, 74,
+      "• 仅允许 read/write pipe<br>• 无网络、无 fs、无 fork<br>• 首请求 lazy spawn，长驻复用<br>• 崩溃不影响其他 tenant",
+      fs=11, color=DIM, lh=1.6),
+    R("wrd-c2", 466, 400, 320, 120, fill="rgba(255,158,138,0.05)", stroke="rgba(255,158,138,0.3)"),
+    T("wrd-c2t", 466, 412, 320, 22, "tenant B: postgres --wal-redo (seccomp)", fs=12, fw=700, color=AC2, align="center", ff=MONO),
+    T("wrd-c2b", 486, 440, 280, 74,
+      "• 独立进程 / 独立地址空间<br>• 恶意 WAL 无法越权<br>• 空闲 180s 被回收，下次重启<br>• 复用官方 Postgres redo 代码",
+      fs=11, color=DIM, lh=1.6),
+    # explanation
+    R("wrd-note", 820, 260, 366, 260, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)"),
+    T("wrd-noteh", 840, 276, 320, 22, "为什么这样设计？", fs=14, fw=700, color="#7CB3F4"),
+    T("wrd-noteb", 840, 306, 326, 210,
+      "① 直接把 pg redo 编入 pageserver → 一个 tenant 的坏 WAL 能<b>破坏所有 tenant</b><br><br>"
+      "② 抽象成 Rust 重写 → 数万行 pg C 代码，<b>维护成本爆炸</b><br><br>"
+      "③ Neon 选择：<b>复用官方 pg redo</b> + 沙箱进程隔离 —— 稳定性与安全兼得",
+      fs=12, color=DIM, lh=1.7),
+], p, notes="每 tenant 至多一个 seccomp 沙箱 postgres 进程做 WAL redo；首请求 lazy spawn、长驻复用、空闲 180s 由 housekeeping 循环回收（tenant.rs WALREDO_IDLE_TIMEOUT）。")
 
-        fs=14, color=DIM, lh=1.3)
-      for i, (k, v) in enumerate([
-          ("checkpoint_distance", "= <b>256 MB</b>（open layer 大小）"),
-          ("checkpoint_timeout", "= <b>10 min</b>"),
-          ("compaction_period", "= <b>20 s</b>（扫描周期）"),
-          ("compaction_threshold", "= <b>10</b> 个 L0 触发合并"),
-          ("compaction_upper_limit", "= <b>20</b> 个 L0 单次上限"),
-          ("compaction_target_size", "= <b>128 MB</b> (L1 目标)"),
-          ("image_creation_threshold", "= <b>3</b> 个 delta → 物化 image"),
-          ("背压：l0_flush_delay", "≥ <b>30</b> 层 → flush 延迟 2×"),
-      ])],
-    R("gc-bg", 656, 220, 528, 380, fill=PANEL, stroke=EDGE, radius=12),
-    T("gc-h", 676, 236, 496, 26, "GC & 保留策略", fs=17, fw=800, color=AC2),
-    *[T(f"gc-l{i}", 676, 274 + i * 40, 496, 26,
-        f'<span style="color:#FF9E8A;font-family:{MONO};font-weight:700">{k}</span>&nbsp;&nbsp;{v}',
 
-        fs=14, color=DIM, lh=1.3)
-      for i, (k, v) in enumerate([
-          ("gc_period", "= <b>1 h</b>"),
-          ("pitr_interval", "= <b>7 天</b> (默认保留窗口)"),
-          ("gc_horizon", "= <b>64 MB</b> WAL"),
-          ("max_replication_write_lag", "= <b>500 MB</b>"),
-          ("max_replication_flush_lag", "= <b>10 GB</b>"),
-          ("page_cache_size", "= <b>64 MB</b> (跨 tenant 共享)"),
-          ("熔断器", "连续 <b>5 次</b> compact 失败 → 禁 24h"),
-          ("CONCURRENT_BG_TASKS", "= <b>3/4 × CPU</b>"),
-      ])],
-], p, notes="Compaction 关键参数：256MB/10min/L0=10/L1=128MB/image_thr=3；GC：7 天 PITR，5 次失败熔断")
-
-# ─────── Timeline 分支 GC ───────
+# ─────── WAL Redo 沙箱细节 ───────
 p += 1
-std("s-gc", "PAGESERVER", "Timeline / 分支 GC：谁能被回收", [
-    T("gcx-desc", 96, 170, 1088, 44,
-      "GC 删的是<b>整个历史 layer 文件</b>，不做文件内部裁剪。"
-      "<span style=\"font-family:" + MONO + "\">tasks.rs gc_loop → gc_iteration → Timeline::gc_timeline</span>",
-      fs=14, color=DIM, lh=1.5),
-    R("gcx1-bg", 96, 222, 530, 262, fill=PANEL, stroke=EDGE, radius=12),
-    T("gcx1-h", 116, 238, 490, 24, "两条 cutoff 取更保守的那条", fs=16, fw=800, color=AC),
-    T("gcx1-b", 116, 272, 490, 202,
-      "<span style=\"font-family:" + MONO + "\">space</span> ← <b>gc_horizon</b>（默认 64 MiB WAL）<br>"
-      "&nbsp;&nbsp;= last_record_lsn − horizon<br>"
-      "<span style=\"font-family:" + MONO + "\">time</span> ← <b>pitr_interval</b>（默认 7 天）<br>"
-      "&nbsp;&nbsp;时间戳反查 LSN<br><br>"
-      "<span style=\"font-family:" + MONO + "\">GcCutoffs::select_min() = min(space, time)</span><br>"
-      "→ PITR 还没算出来时<b>什么都不能删</b><br><br>"
-      "<b>gc_period</b> 默认 1 h；设为 0 或 gc_horizon=0 则关闭<br>"
-      "以上均可 per-tenant override",
-      fs=12.5, color=DIM, lh=1.6),
-    R("gcx2-bg", 656, 222, 530, 262, fill=PANEL, stroke=EDGE, radius=12),
-    T("gcx2-h", 676, 238, 490, 24, "子分支如何钉住祖先数据", fs=16, fw=800, color=AC2),
-    T("gcx2-b", 676, 272, 490, 202,
-      "祖先 timeline 的 <span style=\"font-family:" + MONO + "\">GcInfo.retain_lsns</span> 记录所有<br>"
-      "子分支的分叉点：<span style=\"font-family:" + MONO + "\">Vec&lt;(Lsn, TimelineId, ..)&gt;</span><br>"
-      "• 子 Timeline 构造时 <span style=\"font-family:" + MONO + "\">insert_child()</span> 登记<br>"
-      "• 析构时 remove_child 摘除<br>"
-      "• GC 取 <b>max_retain_lsn</b>，凡 layer 起始 LSN ≤ 它<br>"
-      "&nbsp;&nbsp;一律保留（计入 layers_needed_by_branches）<br><br>"
-      "<b>只锁分叉点之前</b>：起始 LSN &gt; max_retain_lsn 的层<br>"
-      "&nbsp;&nbsp;仍按 cutoff 正常 GC，<b>不是整条历史都锁住</b><br>"
-      "建分支时持 gc_cs 锁并校验 GC cutoff，防与 GC 竞态",
-      fs=12.5, color=DIM, lh=1.6),
-    R("gcx3-bg", 96, 492, 1088, 170, fill=PANEL, stroke=EDGE, radius=10),
-    T("gcx3-h", 116, 504, 600, 20, "删除条件（五条全满足）· 与 S3 的关系 · 手工入口", fs=13, fw=800, color=AC),
-    T("gcx3-b", 116, 530, 1048, 125,
-      "<b>删一层要同时满足</b>：① 早于 space_cutoff　② 早于 time_cutoff(PITR)　③ 起始 LSN 高于所有子分支分叉点 max_retain_lsn<br>"
-      "&nbsp;&nbsp;④ 不被有效 LSN lease 覆盖　⑤ 有更新的 image layer <b>完整覆盖</b>其 key 范围<br>"
-      "<b>S3 侧不是立刻 DELETE</b>：schedule_gc_update 只把 layer 从 index_part.json <b>解链</b>，对象暂时悬挂，交给 scrubber 清理<br>"
-      "&nbsp;&nbsp;（对比 delete_timeline 走 remote_client.delete_all()，是真删）<br>"
-      "<b>手工入口</b>：PUT …/do_gc 立即触发 · DELETE …/timeline/&lt;id&gt; 删分支 · …/detach_ancestor 脱离祖先 · gc_blocking 暂停 GC",
-      fs=12, color=DIM, lh=1.65),
-], p, notes="GC 两条 cutoff 取 min：space 来自 gc_horizon(默认64MiB WAL)，time 来自 pitr_interval(默认7天)；PITR 未算出时不能删任何东西。gc_period 默认 1h。子分支通过祖先的 GcInfo.retain_lsns 钉住历史：GC 取 max_retain_lsn，只有起始 LSN 小于等于分叉点的 layer 才保留；起始 LSN 高于 max_retain_lsn 的层仍按 cutoff 正常回收，不是整条历史永久保留。删一层需五条件全满足，包括必须有更新的 image layer 完整覆盖其 key 范围。S3 侧 GC 只从 index_part.json 解链不立即删对象，留给 scrubber；delete_timeline 才是真删。")
+std("s-walredo-sec", "PAGESERVER", "沙箱边界细节：seccomp 白名单、加固与逃逸风险", [
+    *card("wrs1", 96, 172, 528, 244,
+          "① syscall 白名单（walredoproc.c:174-206）", [
+              "<span style=\"font-family:" + MONO + "\">exit_group / read / write / select / pselect6</span>　硬需求",
+              "<span style=\"font-family:" + MONO + "\">brk</span>　内存分配（glibc 只走 brk）",
+              "<span style=\"font-family:" + MONO + "\">mmap / munmap</span>　仅 musl 下放开（无 mallopt）",
+              "<span style=\"font-family:" + MONO + "\">getpid</span>（assert 失败路径）<span style=\"font-family:" + MONO + "\">futex</span>（errbacktrace）",
+              "",
+              "<b>就这些。</b>没有 open/openat、没有任何 socket 调用、",
+              "没有 fork/execve/clone、没有 ptrace",
+              "默认动作 <b>SCMP_ACT_TRAP</b> → SIGSYS → 打印",
+              "<span style=\"font-family:" + MONO + "\">seccomp: bad syscall &lt;n&gt;</span> 后 <span style=\"font-family:" + MONO + "\">_exit(1)</span>",
+          ], hc=AC2, fs=13, headfs=15),
+    *card("wrs2", 656, 172, 528, 244,
+          "② 进沙箱前的额外加固", [
+              "<span style=\"font-family:" + MONO + "\">close_range(3, ~0U, 0)</span>　关掉 PS 泄漏的所有 FD",
+              "<span style=\"font-family:" + MONO + "\">mallopt(M_MMAP_MAX, 0)</span>　逼 malloc 只用 brk，",
+              "&nbsp;&nbsp;这样 <b>连 mmap 都不必放开</b>",
+              "Rust 侧 <span style=\"font-family:" + MONO + "\">.env_clear()</span>，只留 LD_LIBRARY_PATH / *SAN",
+              "",
+              "<b>自检式加载</b>（seccomp.c:111-171）：先验证 openat 可用",
+              "→ 装只 trap openat 的测试 filter → 确认真被 trap",
+              "→ 才装正式 deny handler + 全量白名单",
+              "<b>时机</b>：延迟到主循环前才 enter，让启动路径不必上榜",
+          ], hc="#7CB3F4", fs=13, headfs=15),
+    *card("wrs3", 96, 430, 528, 214,
+          "③ 逃逸风险 & 明确没做的事", [
+              "<b>无 namespace、无 chroot</b> —— 文件系统隔离<b>只</b>靠不放",
+              "&nbsp;&nbsp;开 open/openat；chroot + mount ns 仍是 TODO（seccomp.c:67-73）",
+              "seccomp <b>只看 syscall 号，基本不查参数</b> → 已放开的",
+              "&nbsp;&nbsp;read/write 上依然可以乱来",
+              "stderr <b>无长度上限</b>：process.rs:133 明写「不信任子进程",
+              "&nbsp;&nbsp;限制 stderr 长度，目前可无界 Vec 分配」→ 可打爆 PS 内存",
+              "用 TRAP 而非 <span style=\"font-family:" + MONO + "\">SCMP_ACT_KILL_PROCESS</span>，是 open question",
+              "<span style=\"font-family:" + MONO + "\">--disable-seccomp</span> 可把沙箱整体关掉",
+          ], hc="#FFD54A", fs=12.5, headfs=15),
+    *card("wrs4", 656, 430, 528, 214,
+          "④ 租户隔离边界到哪为止", [
+              "<b>一 tenant shard 一进程</b>：PostgresRedoManager，",
+              "&nbsp;&nbsp;tenant.rs:1364；heavier_once_cell 合并并发 launch",
+              "<b>信任模型</b>（process.rs:90-97）：首个 redo 请求<b>之前</b>可信，",
+              "&nbsp;&nbsp;之后不可信 —— 前提是它已关 FD 且已自沙箱",
+              "被劫持的进程<b>能看到的只有本 tenant 的数据</b>",
+              "<span style=\"font-family:" + MONO + "\">redo_block_filter</span>：WAL 记录碰到非目标页 → warn + 忽略",
+              "<span style=\"font-family:" + MONO + "\">NoLeakChild</span>：drop 即 SIGKILL + wait；detach 用 gate 兜底",
+              "<b>注</b>：仓库内无公开的越权事故记录，以上是设计防线",
+          ], hc=AC, fs=12.5, headfs=15),
+], p, notes="沙箱细节全部对齐源码：白名单在 pgxn/neon_walredo/walredoproc.c:174-206（allowed_syscalls[]），默认动作 SCMP_ACT_TRAP 在 seccomp.c:167，deny handler seccomp.c:240-262 打印 seccomp: bad syscall 并 _exit(1)。#if 0 里的 shmctl/shmdt/unlink 是「优雅 shutdown 才需要」的调用，Neon 选择不放开、改用 _exit(0) 直接退（walredoproc.c:410-419）。enter_seccomp_mode 在 walredoproc.c:208-227：先 close_range(3,~0U,0) 因为 pageserver 可能漏 FD，再 mallopt(M_MMAP_MAX,0) 让 glibc malloc 只用 brk（MALLOC_NO_MMAP 定义在 62-65）。seccomp_load_rules 有自检：装 SIGSYS handler → 确认 openat 正常 → 装只 trap openat 的测试 filter → 确认 trap 触发 → 才装真 handler 和全量 filter。Rust 侧 WalRedoProcess::launch 在 process.rs:58-99：argv 是 postgres --wal-redo --tenant-shard-id，三管道，env_clear 只留 LD_LIBRARY_PATH/DYLD_LIBRARY_PATH/ASAN/UBSAN。风险面：没有 namespace/chroot，seccomp.c:67-73 把它列为未实现想法；stderr 无界是已知 TODO（process.rs:133）；--disable-seccomp 可关（walredoproc.c:346-350）。完整威胁模型见 docs/pageserver-walredo.md:13-45，设计取舍见 docs/core_changes.md:238-254。")
 
-# ─────── History Window / pitr_interval 配在哪 ───────
-p += 1
-std("s-pitr-cfg", "PAGESERVER", "History Window 配在哪：一路从控制台落到 pageserver 的 GC", [
-    T("pit-desc", 96, 164, 1088, 40,
-      "官网那个「History window」滑块，最终只改了一个东西：<b>pageserver 的 tenant 配置 "
-      "<span style=\"font-family:" + MONO + "\">pitr_interval</span></b>。"
-      "它不「多存 WAL」，而是<b>拦住 GC</b>。",
-      fs=13, color=DIM, lh=1.5),
-    *card("pit1", 96, 210, 530, 202,
-          "① 用户面：per-project 设置", [
-              ("控制台 Settings → Instant restore 滑块", AC, 700),
-              "API：PATCH /api/v2/projects/{id}",
-              "&nbsp;&nbsp;{\"history_retention_seconds\": 604800}",
-              "Free <b>6 h</b>（且 1 GB 上限）· Launch 默认 <b>1 天</b>/上限 7 天",
-              "Scale 上限 <b>30 天</b>；改动对项目内<b>所有分支</b>生效",
-              ("独立计费项 History：$0.20/GB-月", AC2),
-              ("置 0 = 关掉 instant restore 与 time travel", FAINT),
-          ], hc=AC, fs=11.5, headfs=14.5),
-    *card("pit2", 660, 210, 524, 202,
-          "② 存储面：tenant config 字段", [
-              ("config.rs:571 pub pitr_interval: Duration", "#7CB3F4", 700),
-              "PS 自身默认 DEFAULT_PITR_INTERVAL = <b>\"7 days\"</b>",
-              "两层解析（tenant.rs:4192 get_pitr_interval）：",
-              "&nbsp;&nbsp;tenant_conf.pitr_interval",
-              "&nbsp;&nbsp;&nbsp;&nbsp;.unwrap_or(default_tenant_conf.pitr_interval)",
-              ("时间维度的兄弟是体积维度 gc_horizon（64 MiB）", AC2),
-              ("同族还有 gc_period（1 h，扫描周期）", FAINT),
-          ], hc="#7CB3F4", fs=11.5, headfs=14.5),
-    *card("pit3", 96, 426, 530, 202,
-          "③ 下发：storage controller 是前门", [
-              ("PATCH | PUT /v1/tenant/config（http.rs:2516）", AC2, 700),
-              "service.rs:3345 tenant_config_set 持 ConfigSet 独占锁",
-              "→ set_tenant_config_and_reconcile",
-              "→ persistence.update_tenant_shard → reconcile 到各分片",
-              "补丁语义：FieldPatch&lt;String&gt; + humantime::parse_duration",
-              ("PS 上有同名路由（routes.rs:4045），直连会被", "#FF8080", 700),
-              ("下次 reconcile 覆盖；storcon 视 TenantConfig 为不透明块", "#FF8080"),
-          ], hc=AC2, fs=11.5, headfs=14.5),
-    *card("pit4", 660, 426, 524, 202,
-          "④ 生效：GC 的时间 cutoff", [
-              ("gc_loop → refresh_gc_info → find_gc_cutoffs", "#C89EFF", 700),
-              "时间戳→LSN 靠<b>二分查 commit timestamp</b>（非精确）",
-              "pitr ≠ 0 且查到 ⇒ <b>time cutoff 权威，gc_horizon 被忽略</b>",
-              "pitr = 0 <b>不等于</b>不留：space 取 max(默认 7 天 cutoff,",
-              "&nbsp;&nbsp;gc_horizon cutoff)，避免空闲库无限留史",
-              ("非 shard0 不会算时间戳，改下载 shard0 的", FAINT),
-              ("index_part 取 latest_gc_cutoff_lsn 跟随", FAINT),
-          ], hc="#C89EFF", fs=11.5, headfs=14.5),
-    R("pit-band-bg", 96, 644, 1088, 40, fill="rgba(255,158,138,0.05)",
-      stroke="rgba(255,158,138,0.26)", radius=10),
-    T("pit-band", 112, 656, 1056, 22,
-      "别找错组件：<b>safekeeper 与此无关</b>——SK 的 WAL 截断看 "
-      "<span style=\"font-family:" + MONO + "\">calc_horizon_lsn</span>"
-      "（remote_consistent_lsn / backup_lsn），窗口拉长影响的是 PS 上 layer 留存与 synthetic_size。",
-      fs=11, color=DIM, lh=1.5),
-], p, notes="这一页回答「官网文档里的 history window 到底配在哪个组件」。答案：它是 pageserver 的 tenant 级配置 pitr_interval，控制面只是它的前端。① 用户面：Neon 控制台 Settings → Instant restore 有个 History window 滑块，也可以走公有 API PATCH /api/v2/projects/{project_id} 带 {\"project\": {\"history_retention_seconds\": N}}（秒，21600=6h / 86400=1天 / 604800=7天 / 2592000=30天）。这是 per-project 设置，对项目内所有分支生效。plan 限制：Free 默认也是上限 6 小时且历史容量封顶 1 GB；Launch 默认 1 天、上限 7 天；Scale 上限 30 天。留下来的 WAL 在 dashboard 上是独立的 History 用量口径，按 $0.20/GB-月 计（Free 不收但有 1GB 帽），置 0 就等于关掉 instant restore 和 time travel query。官方对生产的建议是拉到 7 天，理由是有些误操作要好几天才被发现。注意 history window 管的是分支数据的时间点恢复，和「删掉的项目还能恢复多久」是两件不同的事。② 存储面：字段定义在 libs/pageserver_api/src/config.rs:571-577，pub pitr_interval: Duration，注释写明 Determines how much history is retained, to allow branching and read replicas at an older point in time … Page versions older than this are garbage collected away；pageserver 自己的默认值 DEFAULT_PITR_INTERVAL = \"7 days\"（config.rs:892），docs/settings.md:110-112 也这么写。解析是两层 fallback，pageserver/src/tenant.rs:4192-4197 的 get_pitr_interval()：tenant_conf.pitr_interval.unwrap_or(self.conf.default_tenant_conf.pitr_interval)，即 per-tenant 覆盖优先，否则用 pageserver.toml 里的全局 default_tenant_conf。它和体积维度的 gc_horizon（默认 64 MiB WAL）、扫描周期 gc_period（默认 1 h）是同一族参数，详见 Compaction & GC 关键参数 与 Timeline/分支 GC 两页。③ 下发链路：PATCH 和 PUT /v1/tenant/config 这两个路由在 pageserver（pageserver/src/http/routes.rs:4045-4049，handler :1906-1975）和 storage controller（storage_controller/src/http.rs:2516-2528，另有 GET /v1/tenant/:tenant_id/config）上都存在，生产环境走 storcon：service.rs:3345-3372 的 tenant_config_set 先拿 TenantOperations::ConfigSet 的租户级独占锁、maybe_load_tenant，再 set_tenant_config_and_reconcile → persistence.update_tenant_shard(TenantFilter::Tenant(tenant_id), None, Some(config), None, ...) 落到 storcon 自己的 PG，然后 reconcile 到该 tenant 的所有分片。直接 PATCH pageserver 会在下一次 reconcile 时被 storcon 的持久值覆盖。storcon 对 TenantConfig 是完全不透明地存转，它源码里没有 pitr_interval 这个符号。补丁语义：models.rs:604 pitr_interval: FieldPatch<String>，应用时用 humantime::parse_duration 解析（:879-881）；全量 PUT 那条路是 Option<Duration>（:713）。neon_local 也认这个 setting（control_plane/src/pageserver.rs:471-474）。④ 生效路径：pitr_interval 不会让系统「多存 WAL」，它是通过限制 GC 来间接保留历史。tasks.rs 的 gc_loop → gc_iteration → refresh_gc_info（tenant.rs:4688-4704）把 pitr 传给 Timeline::find_gc_cutoffs(now, space_cutoff, pitr, ...)（timeline.rs:6715-6777）。时间戳→LSN 的换算在 find_gc_time_cutoff（timeline.rs:6620）里，只有 shard zero 能做（它有 SLRU 数据），实现是 pgdatadir_mapping.rs:963 的 find_lsn_for_timestamp，对 [max(gc_cutoff, ancestor_lsn), last_record_lsn] 区间按 8 字节对齐做二分，比较每个 LSN 处的 latest commit timestamp；源码注释明确说这个结果 is not exact，因为 commit 时间戳并不保证有序。四个分支的语义值得记住：pitr≠0 且查到时间戳 → GcCutoffs { time: Some(time_cutoff), space: time_cutoff }，即 Ignore size based retention and make time cutoff authoritative，gc_horizon 被彻底忽略；pitr≠0 但查不到（Past/NoData）→ 保守地把 time 定在已应用的 gc cutoff 上、仍尊重 space；pitr=0 且查到 → space 取 max(按 DEFAULT_PITR_INTERVAL 算出的 cutoff, space_cutoff)，注释写明这是为了 size-based retention 不会在空闲库上永久保留历史，所以 pitr=0 并不等于「立刻可以全删」；pitr=0 且查不到 → 退回纯 space。非 shard0 的分片不做时间戳查找，而是 download_foreign_index 拉 shard0 的 index_part，取 metadata.latest_gc_cutoff_lsn 作为自己的 cutoff 跟随。此外 pitr 还参与 compaction：compaction.rs:1484-1512 的 get_force_image_creation_lsn 用 pitr_interval 做分母决定强制生成 image layer 的位置，:1516-1540 的分片祖先层重写也以 pitr cutoff 为界。最后强调组件边界：safekeeper 不是这个参数的落点，SK 的 WAL 回收看 calc_horizon_lsn（min over remote_consistent_lsn / backup_lsn / commit_lsn / flush_lsn，见 Safekeeper 的 6 个持久 LSN 那页），跟 pitr_interval 没有关系；history window 拉长真正的代价发生在 pageserver 侧的 layer 留存量与 synthetic_size 计费。")
 
 # ─────── Slide 15: Sharding & Generation ───────
 p += 1
@@ -3173,6 +4253,7 @@ std("s-shard", "PAGESERVER", "Sharding & Generation Number", [
       fs=13, color=DIM, lh=1.7),
 ], p, notes="Key = (spcNode, dbNode, relNode, forkNum, blkNum)，不含 TimelineId（timeline 是 tenant 内独立维度）。分片函数：hash_combine(murmurhash32(relNode), murmurhash32(blkNum/stripe_size)) % shard_count，注意是哈希不是简单除法。非 rel-block key（dbdir, slru 等）和 initfork 固定 shard 0，确保 shard 0 能独立出 basebackup。上游默认 stripe_size=2048(16MiB)，管控面传 32768(256MiB)。LSN 维度 sharding 未落地。Generation number 是无需 STONITH 的 split-brain 防护")
 
+
 # ─────── Secondary Pageserver ───────
 p += 1
 std("s-secondary", "PAGESERVER", "Secondary Location：热备用的只读缓存", [
@@ -3211,463 +4292,10 @@ std("s-secondary", "PAGESERVER", "Secondary Location：热备用的只读缓存"
 ], p, notes="Secondary 不服务客户端、不摄入 WAL，只维持温缓存。Attached 侧上传 heatmap(默认60s周期)标记每层access_time和cold位，Secondary只拉hot_layers跳过cold层。SC按PlacementPolicy::Attached(n)调度1主n从，node_secondary字段来自调度intent。迁移前Reconciler会调用tenant_secondary_download预热目的地，之后可以直接读本地盘避免冷启动S3回源；drain时还会比对secondary_lag。目录结构与attached完全相同，晋升不搬文件。")
 
 
-
-# ─────── Slide 18: Broker & Controller ───────
-
-p += 1
-std("s-splitbrain", "协调层", "如何防止 Compute / Pageserver 脑裂", [
-    T("sb-desc", 96, 168, 1088, 36,
-      "网络分区、VM 挂起、软件 bug 都可能让「一个身份」同时活两个进程。Neon 不 STONITH，而用 <b>单调递增编号</b> 让老进程<b>写不进也覆盖不了</b>。",
-      fs=14, color=DIM, lh=1.5),
-    # Left panel: Compute / Safekeeper (term)
-    R("sb1-bg", 96, 216, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("sb1-n", 116, 228, 200, 18, "COMPUTE ↔ SAFEKEEPER", fs=11, fw=800, color=AC, ff=MONO),
-    T("sb1-h", 116, 250, 500, 22, "term：Paxos-like 单调轮次号", fs=15, fw=800, color=AC),
-    T("sb1-b", 116, 278, 500, 230,
-      "<b>场景</b>：老 compute 被认为挂了 → 拉起新 compute，但老 compute 又活过来<br><br>"
-      "<b>机制</b>：SK 侧持久化 <span style=\"font-family:" + MONO + "\">acceptor_state.term</span><br>"
-      "&nbsp;&nbsp;walproposer 启动先发 VoteRequest → 多数派 SK ACK 后<br>"
-      "&nbsp;&nbsp;term 单调递增（<span style=\"font-family:" + MONO + "\">safekeeper.rs:1078</span> 持久化到磁盘）<br><br>"
-      "<b>老 compute 的下场</b><br>"
-      "&nbsp;&nbsp;发 AppendRequest 携带旧 term → SK 见 <span style=\"font-family:" + MONO + "\">term &gt; msg.term</span><br>"
-      "&nbsp;&nbsp;→ 回 <b>term-only</b> 响应（<span style=\"font-family:" + MONO + "\">safekeeper.rs:1316</span>）<br>"
-      "&nbsp;&nbsp;→ walproposer 感知后<b>整个重新选举，不能续写</b><br><br>"
-      "任一 SK term 提升即触发全局 term 升级；<br>"
-      "generation 不匹配也会 <span style=\"font-family:" + MONO + "\">bail!</span> 直接拒绝（storcon 变更配置）",
-      fs=11.5, color=DIM, lh=1.7),
-    # Right panel: Pageserver (generation number)
-    R("sb2-bg", 656, 216, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("sb2-n", 676, 228, 200, 18, "PAGESERVER ↔ S3", fs=11, fw=800, color=AC2, ff=MONO),
-    T("sb2-h", 676, 250, 500, 22, "generation number：S3 key 后缀", fs=15, fw=800, color=AC2),
-    T("sb2-b", 676, 278, 500, 230,
-      "<b>场景</b>：PS 无响应 → 迁移 tenant 到 PS-B；但 PS-A 又活过来写 S3<br><br>"
-      "<b>机制</b>：Storage Controller 是 generation 的<b>唯一颁发者</b><br>"
-      "&nbsp;&nbsp;每次 attach / 重启 <span style=\"font-family:" + MONO + "\">/re-attach</span> → generation +1<br>"
-      "&nbsp;&nbsp;所有 layer / index S3 key 带 <b>hex 后缀</b>（8 字节 u32）<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">xxx.__.gen-000000A3</span><br><br>"
-      "<b>老 PS 的下场</b><br>"
-      "&nbsp;&nbsp;仍能上传，但 key 里带旧 generation → <b>永不冲突</b><br>"
-      "&nbsp;&nbsp;index_part.json 版本号最高者胜（新 PS 加载最新）<br>"
-      "&nbsp;&nbsp;<b>DELETE 前必须先 <span style=\"font-family:" + MONO + "\">/upcall/v1/validate</span></b><br>"
-      "&nbsp;&nbsp;storcon 核验 generation 仍最新才允许物理删除<br><br>"
-      "→ 老 PS 覆盖不了、删不掉，最坏留些垃圾 S3 对象，靠 tombstone/GC 清",
-      fs=11.5, color=DIM, lh=1.7),
-    # Bottom band: design principles
-    R("sb3-bg", 96, 530, 1088, 132, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
-    T("sb3-h", 116, 542, 600, 20, "共同的设计取舍", fs=13, fw=800, color=AC),
-    T("sb3-b", 116, 568, 1048, 88,
-      "• <b>不依赖 STONITH</b>：假设总能杀掉 EC2 实例不现实（VM 挂起、宿主机 hung） → 用<b>编号防御性写入</b>代替强制杀进程<br>"
-      "• <b>控制面单点颁发编号</b>：storcon 用一个内建 Postgres 强一致存 generation；SK 用 Paxos 自己维护 term —— <b>都不在存储节点上跑共识</b><br>"
-      "• <b>正确 &gt; 可用</b>：允许老进程继续跑一会，但保证它<b>写入的对象和新进程隔离</b>；数据完整性优于短暂多写<br>"
-      "• storcon <b>自己脑裂</b>（RFC 037）：靠 K8s Lease + 启动读取 leader → 有限期共存，随后自动收敛",
-      fs=12, color=DIM, lh=1.7),
-], p, notes="双条防线 —— Compute/SK 侧用 term（Paxos），PS/S3 侧用 generation number（storcon 颁发的单调计数器）。Compute 脑裂：SK 持久化 acceptor_state.term，老 walproposer 用旧 term 发 AppendRequest 被 SK 拒绝返回 term_only 触发重新选举，见 safekeeper/src/safekeeper.rs:1316 handle_append_request。Generation 不匹配也直接 bail! 拒绝（storcon 变更 mconf）。PS 脑裂：所有 S3 key 带 generation 后缀（8字节hex u32），迁移或重启 storcon /re-attach 会递增 generation，老 PS 仍可上传但 key 隔离永不冲突。DELETE 必须先经 /upcall/v1/validate 让 storcon 核验 generation 仍最新，见 pageserver/src/deletion_queue/validator.rs 与 storage_controller/src/service.rs:2535。设计取舍：不依赖 STONITH、控制面单点颁发编号（storcon 用内建 Postgres，SK 用 Paxos）、正确优先于可用、storcon 自己脑裂靠 K8s Lease + RFC 037。参考：RFC 025-generation-numbers.md、RFC 028-pageserver-migration.md、RFC 037-storage-controller-restarts.md。")
-
-
-p += 1
-divider("s-div5", 6, "标志性能力实现", p)
-# ─────── Slide 19: Branching intro (morph target) ───────
-p += 1
-std("s-branch1", "BRANCHING", "Copy-on-Write 分支 —— Neon 的杀手锏", [
-    T("br-big", 96, 210, 700, 120, "&lt; 100 ms", fs=110, fw=900, color=AC, lh=1,
-      fx={"countUp": False}),
-    T("br-bigl", 100, 340, 700, 40, "创建一个分支所需时间", fs=22, fw=600, color=DIM),
-    *card("br-why", 96, 410, 1088, 150,
-          "为什么这么快？", [
-              "创建 branch = <b>只写一行元数据</b>：(new_timeline_id, ancestor_timeline_id, ancestor_lsn)",
-              "<b>不复制任何 layer 文件</b>。父分支的所有 layer 被子分支隐式共享。",
-              "读：子分支 miss → 递归到 ancestor 找　|　写：新 WAL 只写子分支目录，父分支不受影响。",
-          ], hc=AC2, fs=15, headfs=18),
-], p, notes="Branch = 只写一行元数据，不复制 layer 文件，秒级完成")
-
-# ─────── Slide 20: Branching detail (morph from 19) ───────
-p += 1
-std("s-branch2", "BRANCHING", "CoW 分支 vs 传统快照", [
-    # keep morph headline el
-    T("br-big", 96, 172, 400, 60, "CoW vs 快照", fs=34, fw=800, color=AC, lh=1.1),
-    # comparison table
-    R("brt-bg", 96, 240, 1088, 300, fill=PANEL, stroke=EDGE, radius=12),
-    # header
-    T("brt-h0", 130, 258, 300, 26, "维度", fs=14, fw=800, color=FG),
-    T("brt-h1", 470, 258, 340, 26, "传统 PG 复制 / 快照", fs=14, fw=800, color=AC2),
-    T("brt-h2", 830, 258, 340, 26, "Neon Branch", fs=14, fw=800, color=AC),
-    R("brt-hdiv", 130, 292, 1024, 1, fill="rgba(255,255,255,0.12)", stroke="none", sw=0, radius=0),
-    *[e for i, (d, a, b) in enumerate([
-        ("拷贝数据？", "是（GB → TB 级）", "否，仅元数据"),
-        ("建立时间", "分钟 ~ 小时", "秒级（&lt; 100 ms）"),
-        ("从历史 LSN 建", "需 PITR 完整回放", "直接指定 ancestor_lsn"),
-        ("物理开销", "复制后独立占用", "0，直到 diverge 才增长"),
-        ("逻辑大小归属", "复制后独立计", "父/子都是完整逻辑大小"),
-    ]) for e in (
-        T(f"brt-d{i}", 130, 312 + i * 44, 320, 24, d, fs=14, fw=600, color=DIM),
-        T(f"brt-a{i}", 470, 312 + i * 44, 340, 24, a, fs=14, fw=500, color=FAINT),
-        T(f"brt-b{i}", 830, 312 + i * 44, 340, 24, b, fs=14, fw=500, color=FG),
-    )],
-    T("br-note", 96, 556, 1088, 40,
-      "GC 删 layer 时需考虑所有 child 的 ancestor_lsn + pitr_interval(7天) + gc_horizon(64MB) 的并集。",
-      fs=13, color=FAINT, lh=1.5),
-], p, morph=True, notes="CoW 分支对比传统快照：不拷贝数据、秒级、可从历史 LSN 建")
-
-# ─────── Slide 21: Synthetic Size ───────
-p += 1
-std("s-synsize", "BRANCHING", "Synthetic Size：与物理布局解耦的计费", [
-    T("ss-desc", 96, 180, 1088, 90,
-      "因为物理大小依赖 CoW 共享 + compaction 时机，<b>用物理字节计费对用户不公平也不可预测</b>。<br>"
-      "Neon 定义 <b>Synthetic Size</b>：只从逻辑大小 + WAL 保留量推算，与底层实现完全解耦。",
-      fs=16, color=DIM, lh=1.8),
-    *card("ss1", 96, 300, 528, 220,
-          "Synthetic Size 的价值", [
-              "• 计费独立于存储实现细节",
-              "• 改进物理层（更好的 compaction）",
-              "&nbsp;&nbsp;只降低 Neon 自己的 COGS",
-              "&nbsp;&nbsp;<b>不改变用户账单</b>",
-              "• 分支共享的数据不重复计费",
-              "• 可预测：用户能自己估算",
-          ], fs=14, headfs=17),
-    *card("ss2", 656, 300, 528, 220,
-          "计算输入", [
-              "• 各 timeline 的逻辑大小",
-              "• 分支拓扑（共享祖先部分只计一次）",
-              "• pitr_interval 窗口内保留的 WAL 量",
-              "",
-              "→ 一个确定性函数，不依赖 layer 文件的",
-              "&nbsp;&nbsp;实际磁盘占用",
-          ], hc=AC2, fs=14, headfs=17),
-], p, notes="Synthetic size 从逻辑大小+WAL 量推算，与物理布局解耦，保证计费可预测")
-
-
-# ─────── 分支 Schema Diff ───────
-p += 1
-std("s-schema-diff", "BRANCHING", "分支 Schema Diff：Butterfly 的实现（Neon 上游未实现）", [
-    T("sd-desc", 96, 168, 1088, 40,
-      "Neon 上游<b>没有</b> schema/branch diff 功能，只提供 <span style=\"font-family:" + MONO + "\">pg_dump --schema-only</span> 原语；"
-      "Butterfly 在其之上封装了「与父分支对比」的能力。",
-      fs=14, color=DIM, lh=1.5),
-    # left: Neon primitive
-    R("sd1-bg", 96, 216, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("sd1-n", 116, 228, 200, 18, "NEON UPSTREAM", fs=11, fw=800, color=AC, ff=MONO),
-    T("sd1-h", 116, 250, 500, 22, "只提供 pg_dump 原语，没有 diff", fs=15, fw=800, color=AC),
-    T("sd1-b", 116, 278, 500, 230,
-      "<b>可用的构件</b>：每台 compute 都暴露<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">GET /database_schema?database=&lt;db&gt;</span><br>"
-      "&nbsp;&nbsp;→ compute_ctl 内部 shell 出 <span style=\"font-family:" + MONO + "\">pg_dump --schema-only</span><br>"
-      "&nbsp;&nbsp;→ 把 DDL 文本流式返回<br><br>"
-      "<b>代码位置</b><br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">compute_tools/src/catalog.rs:57</span> get_database_schema<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">http/routes/database_schema.rs:25</span> HTTP handler<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">compute_tools/src/http/openapi_spec.yaml:176</span><br><br>"
-      "<b>关于 diff 的历史提及</b>：仅 <span style=\"font-family:" + MONO + "\">docs/rfcs/003-laptop-cli.md:232</span><br>"
-      "&nbsp;&nbsp;2022 年 CLI 设计草案里一句 <b>neon snapshot diff</b><br>"
-      "&nbsp;&nbsp;针对本地 snapshot，非分支，<b>从未落地</b>",
-      fs=11.5, color=DIM, lh=1.7),
-    # right: Butterfly implementation
-    R("sd2-bg", 656, 216, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("sd2-n", 676, 228, 200, 18, "BUTTERFLY", fs=11, fw=800, color=AC2, ff=MONO),
-    T("sd2-h", 676, 250, 490, 22, "分支 ↔ 父分支对比（scope 受限）", fs=15, fw=800, color=AC2),
-    T("sd2-b", 676, 278, 490, 230,
-      "<b>API</b>　<span style=\"font-family:" + MONO + "\">GET /api/v2/branches/:id/schema-diff</span><br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">?database=&lt;db&gt;</span>　只接 database，<b>无第二 branch 参数</b><br>"
-      "&nbsp;&nbsp;仅比对<b>直接父分支</b>；root 分支返回 BadParam<br><br>"
-      "<b>核心流程</b>　<span style=\"font-family:" + MONO + "\">lib_branch_schema.py</span><br>"
-      "&nbsp;&nbsp;① find_active_pod × 2（父/子各自定位）<br>"
-      "&nbsp;&nbsp;② ThreadPoolExecutor <b>并发</b> fetch_schema<br>"
-      "&nbsp;&nbsp;&nbsp;&nbsp;→ 各调各 pod 的 <span style=\"font-family:" + MONO + "\">/database_schema</span><br>"
-      "&nbsp;&nbsp;③ clean_schema 剔除 pg_dump timestamp/version 头<br>"
-      "&nbsp;&nbsp;④ Python <span style=\"font-family:" + MONO + "\">difflib.unified_diff</span> 出报告<br><br>"
-      "<b>返回</b>　unified-diff 文本 + <span style=\"font-family:" + MONO + "\">lines_added</span> /<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">lines_removed</span> / <span style=\"font-family:" + MONO + "\">has_changes</span>",
-      fs=11.5, color=DIM, lh=1.7),
-    # bottom band
-    R("sd3-bg", 96, 530, 1088, 132, fill="rgba(255,158,138,0.06)", stroke="rgba(255,158,138,0.3)", radius=10),
-    T("sd3-h", 116, 542, 900, 20, "为什么只对比父分支 & Neon 为什么没做", fs=13, fw=800, color=AC2),
-    T("sd3-b", 116, 568, 1048, 88,
-      "• <b>父子对齐 CoW 语义</b>：子分支继承父分支所有 layer，diff = 「从 ancestor_lsn 之后子分支上做了哪些 DDL」，与 branching 模型天然对齐<br>"
-      "• <b>任意分支对比</b>需要显式路径找 LCA、可能跨 project／跨 shard，控制面复杂度高；先满足 90% 场景（review 一次变更）<br>"
-      "• Neon 上游只关心「让 compute 能被 dump」；<b>UI/diff 是控制面职责</b>，故只提供原语不做上层功能 ── 与 Butterfly 分工合理<br>"
-      "• 前端：<span style=\"font-family:" + MONO + "\">branch-schema-diff.json</span> 直接调该 API；几乎每个分支页面都挂 「Schema Diff」 tab",
-      fs=12, color=DIM, lh=1.7),
-], p, notes="分支 Schema Diff：Neon 上游没有实现（grep .rs/.py/.md/.go 关于 schema_diff/branch diff 全无命中，只在 docs/rfcs/003-laptop-cli.md:232 有 2022 年一句 CLI 草案 neon snapshot diff 从未实现）。Neon 只提供构件：GET /database_schema?database=<db> 每个 compute 上暴露，compute_ctl 内部 shell 出 pg_dump --schema-only 流式返回 DDL，代码 compute_tools/src/catalog.rs:57 get_database_schema、http/routes/database_schema.rs:25、openapi_spec.yaml:176。Butterfly 在其上封装 GET /api/v2/branches/:branch_id/schema-diff?database=<db>，代码 handlers/branch/api_branch_schema_diff.py:32、lib_branch_schema.py。scope 只支持与直接父分支对比（api_branch_schema_diff.py:53 取 branch_b_obj.parent_branch_id；无父返回 BadParam）。流程：find_active_pod × 2 定位父子 pod → ThreadPoolExecutor 并发 fetch_schema 各调 compute_ctl HTTP /database_schema → clean_schema 剔除 pg_dump timestamp/version 头减 diff 噪声 → difflib.unified_diff。返回 unified-diff 文本+ lines_added/lines_removed/has_changes。前端 branch-schema-diff.json 直接调，每个分支页都挂 Schema Diff tab。文档 static/docs/schema-diff.md、api/branches.md:486。设计取舍：父子对齐 CoW 语义、任意分支对比需 LCA 复杂度高、Neon 上游只做原语上层留给控制面。")
-
-
-# ─────── Slide 22: Proxy ───────
-
-p += 1
-std("s-time-travel", "BRANCHING", "Time Travel：查询「过去某一刻」的数据库", [
-    T("tt-desc", 96, 166, 1088, 44,
-      "对<b>历史某个时间点/LSN</b> 跑<b>只读</b>查询，不动生产数据。本质是 <b>instant restore + 瞬时分支</b>的组合："
-      "选定时刻 → Neon 用 CoW 在那个 LSN 拉起一个<b>临时分支 + 临时 compute</b> → 查完即焚。"
-      "依赖的正是 proxy 侧 <span style=\"font-family:" + MONO + "\">neon_lsn</span> / <span style=\"font-family:" + MONO + "\">neon_timestamp</span> 这类 <span style=\"font-family:" + MONO + "\">is_ephemeral</span> 选项。",
-      fs=13, color=DIM, lh=1.5),
-    # left card: how it works
-    R("tt1-bg", 96, 220, 534, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("tt1-n", 114, 232, 300, 18, "怎么工作", fs=11, fw=800, color=AC, ff=MONO),
-    T("tt1-h", 114, 254, 500, 22, "临时分支 + 临时 compute，查完即焚", fs=15, fw=800, color=AC),
-    T("tt1-b", 114, 284, 500, 228,
-      "① 选定时间点 / LSN（必须落在 <b>history window</b> 内）<br>"
-      "② Neon 在该 LSN 处<b>瞬时建分支</b>（CoW，秒级）<br>"
-      "③ 拉起一个 <b>ephemeral compute</b>（<span style=\"font-family:" + MONO + "\">.50 CU / 2GB</span>）<br>"
-      "④ 你的只读查询打到这台临时 PG<br>"
-      "⑤ <b>停止查询 30s 后</b>：<span style=\"font-family:" + MONO + "\">suspend_compute</span> →<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">delete_timeline</span>，临时分支与 endpoint 一并回收<br><br>"
-      "临时分支<b>不出现在 Branches 页 / list 接口</b>，<br>"
-      "只在 <b>Operations 页</b>留痕：<span style=\"font-family:" + MONO + "\">create_branch</span> /<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">start_compute</span> / <span style=\"font-family:" + MONO + "\">suspend_compute</span> / <span style=\"font-family:" + MONO + "\">delete_timeline</span>",
-      fs=11.5, color=DIM, lh=1.72),
-    # right card: how to use
-    R("tt2-bg", 650, 220, 534, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("tt2-n", 668, 232, 300, 18, "怎么用（三个入口）", fs=11, fw=800, color=AC2, ff=MONO),
-    T("tt2-h", 668, 254, 500, 22, "连接串锚定 branch@时刻", fs=15, fw=800, color=AC2),
-    T("tt2-b", 668, 284, 500, 228,
-      "<b>① CLI</b>　<span style=\"font-family:" + MONO + "\">&lt;branch&gt;@&lt;timestamp|LSN&gt;</span><br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">neon cs main@2024-04-21T00:00:00Z</span>（RFC3339）<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">neon cs main@0/234235</span>（LSN 更精细）<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">--psql</span> 直连；省略 branch = 默认分支<br>"
-      "<b>② SQL Editor</b>：Time Travel 开关，在<br>"
-      "&nbsp;&nbsp;「当前」与「历史」数据间切换<br>"
-      "<b>③ Backup &amp; Restore</b>：Time Travel Assist —<br>"
-      "&nbsp;&nbsp;正式 restore 前<b>先验证恢复点</b>是否正确<br><br>"
-      "<b>用途</b>：查异常/事故根因、评估变更影响、<br>"
-      "&nbsp;&nbsp;合规审计、restore 前预演",
-      fs=11.5, color=DIM, lh=1.72),
-    # bottom band: limits
-    R("tt3-bg", 96, 534, 1088, 128, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.32)", radius=10),
-    T("tt3-h", 116, 546, 1000, 20, "边界与限制", fs=13, fw=800, color=AC2),
-    T("tt3-b", 116, 572, 1048, 84,
-      "• <b>只读</b>：仅允许<b>非破坏性只读查询</b>，任何试图改历史数据的语句直接报错（历史是不可变的 layer，本就写不进去）<br>"
-      "• <b>受 history window 约束</b>：只能查保留窗口内的时间点（与 instant restore 同一份 PITR 配置），窗口外不允许 —— 见 <span style=\"font-family:" + MONO + "\">s-pitr-cfg</span> / <span style=\"font-family:" + MONO + "\">s-gc</span><br>"
-      "• <b>范围仅数据库时间线</b>：覆盖 Postgres 状态（含 <span style=\"font-family:" + MONO + "\">neon_auth</span> schema）；对象存储桶 / Functions / AI Gateway 配置<b>不在</b>时间线内<br>"
-      "• <b>计费</b>：临时 endpoint 与普通 active endpoint 一样计入用量，但生命周期极短（停查 30s 即挂起回收）",
-      fs=11.5, color=DIM, lh=1.72),
-], p, notes="Time Travel（Neon 官网 instant restore 特性）：对历史时间点/LSN 跑只读查询，不改生产数据，通过 WAL 记录追踪变更。工作机制：选定时间点后 Neon 用 instant branching 在该 LSN 处建临时分支 + 临时 compute（ephemeral），这些 compute 不显示在 Branches 页或 list 请求，但创建/删除会在 Operations 页留痕（start_compute/create_branch/delete_timeline/suspend_compute）。ephemeral endpoint 查询期间保持 active，停止查询 30 秒后 timeline 被删、endpoint 被移除。endpoint 用 .50 CU（2GB RAM）。底层与 proxy 的 cplane 选项呼应：neon_lsn/neon_timestamp/neon_endpoint_type 的 is_ephemeral() 返回 true（proxy/src/proxy/mod.rs:287-298），正是拉起 ephemeral compute 的入口，区别于 neon_proxy_params_compat（返回 false，纯 proxy flag）。history window：只能查项目 history window（与 instant restore 同一 PITR 保留配置）内的时间点，窗口外不允许，配置链路见 s-pitr-cfg / GC 见 s-gc。访问入口三种：SQL Editor（Time Travel 开关切换当前/历史数据）、Backup & Restore（Restore from history 下的 Time Travel Assist，正式 branch restore 前验证恢复点）、Neon CLI（point-in-time 连接串，脚本/分析用）。CLI 语法：neon connection-string <branch>@<timestamp|LSN>；timestamp 用 RFC3339，如 neon connection-string main@2024-04-21T00:00:00Z；直连 psql：neon cs main@2024-01-01T00:00:00Z --psql；LSN 更精细：neon cs main@0/234235；多 project 用 --project-id 或 neon set-context --project-id；省略 branch 连默认分支。用途：调查异常、评估新特性影响、排障、合规审计。限制：只读，仅允许非破坏性只读查询，改历史数据的语句报错（历史 layer 不可变）；覆盖 Postgres 状态含 neon_auth schema，但对象存储桶/Functions/AI Gateway 配置不在数据库时间线内。计费：ephemeral endpoint 与普通 active endpoint 一样计入 consumption，但短命，停查 30s 后挂起。文档来源 https://neon.com/docs/guides/time-travel-assist。")
-
-
-p += 1
-std("s-wake", "PROXY", "wake_compute：从「连接请求」到「一台活着的 Postgres」", [
-    T("wk-desc", 96, 166, 1088, 38,
-      "Proxy <b>每次连接前都会调一次</b> wake_compute（<span style=\"font-family:" + MONO + "\">connect_compute.rs:114</span>）；"
-      "连接失败且错误可重试时<b>作废缓存再叫一次</b> —— 这就是「compute 已经被销毁、缓存过期」的自愈路径。",
-      fs=13.5, color=DIM, lh=1.5),
-    # left: proxy side
-    R("wk1-bg", 96, 212, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("wk1-n", 116, 224, 260, 18, "PROXY 侧（RUST）", fs=11, fw=800, color=AC, ff=MONO),
-    T("wk1-h", 116, 246, 500, 22, "缓存优先 + 单飞 + 退避重试", fs=15, fw=800, color=AC),
-    T("wk1-b", 116, 274, 500, 232,
-      "① 先查 <b>node_info 缓存</b>（moka）<span style=\"font-family:" + MONO + "\">cache/node_info.rs:8</span><br>"
-      "&nbsp;&nbsp;默认 <span style=\"font-family:" + MONO + "\">size=4000, idle_ttl=4m</span>（<b>空闲</b> TTL，非绝对）<br>"
-      "&nbsp;&nbsp;命中即返回，标记 <span style=\"font-family:" + MONO + "\">ColdStartInfo::WarmCached</span><br>"
-      "&nbsp;&nbsp;<b>失败也缓存</b>，但只 30s（或按 retry_info.retry_at）<br>"
-      "② miss → 取 <b>per-endpoint 许可</b>（ApiLocks）再<b>二次查缓存</b><br>"
-      "&nbsp;&nbsp;防惊群 dog-piling；另有 endpoint 级限流<br>"
-      "③ 真正发 <span style=\"font-family:" + MONO + "\">GET /wake_compute?session_id=&amp;<br>"
-      "&nbsp;&nbsp;application_name=&amp;endpointish=ep-xxx</span><br>"
-      "&nbsp;&nbsp;头带 <span style=\"font-family:" + MONO + "\">Authorization: Bearer &lt;jwt&gt;</span> + X-Request-ID<br>"
-      "④ 可重试错误 → <b>指数退避</b>重试<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">num_retries=8, base=100ms, exp=1.6</span> ≈ 总 7s<br>"
-      "&nbsp;&nbsp;wake 成功后连 PG 另有一套：<span style=\"font-family:" + MONO + "\">5 次 / 200ms / ×2</span>",
-      fs=11.5, color=DIM, lh=1.66),
-    # right: butterfly side
-    R("wk2-bg", 656, 212, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("wk2-n", 676, 224, 260, 18, "BUTTERFLY 侧（PYTHON）", fs=11, fw=800, color=AC2, ff=MONO),
-    T("wk2-h", 676, 246, 490, 22, "分布式锁 + 温池取 pod + 等就绪", fs=15, fw=800, color=AC2),
-    T("wk2-b", 676, 274, 490, 232,
-      "① 解析 <span style=\"font-family:" + MONO + "\">endpointish</span> → endpoint_id + <b>pooled 标记</b><br>"
-      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">-pooler</span> 后缀＝走 PgBouncer）<br>"
-      "② <b>Redis 分布式锁</b> <span style=\"font-family:" + MONO + "\">wake:{endpoint_id}</span>，TTL 30s<br>"
-      "③ 锁内按需<b>补齐前置状态</b>：Project storage attach、<br>"
-      "&nbsp;&nbsp;分支 unarchive；<span style=\"font-family:" + MONO + "\">RESTARTING/RESTORING</span> 直接回可重试 503<br>"
-      "④ 绑定 compute：<b>复用现有健康 pod</b>，否则从<br>"
-      "&nbsp;&nbsp;<b>温 pod 池</b>分配 —— <b>热路径上不创建 k8s pod</b><br>"
-      "⑤ 新分配则<b>同步等就绪</b>：每 <b>0.5s</b> 轮询 status，<br>"
-      "&nbsp;&nbsp;最多 <b>8s</b> 等到 RUNNING；超时回 503 +<br>"
-      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">RETRY_POD_INIT_IN_PROGRESS, retry_delay_ms=1000</span><br>"
-      "⑥ pooled 模式额外 sleep <b>1s</b> 让 PgBouncer<br>"
-      "&nbsp;&nbsp;清掉 <span style=\"font-family:" + MONO + "\">server_login_retry</span> 陈旧缓存",
-      fs=11.5, color=DIM, lh=1.66),
-    # bottom: wire contract
-    R("wk3-bg", 96, 526, 1088, 136, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
-    T("wk3-h", 116, 538, 900, 20, "线上协议（两侧字段严格对齐）", fs=13, fw=800, color=AC),
-    T("wk3-b", 116, 564, 1048, 92,
-      "<b>成功 200</b>　<span style=\"font-family:" + MONO + "\">{\"address\": \"10.244.1.23:5432\", \"server_name\": null, \"aux\": {endpoint_id, project_id, branch_id, compute_id, cold_start_info}}</span><br>"
-      "&nbsp;&nbsp;Proxy 用 <span style=\"font-family:" + MONO + "\">address</span> 拆 host:port；<span style=\"font-family:" + MONO + "\">server_name</span> 有值则 <b>SslMode::Require</b>，null 则 Disable；<span style=\"font-family:" + MONO + "\">aux</span> 进 metrics<br>"
-      "&nbsp;&nbsp;pooled 时 port 换成 <b>PgBouncer 端口</b>；Rust 侧结构体 <span style=\"font-family:" + MONO + "\">WakeCompute</span>（<span style=\"font-family:" + MONO + "\">control_plane/messages.rs:289</span>）<br>"
-      "<b>失败</b>　<span style=\"font-family:" + MONO + "\">{error, status:{code, message, details:{user_facing_message, error_info.reason, retry_info.retry_delay_ms}}}</span><br>"
-      "&nbsp;&nbsp;可重试 reason：<span style=\"font-family:" + MONO + "\">RUNNING_OPERATIONS / CONCURRENCY_LIMIT_REACHED / LOCK_ALREADY_TAKEN / ENDPOINT_IDLE / PROJECT_UNDER_MAINTENANCE</span>",
-      fs=11.5, color=DIM, lh=1.7),
-], p, notes="wake_compute 全链路。Proxy 侧：connect_compute.rs:114 每次连接前无条件调 wake_compute；连接失败且 err.should_retry_wake_compute() 为真且节点信息来自缓存，则 invalidate_cache 后再 wake（connect_compute.rs:135-154，retry.rs:64 大部分 IO 错误都算可重试，含义是 compute 可能已销毁缓存过期）。wake_compute 实现 cplane_proxy_v1.rs:409：先查 node_info 缓存（check_cache! 宏 416-435），moka Cache（cache/node_info.rs:8），默认 CACHE_DEFAULT_OPTIONS=size=4000,idle_ttl=4m（config.rs:119，--wake-compute-cache），命中标 ColdStartInfo::WarmCached（466）；错误也缓存但用 CplaneExpiry 默认 30s（cache/common.rs:13,92），若控制面返回 retry_info.retry_at 则用它。miss 后取 per-endpoint ApiLocks 许可（443-450）再二次查缓存防 dog-piling，还有 wake_compute_endpoint_rate_limiter 限流（452）。真正 HTTP 见 do_wake_compute（272-336）：GET .../wake_compute?session_id=&application_name=&endpointish=，头 Authorization Bearer jwt + X-Request-ID。重试 proxy/src/proxy/wake_compute.rs:31 循环 + retry_after 指数退避，配置 WAKE_COMPUTE_DEFAULT_VALUES=num_retries=8,base_retry_wait_duration=100ms,retry_wait_exponent_base=1.6 约 7s（config.rs:256）；wake 成功后连 PG 用 CONNECT_TO_COMPUTE_DEFAULT_VALUES=5次/200ms/×2（config.rs:252）。per-endpoint wake 并发锁默认 permits=0 即关闭（config.rs:308）。Butterfly 侧 handlers/proxy_callback/api_compute_wake.py:33 GET /wake_compute + @require_proxy_auth：compute_wake_impl（lib_compute_wake.py:704）解析 endpointish 为 endpoint_id+pooled；wake_endpoint_under_lock（612）校验后取 Redis 分布式锁 wake:{endpoint_id} TTL 30s（lib_endpoint_wake_lock.py:12）；_wake_under_lock（551）处理 Project storage attach、分支 unarchive、状态校验（RESTARTING/RESTORING 回可重试 503，只有 SUSPENDED/ACTIVE 继续）；_bind_endpoint_compute（491）复用健康 pod 或从温 pod 池 allocate_endpoint_compute 分配（热路径不创建 k8s pod）；新分配则 _wait_endpoint_compute_ready（176）每 WAKE_READY_POLL_INTERVAL_SECONDS=0.5s 轮询最多 WAKE_READY_TIMEOUT_SECONDS=8s 等 RUNNING，超时返回 503 + RETRY_POD_INIT_IN_PROGRESS + retry_delay_ms=1000；pooled 额外 _wait_pooler_settle sleep WAKE_POOLER_SETTLE_SECONDS=1.0s 清 PgBouncer server_login_retry 陈旧缓存。协议：成功 200 返回 {address, server_name, aux}（_build_wake_response lib_compute_wake.py:664），Proxy 侧 parse_host_port 拆 address，server_name 有值走 SslMode::Require 否则 Disable，aux 变 MetricsAuxInfo，Rust 结构体 WakeCompute（messages.rs:289）字段名严格对齐；pooled 时 port 用 DEFAULT_PGBOUNCER_PORT。失败返回 {error, status.code, status.message, status.details.user_facing_message/error_info.reason/retry_info.retry_delay_ms}（make_proxy_error lib_proxy_error.py:38），可重试 reason 有 RUNNING_OPERATIONS/CONCURRENCY_LIMIT_REACHED/LOCK_ALREADY_TAKEN/ENDPOINT_IDLE/PROJECT_UNDER_MAINTENANCE。")
-
-# ─────── Slide 23: Scale-to-Zero ───────
-p += 1
-std("s-s2z", "核心卖点", "Scale-to-Zero：闲置即销毁", [
-    T("s2z-big", 300, 200, 680, 120, "0", fs=200, fw=900, color=AC, lh=1, align="center",
-      fx={"countUp": True}),
-    T("s2z-l", 300, 340, 680, 40, "闲置时的资源消耗（计算层完全销毁）", fs=22, fw=600, color=DIM, align="center"),
-    *card("s2z1", 96, 410, 528, 190,
-          "如何实现？", [
-              "• compute-monitor 跟踪最后活动时间",
-              "• 超时 → control plane 销毁 pod",
-              "• 数据安全：WAL 已在 SK 多数派持久化",
-              "&nbsp;&nbsp;pages 在 Pageserver / S3",
-              "• 唤醒：新连接 → proxy → control plane → 启动新 compute",
-              "• 全流程 PGDATA 重建（basebackup + on-demand）",
-          ], fs=14, headfs=16),
-    *card("s2z2", 656, 410, 528, 190,
-          "Prewarm 加速唤醒", [
-              "• endpoint_storage：持久化 LFC 缓存快照",
-              "• 唤醒后异步 prewarm 热页到 shared_buffers",
-              "• 典型唤醒延迟：<b>数百 ms ~ 数秒</b>",
-              "",
-              "RFC 2025-03-17: compute-prewarm",
-              "• cancellation 支持（不阻塞启动）",
-          ], hc=AC2, fs=14, headfs=16),
-], p, notes="Scale-to-Zero: 闲置销毁 compute pod，唤醒重建 PGDATA，Prewarm 加速")
-
-# ─────── Slide 24a: Autoscaling 总览 + NeonVM 热插拔 + goal-CU ───────
-p += 1
-std("s-auto", "核心卖点", "Autoscaling：三个组件，一套 goal-CU 算法", [
-    T("auto-desc", 96, 168, 1088, 36,
-      "Neon 可以<b>秒级调整 Compute 的 CPU 和内存</b>，无需重启 Postgres。三个进程各司一职："
-      "<span style=\"font-family:" + MONO + "\">autoscaler-agent</span>（决策）"
-      "→ <span style=\"font-family:" + MONO + "\">NeonVM</span>（QEMU 热插拔）"
-      "→ <span style=\"font-family:" + MONO + "\">vm-monitor</span>（compute 内安全阀）。",
-      fs=13.5, color=DIM, lh=1.5),
-    # left: NeonVM QEMU hotplug
-    R("au1-bg", 96, 216, 540, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("au1-n", 116, 228, 260, 18, "NEONVM（K8S CONTROLLER + QEMU）", fs=11, fw=800, color=AC, ff=MONO),
-    T("au1-h", 116, 250, 500, 22, "CPU/内存热插拔：QMP 命令", fs=15, fw=800, color=AC),
-    T("au1-b", 116, 278, 500, 230,
-      "<b>CPU</b>：默认走 QMP 逐核 <span style=\"font-family:" + MONO + "\">device_add</span> / "
-      "<span style=\"font-family:" + MONO + "\">device_del</span> 热插拔<br>"
-      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">vm_qmp_queries.go:159/202</span>），"
-      "每次 reconcile 只增/减<b>一颗</b><br>"
-      "&nbsp;&nbsp;可选 <span style=\"font-family:" + MONO + "\">CpuScalingModeSysfs</span>：改宿主机 cgroup + "
-      "guest sysfs 在线/离线核，不动 QEMU<br><br>"
-      "<b>内存</b>：virtio-mem 设备，"
-      "<span style=\"font-family:" + MONO + "\">qom-set requested-size</span><br>"
-      "&nbsp;&nbsp;（<span style=\"font-family:" + MONO + "\">vm_qmp_queries.go:310</span>），"
-      "guest 内核在线增减物理页，<b>PG 无需重启</b><br>"
-      "&nbsp;&nbsp;仅当 max mem ≠ min mem 时才存在该设备<br><br>"
-      "两者都由 <span style=\"font-family:" + MONO + "\">VMReconciler</span> 驱动，"
-      "对齐 <span style=\"font-family:" + MONO + "\">vm.Spec.Guest</span> 期望态",
-      fs=11.5, color=DIM, lh=1.66),
-    # right: goal-CU algorithm
-    R("au2-bg", 656, 216, 528, 300, fill=PANEL, stroke=EDGE, radius=12),
-    T("au2-n", 676, 228, 260, 18, "AUTOSCALER-AGENT（PER-VM）", fs=11, fw=800, color=AC2, ff=MONO),
-    T("au2-h", 676, 250, 490, 22, "goal-CU = 三路目标的最大值", fs=15, fw=800, color=AC2),
-    T("au2-b", 676, 278, 490, 230,
-      "<span style=\"font-family:" + MONO + "\">GoalCU() = ceil(max(CPU, Mem, LFC))</span>"
-      "（<span style=\"font-family:" + MONO + "\">goalcu.go:27</span>）<br><br>"
-      "<b>① CPU</b>：load1/load5 按<b>稳定区/混合区</b>比例混合<br>"
-      "&nbsp;&nbsp;算出目标 vCPU，再 ÷ 每 CU 的 vCPU 数<br>"
-      "<b>② Mem</b>：已分配内存 ÷ 目标使用率<br>"
-      "&nbsp;&nbsp;（含 page-cache/LFC 命中率的第二路 memTotal 变体，取更大值）<br>"
-      "<b>③ LFC</b>：working-set-size 分桶历史 → 估算真实工作集<br>"
-      "&nbsp;&nbsp;→ 预测下一分钟峰值 → 折算所需内存 → CU<br><br>"
-      "三路目标各自独立计算，取<b>最大者</b>决定最终 goal-CU，"
-      "任一维度吃紧都会触发扩容",
-      fs=11.5, color=DIM, lh=1.66),
-    # bottom band
-    R("au3-bg", 96, 530, 1088, 132, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
-    T("au3-h", 116, 542, 900, 20, "与 Scale-to-Zero 的关系", fs=13, fw=800, color=AC),
-    T("au3-b", 116, 568, 1048, 88,
-      "• 完全闲置 → Scale-to-Zero 直接销毁整台 VM；有负载 → autoscaler-agent 在 <b>min~max CU</b> 区间内持续调 goal-CU<br>"
-      "• goal-CU 算出后不是直接下发：还要过<b>调度器插槽协商</b>（下一页）和 <b>vm-monitor 安全阀</b>（下下页）两道关卡才真正落地<br>"
-      "• 扩容路径优先级：agent 认为需要 → 先问调度器有没有位子 → 有位子先扩 NeonVM/QEMU → 再通知 vm-monitor 放行；"
-      "缩容则反过来，<b>先问 vm-monitor 安全再收缩</b>",
-      fs=12, color=DIM, lh=1.7),
-], p, notes="Autoscaling 由三个独立进程构成：autoscaler-agent（K8s 集群里每台 VM 一个 goroutine，做决策）、NeonVM controller（K8s controller，用 QEMU QMP 做热插拔）、vm-monitor（compute VM 内部，rust，做安全阀）。NeonVM 热插拔：CPU 默认走 handleCPUScalingQMP（vm_controller_cpu_scaling.go:38），QMP device_add/device_del 逐核热插拔（vm_qmp_queries.go:159 QmpPlugCpu, :202 QmpUnplugCpu），每次 reconcile 只处理一颗核的差量；也可用 CpuScalingModeSysfs 走 guest sysfs cpu online/offline + runner pod cgroup 更新（handleCPUScalingSysfs:89，cgroup 更新走 setRunnerCPULimits，注释里说明daemon里cgroup还未实现所以目前是QMP或sysfs二选一）。内存用 virtio-mem，QmpSetVirtioMem 调 qom-set path=vm0 property=requested-size（vm_qmp_queries.go:262-310），guest 内核在线上报/回收内存页，只有 min mem != max mem 时才有这个设备（vm_qmp_queries.go:267注释）。goal-CU 算法在 pkg/agent/core/goalcu.go：calculateGoalCU (35) 汇总 CPU/Mem/LFC 三路，GoalCU() (27) = ceil(max(round(CPU), Mem, LFC))，注释说明 CPU 用 round 是历史兼容原因，其余用 ceil。CPU路（calculateCPUGoalCU:81）：stableThreshold=CPUStableZoneRatio*load5，mixedThreshold=stableThreshold+CPUMixedZoneRatio*load5，diff=|load1-load5|，用 blendingFactor(diff,stable,mixed) 在0~1间插值混合load1/load5得到blendedLoadAverage，除以LoadAverageFractionTarget得目标vCPU数再除以每CU的vCPU数。CPUStableZoneRatio=0.25,CPUMixedZoneRatio=0.15的例子（vminfo.go:409-417）：稳定区是0.75~1.25倍load5，混合区是0.6~0.75和1.25~1.4倍load5。Mem路（calculateMemGoalCU:116）：MemoryUsageBytes/MemoryUsageFractionTarget再换算CU；还有calculateMemTotalGoalCU(128)把LFC working-set-size和page cache一起考虑，取两者较大值。LFC路（calculateLFCGoalCU:140）：wssValues是过去N分钟working-set-size分桶（1分钟一个点），用EstimateTrueWorkingSetSize或直接取最大窗口，再用ProjectNextHighest外推下一分钟峰值，8KiB页转字节再除LFCToMemoryRatio和computeUnit.Mem得所需CU。三路各自算完取max决定最终goal-CU。")
-
-# ─────── Slide 24b: 调度器插槽协商 + vm-monitor 安全阀 ───────
-p += 1
-std("s-auto-nego", "核心卖点", "扩缩容前的两道关卡：调度器插槽 & vm-monitor 安全阀", [
-    T("an-desc", 96, 150, 1088, 26,
-      "goal-CU 算出来之后，agent <b>不能直接改 VM</b>：扩容要先问调度器有没有资源位，"
-      "缩容要先问 vm-monitor 会不会把 Postgres 挤爆。",
-      fs=12, color=DIM, lh=1.5),
-    # lane headers
-    T("an-lh0", 104, 180, 68, 20, "阶段", fs=10, fw=700, color=FAINT),
-    T("an-lh1", 176, 180, 480, 20, "autoscaler-agent ↔ scheduler-plugin（HTTP :10299）", fs=12, fw=800, color=AC),
-    T("an-lh2", 668, 180, 508, 20, "autoscaler-agent ↔ vm-monitor（WebSocket :10301）", fs=12, fw=800, color="#7CB3F4"),
-    # ── Row 1: scale up
-    R("an-r1", 96, 204, 1088, 108, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.28)", radius=10),
-    T("an-r1-t", 104, 214, 66, 90, "<b>扩容</b><br>Upscale", fs=11, fw=700, color=AC, lh=1.5),
-    T("an-r1-c", 176, 212, 480, 92,
-      "agent 定期 <span style=\"font-family:" + MONO + "\">PluginRequestTick</span>"
-      "（<span style=\"font-family:" + MONO + "\">Scheduler.RequestAtLeastEverySeconds</span> 减抖动）"
-      "带 goal-CU 请求调度器<br>"
-      "→ 调度器走 K8s Scheduler Framework 扩展点：<b>Filter</b>（容量够不够，纯判断不改状态）"
-      "→ <b>Score</b>（打分挑节点）→ <b>Reserve</b>（临时占位）<br>"
-      "→ 全程用 <span style=\"font-family:" + MONO + "\">Speculatively()</span> 在临时 Node 副本上试算，"
-      "确认不 <span style=\"font-family:" + MONO + "\">OverBudget()</span> 才提交<br>"
-      "→ <b>从不实现 Bind/Permit</b>：真正的 Pod 绑定是 K8s 默认调度器做的，"
-      "本插件只影响 Filter/Score/Reserve",
-      fs=10.5, color=DIM, lh=1.55),
-    T("an-r1-p", 668, 212, 508, 92,
-      "调度器批准的资源额度回传给 agent 后，agent 才调 <b>NeonVM</b>（上一页 QMP）真正扩容，"
-      "扩完再通过 WebSocket 发 "
-      "<span style=\"font-family:" + MONO + "\">UpscaleNotification&#123;granted&#125;</span> 告知 vm-monitor，"
-      "&nbsp;<span style='color:" + FAINT + "'>vm-monitor 收到后调高 cgroup 内存阈值 / LFC 上限，此前一直用旧阈值运行。</span>",
-      fs=10.5, color=DIM, lh=1.55),
-    # ── Row 2: scale down safety check
-    R("an-r2", 96, 322, 1088, 130, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=10),
-    T("an-r2-t", 104, 332, 66, 110, "<b>缩容</b><br>Downscale<br>安全阀", fs=11, fw=700, color=AC2, lh=1.5),
-    T("an-r2-h", 176, 330, 490, 17, "vm-monitor 说不安全，缩容就不会发生", fs=13, fw=800, color=HL, lh=1.25),
-    T("an-r2-c", 176, 347, 480, 96,
-      "agent 想缩容前，<b>先</b>发 WebSocket "
-      "<span style=\"font-family:" + MONO + "\">DownscaleRequest&#123;target&#125;</span> 问 vm-monitor<br>"
-      "vm-monitor 检查最近 cgroup <span style=\"font-family:" + MONO + "\">memory.stat</span> 采样：<br>"
-      "&nbsp;&nbsp;新阈值 &lt; 当前用量 + 安全缓冲(100MiB) → <b>拒绝</b>，返回原因文本<br>"
-      "&nbsp;&nbsp;采样太少 / 太旧（&gt;5s 无新数据）→ 同样拒绝或报错<br>"
-      "只有<b>批准</b>后，agent 才敢真的调小 NeonVM（QMP unplug / virtio-mem 收缩）",
-      fs=10.5, color=DIM, lh=1.5),
-    T("an-r2-p", 668, 347, 508, 96,
-      "批准后 vm-monitor 才真正执行：<br>"
-      "① <b>先调小 LFC</b>：SQL "
-      "<span style=\"font-family:" + MONO + "\">ALTER SYSTEM SET neon.file_cache_size_limit=…</span>"
-      "（<span style=\"font-family:" + MONO + "\">filecache.rs:250</span>）<br>"
-      "② <b>再调低 cgroup 内存阈值</b>——但这只是 vm-monitor 自己用来判断「下次还能不能再降」的<b>内部水位线</b>，"
-      "<span style='color:" + AC2 + "'>从不写 <span style=\"font-family:" + MONO + "\">memory.max</span> / "
-      "<span style=\"font-family:" + MONO + "\">memory.high</span></span>，"
-      "cgroup 侧真正的物理内存收缩由 QEMU virtio-mem 完成",
-      fs=10.5, color=DIM, lh=1.5),
-], p, notes="扩容路径：autoscaler-agent 周期性向 scheduler-plugin 发资源请求，PluginRequestTick = Scheduler.RequestAtLeastEverySeconds 减一个随机抖动（runner.go:209，避免所有VM同时请求造成惊群）。scheduler-plugin 监听 0.0.0.0:10299（run.go:120），实现 K8s Scheduler Framework 的 Filter/Score/Reserve/PostFilter 扩展点（framework_methods.go），但从不实现 Bind 或 Permit —— 真正把 Pod 绑到 Node 这件事仍由 K8s 默认调度器完成，本插件只在决策阶段插入资源感知。Filter(:104)/Score(:279)/Reserve(:468) 都通过 ns.node.Speculatively(func(tmp) {...; return false}) 在一个临时 Node 副本上先跑一遍 AddPod + OverBudget() 检查，不提交(commit=false)真实状态，只用来判断'如果这个pod放这个节点会不会超预算'。Score 用 calculateScore（:366）按 reserved/total 相对 ScorePeak 分段线性打分再乘 scale=total/maxTotalSeen。Reserve（:468）有意不做真正的容量拒绝：代码注释原文'we always allow the change to go through, even though we could deny the Reserve() if there isn't room. We don't deny, because that's ultimately less reliable' 并链接 issue #869，用 tentativelyScheduled map[pod.UID] 记录临时占位，只在重复UID或节点不存在时报错。调度器批准后，agent 调 NeonVM controller 走 QMP 完成真正扩容（见上一页），扩容成功后才通过 WebSocket 向 vm-monitor 发 UpscaleNotification{granted: Resources}（protocol.rs InboundMsgKind），vm-monitor 收到后调高 cgroup.threshold 和 filecache 上限，见 runner.go handle_upscale(:300)。缩容路径完全反过来：agent 先发 DownscaleRequest{target} 给 vm-monitor（走 WebSocket，vm-monitor 监听 0.0.0.0:10301，非文档中过时的10369，config_map.yaml:39 serverPort=10301），vm-monitor.try_downscale()（runner.go:205）做安全检查：若 cgroup watcher 最近5秒没有新采样(last_time.elapsed()>5s)则报错拒绝；若采样数<=1（刚启动）则拒绝但不报错；计算 new_threshold = cgroup_threshold(usable_system_memory)，若 new_threshold < current_usage + cgroup_downscale_threshold_buffer_bytes(100MiB) 则拒绝，返回status文本说明原因（:249-261）。批准后才真正执行：先调用 file_cache.set_file_cache_size() 通过 SQL ALTER SYSTEM SET neon.file_cache_size_limit=... 加 pg_reload_conf 缩小LFC上限（filecache.rs:250-290），再更新 cgroup.threshold 这个内部字段（:288，只是vm-monitor自己下次判断安全性时用的水位线数值，从未调用任何 cgroup 文件系统写入，cgroup.rs 全文没有对 memory.max/memory.high 的写操作，只有 memory_stat() 只读轮询）。真正的内存物理收缩是 QEMU virtio-mem 通过 qom-set requested-size 完成（上一页），vm-monitor 只是那个'batch决定能不能收缩'的安全阀。WebSocket wire协议见 protocol.rs：OutboundMsgKind{UpscaleRequest,DownscaleResult{ok,status},HealthCheck,...} tag=type；InboundMsgKind{UpscaleNotification{granted},DownscaleRequest{target},HealthCheck} tag=type,content=content；Resources{cpu:f64,mem:u64} 序列化成 \"Allocation\"（向后兼容旧 informant 协议的重命名）。PROTOCOL_MIN/MAX_VERSION 都是 V1_0。")
-
-# ─────── Slide 25: 多云存储 ───────
-p += 1
-std("s-cloud", "存储底座", "多云对象存储支持", [
-    T("cl-desc", 96, 175, 1088, 40,
-      "Pageserver 的存储后端抽象为 Rust trait，支持插拔不同云提供商。",
-      fs=16, color=DIM, lh=1.6),
-    *card("cl1", 96, 240, 340, 200,
-          "AWS S3", [
-              "• 初始也是唯一实现",
-              "• 生产验证最多",
-              "• 支持所有功能",
-              "• 兼容 S3 API 的对象存储",
-          ], hc=AC, fs=14, headfs=16),
-    *card("cl2", 470, 240, 340, 200,
-          "Google GCS（新）", [
-              "• commit 85ce109: 初版实现",
-              "• commit 39e4f23: Range 请求支持",
-              "• commit 6a35a3e: upload permit 死锁修复",
-              "• Bytes Range 对按需下载至关重要",
-          ], hc="#7CB3F4", fs=14, headfs=16),
-    *card("cl3", 844, 240, 340, 200,
-          "Azure Blob", [
-              "• 较早支持",
-              "• 仓库中已有完整 trait 实现",
-              "• 适配 Azure 原生 API",
-              "",
-          ], hc=AC2, fs=14, headfs=16),
-    *card("cl4", 96, 470, 1088, 90,
-          "Direct IO 对齐（commit 26b47b5）", [
-              "可配置对齐方式，优化不同存储硬件（NVMe 4KB / 传统 512B）的 I/O 性能。",
-              "Pageserver 本地 layer 文件的读写走 Direct IO 路径。",
-          ], hc=FAINT, fs=14, headfs=16),
-], p, notes="多云存储：S3 / GCS / Azure Blob，Rust trait 抽象，可插拔。新增 GCS + Direct IO 对齐。")
-
-
 p += 1
 divider("s-div6", 7, "运维·限制·对比·落地", p)
+
+
 # ─────── Slide 26: 关键数字汇总 chart ───────
 p += 1
 std("s-numbers", "数字", "关键参数一览", [
@@ -3711,6 +4339,7 @@ std("s-numbers", "数字", "关键参数一览", [
           for j, line in enumerate(items)],
     )],
 ], p, notes="所有关键参数一览：Pageserver/GC/Safekeeper/Compute 四列")
+
 
 # ─────── log prefixes: [NEON] [NEON_SMGR] [WP] [COMMUNICATOR] ───────
 p += 1
@@ -3760,6 +4389,7 @@ std("s-log-prefix", "COMPUTE", "读懂 compute 日志：四类方括号前缀", 
       "加前缀在 pg_helpers.rs:595），多行消息用零宽空格 U+200B 合并成一行。",
       fs=11, color=DIM, lh=1.5),
 ], p, notes="这一页解释 kubectl compute-pod 日志里那些方括号前缀分别是什么、来自哪个子系统，全部经 background agent 从源码逐条核实过 file:line。四个前缀的来源并不统一：[NEON] 是 Postgres 内核 fork 补丁（不是扩展），在 src/backend/access/transam/xlog.c 的 readNeonSignalFile() 里用内联 elog(LOG, \"[NEON] ...\") 直接打，没有宏，各主版本行号不同（v17 xlog.c:5511、v16 :5140、v15 :4988、v14 :5736），作用是启动时读 basebackup 里的 neon.signal 文件、把 prev record LSN 设好，让 WAL 插入能正确接链。[NEON_SMGR] 来自 pgxn/neon 扩展的存储管理器层，宏 NEON_TAG \"[NEON_SMGR] \" 定义在 neon.h:53，日志走 neon_log / neon_shard_log 宏；日志里那行 [NEON_SMGR][shard 0] connected to pageserver 出自 libpagestore.c:785 的 pageserver_connect()，[shard N] 段是 neon_shard_log 变体加的；这一层把 PG 的本地文件存储替换成向 pageserver 分片拉页。[WP] 是 walproposer，宏 WP_LOG_PREFIX \"[WP] \" 在 walproposer.h:949，wp_log 用于纯 walproposer 代码（walproposer.c）、wpg_log 用于 PG 胶水层（walproposer_pg.c）；它作为名为 WAL proposer 的 bgworker 注册在 walproposer_pg.c:688，入口 WalProposerMain，跑 Paxos-like 共识把 WAL 流给 safekeeper quorum，日志里能看到 parse neon.safekeepers、连接、ProposerGreeting/AcceptorGreeting、elected term、WAL proposer starts streaming 这条生命周期。[COMMUNICATOR] 比较特殊，它是较新的独立 bgworker（名 Storage communicator process），内部跑 Rust tokio 多线程运行时，当前只对外提供 metrics/控制 socket，规划是将来接管全部与 pageserver 的 GetPage 通信；Rust 线程本身用 tracing/info! 打日志不带方括号，前缀是转发到 PG 日志时在 C 侧补的——communicator_process.c:231 的 errmsg_internal(\"[COMMUNICATOR] %s\", errbuf)。最后统一收口：这四类行本质都是 Postgres 进程（内核或其 bgworker）写到 stderr 的，compute_ctl（compute_tools，Rust）在 compute.rs:1829 调 handle_postgres_logs 接住子进程 stderr，并在 pg_helpers.rs:595 的 handle_postgres_logs_async 里给每条（可能多行）消息前面加 PG: 前缀、多行用零宽空格 U+200B 拼成一行，好让下游日志处理区分 Postgres 输出和 compute_ctl 自己的日志。所以看日志的判断法：PG: 是 compute_ctl 加的外层壳，方括号是 PG 侧各子系统自己加的内层标签。")
+
 
 # ─────── safekeeper 周期任务清单 ───────
 p += 1
@@ -3815,6 +4445,7 @@ std("s-sk-tasks", "SAFEKEEPER", "safekeeper 周期任务清单：以 timeline_ma
       "per-timeline 任务全部挂在 timeline_manager 下统一驱动；broker/recovery/GC/metrics 是进程级、和 timeline 数量无关。",
       fs=11, color=DIM, lh=1.5),
 ], p, notes="这一页只讲 safekeeper 有哪些周期性行为，不涉及具体报错日志（诊断挪到下一页 s-sk-logs）。全部经 background agent 从 safekeeper 源码逐条核实过 file:line 与默认值。调度模型：safekeeper 的后台工作不是各自起 loop，而是集中在每个 timeline 一个的 timeline_manager 里。main_task 在 safekeeper/src/timeline_manager.rs:235，REFRESH_INTERVAL=300ms（:93），每轮除了定时唤醒还会被状态变化和 compute 连接变化唤醒，依次调用 update_backup、update_control_file_save、update_wal_removal、update_partial_backup，然后做驱逐检查（:289-330）。所有 per-timeline 后台任务都由它 spawn，这是看 safekeeper 后台行为的唯一入口。两种 WAL 备份必须分清：wal_backup 是整段备份，只在 WAL 段写满 16MB 封段后把整段 offload 到 S3，由 wal_backup::update_task 起（wal_backup.rs:69/94-105），loop 在 WalBackupTask::run（:330-401），是事件驱动的——commit_lsn 一变就唤醒，失败按 10ms~5s 退避；并且同一 timeline 的多个 SK 里只有一台负责上传，由 determine_offloader（:206-249）选出，落后超过 max_offloader_lag（默认 128MiB）会换人。partial_backup 是补充机制：把当前正在写、还没写满的最后一个段也传上去，好让尾部 WAL 也在 S3 有份（timeline 驱逐和 peer 恢复都要用），task 在 wal_backup_partial.rs:429，周期是 conf.partial_backup_timeout，CLI 默认 DEFAULT_PARTIAL_BACKUP_TIMEOUT=15m（lib.rs:74），首轮用 rand_duration 打散。其余周期任务：WAL 本地回收由 update_wal_removal（timeline_manager.rs:557）驱动，horizon 是 min(remote_consistent_lsn, backup_lsn, commit_lsn, flush_lsn, 可选的 walsender horizon)（remove_wal.rs:17-33），再退一个段号，所以正常回收不会删当前 partial 段；control file 落盘间隔 control_file_save_interval 默认 300s（lib.rs:75），commit_lsn 落后一整段时会强制刷；驱逐/反驱逐在 timeline_eviction.rs，受 enable_offload 开关和 eviction_min_resident（默认 15m，lib.rs:82）约束，反驱逐 do_uneviction → redownload_partial_segment 会把 .partial 重新下载回来。进程级（和 timeline 数量无关，只起一份）：broker push 每 1s 广播 SafekeeperTimelineInfo（broker.rs:25/54，含 term、last_log_term、flush/commit/backup/remote_consistent_lsn）；peer recovery 每 2s 探一次（recovery.rs:196）；tombstone GC 24h（bin/safekeeper.rs:628-639）；metrics 采集 30s（bin/safekeeper.rs 附近738-754）；TLS 证书 reload 60s（bin/safekeeper.rs:588-600）；另有 Hadron 全局磁盘水位检查 60s（默认关）。记忆点：区分 per-timeline（随 timeline 数量线性增长，全部经 timeline_manager 驱动）与进程级（固定份数，和租户/timeline 规模无关）两类任务，是看懂 safekeeper 后台行为的关键。")
+
 
 # ─────── safekeeper 日志：两类常见刷屏诊断 ───────
 p += 1
@@ -3874,6 +4505,7 @@ std("s-sk-logs", "SAFEKEEPER", "safekeeper 常见刷屏日志诊断：首段未�
       fs=11, color=DIM, lh=1.5),
 ], p, notes="这一页专门诊断生产日志里反复刷的那两类 safekeeper INFO 行，全部经源码逐条核实过 file:line。第一类：partial_backup 反复报 failed to upload ... Failed to open file 「/data/<tenant>/<timeline>/000000010000000000000001.partial」 for wal backup: No such file or directory，每 15 分钟一次，并且每约 2h45m 夹一条 WARN too many segments in control_file state, running gc: 11 加一批 deleting objects。注意这里的结论与早期版本相反：本地文件不是被驱逐删掉的，而是从来没有被创建过，所以这个循环不会自愈。根因链：（1）建 timeline 时只写 control file。GlobalTimelines::create（timelines_global_map.rs:289-326）里有明确 TODO「currently we create only cfile. It would be reasonable to immediately initialize first WAL segment as well.」（:318-321）；真正 materialize 第一个 WAL 段文件的只有 initialize_first_segment（wal_storage.rs:418-434），唯一调用点是 ProposerElected 处理路径 safekeeper.rs:1193-1196，且带 if flush_lsn() == Lsn::INVALID 的守卫。（2）日志里的 term: 0 就是「从未有 walproposer 选举」的铁证：get_last_log_term（safekeeper.rs:202-209）在 term_history.up_to(flush_lsn) 为空时返回 0，而 INITIAL_TERM=0（libs/safekeeper_api/src/lib.rs:17）注释也写明「wp is never elected with it」。所以这条 timeline 上从来没有 compute 连上来过，首段自然不存在。（3）partial backup 里「没数据就等着」的保护是拿 Lsn(0) 判的（wal_backup_partial.rs:482 的 while flush_lsn == Lsn(0)），但这里 flush_lsn 非零：SC 建 timeline 时发的是 commit_lsn: None + 非零 start_lsn（storage_controller/src/service/safekeeper_service.rs:87-96），routes.rs:116 做 commit_lsn.unwrap_or(start_lsn) 之后 cfile 里的 commit_lsn 就是非零的；PhysicalStorage::new（wal_storage.rs:168-240）在 commit_lsn != 0 时用 find_end_of_wal 推 flush_lsn，而 find_end_of_wal 在段文件缺失时原样返回传入的 start_lsn（libs/postgres_ffi/src/xlog_utils.rs:227-290，open_wal_segment 对 NotFound 返回 Ok(None)）。于是 flush_lsn == commit_lsn != 0，保护条件穿过去，prepare_upload 照常拼出 segno=1 的文件名，upload_segment(:246) 拼本地路径，backup_partial_segment 里 File::open 吃 ENOENT，错误文本的 context 在 wal_backup.rs:578-580。（4）为什么会攒到 11 条再清空：do_upload（:291-326）的顺序是先把 InProgress 记进 control file 并落盘（commit_state(state_1)，:306）再上传（:308），失败用 ? 直接返回，后面标 Uploaded/Deleting 的 state_2 和 gc() 都执行不到，于是每失败一轮就往 cfile 里漏一条 InProgress；主循环开头有兜底检查 MAX_SIMULTANEOUS_SEGMENTS=10、判断是 > 10（:450-462），到第 11 条时打 WARN 并强制 gc()；gc()（:343-383）只保留 status==Uploaded 的项，此处一条 Uploaded 都没有，于是把 11 条全部推进 segments_to_delete、:365-368 的 assert 侥幸通过、state.segments 清空，循环从头再来。因为 (segno, term, commit_lsn, flush_lsn, node_id) 五个量一直不变，remote_segment_name（:195-210）产出的 11 个名字完全相同，等于对同一个 S3 key 发 11 次 DELETE，10 次空转——这也是判断状态静止的好线索。（5）另外两条可能路径可以排除：驱逐删文件不成立，delete_offloaded_wal 默认 false（lib.rs:193，CLI 是无默认值的 bool flag，bin/safekeeper.rs:208），更关键的是 ready_for_eviction 要求 !needs_uploading（timeline_eviction.rs:33-64），而 partial_backup_uploaded 恒为 None ⇒ needs_uploading（:408-421）恒 true ⇒ 这条 timeline 永远不可能被驱逐，也就永远不可能走到删文件那步；WAL 回收也不成立，remote_consistent_lsn 建时被置 Lsn(0)（state.rs），calc_horizon_lsn（remove_wal.rs:17-33）取 min 后为 0，再 segment_number().saturating_sub(1) = 0，不大于 last_removed_segno，回收任务从未被 spawn（timeline_manager.rs:571-576）。危害评估：数据安全零风险，待传的 WAL 本来就不存在；但也不是纯噪音——每 15m 一条 INFO、每 2h45m 一条 WARN，每轮一次 control file 落盘 fsync（cfile 单调涨到 11 条再清空），每轮 gc 发 11 次冗余 DELETE，且该 timeline 永久占着 manager 任务、broker push 和一份驻留态无法驱逐。处置：先判断该 timeline 该不该存在——是建完从没启过 compute 的孤儿分支就走控制面删除；该存在就在这个分支上起一次 compute，walproposer 选出 term>=1、initialize_first_segment 建出段文件，下一轮上传成功后状态收敛成一条 Uploaded，main_task 直接 return（:465-479），噪音消失且 timeline 转为可驱逐；只想清已攒下的垃圾可以打 POST /v1/tenant/:tenant_id/timeline/:timeline_id/backup_partial_reset（http/routes.rs:513-528，注册在 :801-802），但它只重置 cfile 状态与远端对象，needs_uploading 仍为 true，止不住 15m 一次的重试；上游修法就写在那个 TODO 上：建 timeline 时顺手初始化首段，或把 :482 的等待条件从 flush_lsn == Lsn(0) 改成判本地段文件是否存在。远端文件名由 remote_segment_name 格式化成 segno_term_flush_lsn_commit_lsn_sk<node>.partial，注意顺序是 flush 在 commit 前面，容易读反；本地文件名只是 segno.partial。第二类：GET /v1/tenant/{tid}/timeline/{tlid} 返回 NotFound: timeline ... not found。路由注册在 safekeeper/src/http/routes.rs:765，handler 是 timeline_status_handler（:170），它调 global_timelines.get(ttid)，timeline 不在本机内存 map 里就返回 TimelineError::NotFound（timelines_global_map.rs:92），再映射成 ApiError::NotFound(\"timeline {} not found\")（timeline.rs:429-431）；外层「Error processing HTTP request」这句以及它是 INFO 级，都来自 libs/http-utils/src/error.rs:157（NotFound 分支专门用 info! 打）。调用方：仓库内调 timeline_status 的只有 safekeeper 自己——pull_timeline.rs:512/567 在 pull/成员变更时探 donor 状态，recovery.rs:265-273 的 peer recovery 直接打这个 URL；而 storage controller 的 SafekeeperClient（storage_controller/src/safekeeper_client.rs:63-170）根本没实现 timeline_status，它的心跳走 get_utilization、间隔 5s（heartbeater.rs:341-351），所以这个 ~10 分钟的轮询不是 storcon 发的，更可能来自对端 SK 的 pull/recovery 或仓库外的控制面/巡检，探的是已删除、已迁走或已被 exclude 的 timeline。pull 路径本身就把 NOT_FOUND 当无害处理（pull_timeline.rs:571-579，日志写 no need to pull it），所以这类行属预期噪音。结论：两类行都是 INFO、都不代表可用性受损，但第一类不自愈、需要人工处置，第二类完全预期、可以忽略。")
 
+
 # ─────── safekeeper 无 compute 测 WAL ───────
 p += 1
 std("s-sk-notest", "SAFEKEEPER", "不启 compute 怎么测 SK 的 WAL 读写：三条路", [
@@ -3931,6 +4563,7 @@ std("s-sk-notest", "SAFEKEEPER", "不启 compute 怎么测 SK 的 WAL 读写：�
       "（RM_LOGICALMSG_ID=21），下游能正常解码。<span style='color:" + FAINT + "'>libs/postgres_ffi/src/wal_generator.rs</span>",
       fs=11, color=DIM, lh=1.5),
 ], p, notes="这一页回答「不用 compute 能不能测 SK 的 WAL 读写」：能，三条路。① 进程内直调：safekeeper/src/test_utils.rs 提供 Env，Env::new(fsync) 建 tempdir（drop 时删），make_conf 用 SafeKeeperConf::dummy() 并按 fsync 设 no_sync；make_safekeeper(node_id, ttid, start_lsn) 建 timeline 目录、PhysicalStorage + FileStorage control file，然后 process_msg(ProposerAcceptorMessage::Elected{generation:0, term:1, start_streaming_at:start_lsn, term_history:[(1,start_lsn)]}) 模拟一次初始选举——注意这一步很关键，因为首个 WAL 段文件只在 ProposerElected 路径里由 initialize_first_segment 创建（见 s-sk-logs 那页的诊断）；make_timeline 再套上 SharedState/WalBackup 并调 timeline.bootstrap 把 manager 任务起起来。Env::write_wal(tli, start_lsn, msg_size, msg_count, prefix, next_record_lsns) 起 WalAcceptor::spawn，然后循环用 WalGenerator 产 record、包成 AppendRequest{generation:0, term:1, begin_lsn, end_lsn, commit_lsn:lsn, truncate_lsn:0} 送进 msg_tx，并等 AcceptorProposerMessage::AppendResponse 的 flush_lsn >= end_lsn 才发下一条。限制：test_utils 里有 TODO 说明目前只支持文件存储（StateSK 只接受 SafeKeeper<control_file::FileStorage, wal_storage::PhysicalStorage>），想测纯非 IO 成本还不行。编译需要 safekeeper 的 benchmarking feature（Cargo.toml:12，[[bench]] receive_wal required-features = benchmarking），现成入口是 safekeeper/benches/receive_wal.rs，里面 bench_process_msg / bench_wal_acceptor / bench_wal_acceptor_throughput 分别测单条 process_msg 和整条 acceptor 管道，参数覆盖 fsync × commit × size(8B~1MB)。② pg 复制协议裸连：SK 的 pg 端口就是标准 postgres 复制协议，命令解析在 safekeeper/src/handler.rs:67-135 的 parse_cmd，支持 START_WAL_PUSH（可带 proto_version / allow_timeline_creation 等 options，正则见 :73）、START_REPLICATION [SLOT x] [PHYSICAL] <lsn> [(term='N')]（正则 :112）、TIMELINE_STATUS、IDENTIFY_SYSTEM。tenant_id/timeline_id 通过连接的 options 传（-c timeline_id=… tenant_id=…）。读端最容易照抄的样例是 test_runner/regress/test_wal_acceptor.py:833 的 test_start_replication_term，用 psycopg2.extras.PhysicalReplicationConnection 直连 sk.port.pg 发 START_REPLICATION 并 consume_stream；它同时演示了 term 不匹配会报 failed to acquire term。关键语义：START_REPLICATION 会给出未 committed 的 WAL（到 flush_lsn），这也是 peer recovery 能追尾巴、而 S3 上只有已 committed 段做不到的原因（见 s-sk1 备注）。写端要按 walproposer 协议走 greeting → vote → elected → append，比 ① 麻烦得多，一般没必要，除非要测协议兼容性或 proto_version 差异。③ HTTP 旁路：GET /v1/tenant/:tenant_id/timeline/:timeline_id 拿各 LSN 现值（routes.rs:765 → timeline_status_handler:170）；GET …/digest?from_lsn=&until_lsn= 算 WAL 区间校验和（:478-498，两个参数都必填），最适合做多副本一致性断言；POST /v1/record_safekeeper_info/:tenant_id/:timeline_id（:808 → :554-584）能直接注入一条 SafekeeperTimelineInfo，等于伪造 broker 广播，可以单独推 remote_consistent_lsn / backup_lsn 而不真跑 pageserver 或 S3 offload——配合 remove_wal.rs 的 calc_horizon_lsn 就能精确测 WAL 回收行为（见 s-lsn 那页的 min 式子）；另有 POST …/checkpoint、PATCH …/control_file（patch_control_file）、POST …/backup_partial_reset、POST …/term_bump、GET /v1/debug_dump、POST /v1/pull_timeline、POST …/copy、PUT …/membership、PUT …/exclude。附加路线 walproposer_sim（safekeeper/tests/walproposer_sim/）把真实 walproposer C 实现编进测试，用 simulation 时钟 + block_storage 内存盘 + safekeeper_disk 模拟磁盘，跑确定性随机测试（simple_test.rs / random_test.rs / misc_test.rs），适合验共识正确性而非吞吐。共同基础：WAL 内容由 libs/postgres_ffi/src/wal_generator.rs 生成，Record::encode 自己拼 XLogRecord 头（xl_tot_len/xl_prev/xl_info/xl_rmid）、按 XLR_BLOCK_ID_DATA_SHORT/LONG 加数据头、用 crc32c_append 算 CRC，LogicalMessageGenerator 用 RM_LOGICALMSG_ID=21 + XLOG_LOGICAL_MESSAGE 造 XlLogicalMessage，产出的是能被 wal_decoder 正常解码的真 WAL，不需要 initdb。另有 libs/postgres_ffi/wal_craft 走另一条路——它是真起一个 Postgres 来 craft 特殊边界的 WAL（xlog switch、跨段记录等），用于测 find_end_of_wal 这类边界逻辑，那个反而需要 Postgres。")
+
 
 # ─────── pageserver 周期任务清单 ───────
 p += 1
@@ -4001,6 +4634,7 @@ std("s-ps-tasks", "PAGESERVER", "pageserver 周期任务清单：per-tenant 三�
       fs=11, color=DIM, lh=1.5),
 ], p, notes="这一页只列 pageserver 有哪些周期性后台任务（日志逐行解读挪到下一页 s-ps-logs），全部经 background agent 从源码逐条核实过 file:line 与默认值。核心分层认知：pageserver 后台任务分两类，一类是 per-tenant，随租户激活时由 start_background_loops（pageserver/src/tenant/tasks.rs:135，从 tenant.rs:3480 调用）spawn，数量随租户数线性增长，只有三个——compaction（:138）、gc（:164）、housekeeping（:189）；另一类是进程级全局任务，在 bin/pageserver.rs 里各起一份，自己遍历所有租户/分片。先说 per-tenant 三件套。compaction_loop 在 tasks.rs:216，周期 get_compaction_period()，默认 DEFAULT_COMPACTION_PERIOD=20s（libs/pageserver_api/src/config.rs:861）。pageserver 存储是 LSM-tree 式分层：WAL flush 先落成 L0 delta layer（覆盖全 key 范围、LSN 上互相重叠、读放大高），compaction 把它们重写成按 key 分区、互不重叠的 L1 layer，并周期性物化 image layer（某 LSN 的全量快照）以压低读放大。重要细节：除了 20s 定时，它还能被 L0 提前唤醒——select 里除了 sleep(period) 还 arm 了 tenant.l0_compaction_trigger.notified()（tasks.rs:256），这个 trigger 是个 Arc<Notify>（tenant.rs:352，初始化 :4499），由 timeline 的 layer flush 路径在 L0 层堆积时 notify（timeline.rs:5056，另有 :6093），loop 自己在 CompactionOutcome::YieldForL0/Pending 时也会重新 notify（:277-278）；所以实际行为是「20s 周期 OR 新 L0 到达就提前跑」，且只在 error_run==0 时才 arm 这个 trigger。gc_loop 在 tasks.rs:343，周期 get_gc_period() 默认 DEFAULT_GC_PERIOD=1 hr（config.rs:884），gc_horizon 默认 64MiB、pitr 默认 7 天，删除 GC horizon/PITR 窗口之外、重建页面已不再需要的层。第三个 per-tenant loop 是 tenant_housekeeping_loop，body 在 tasks.rs:427，它复用 compaction 的周期（get_compaction_period()，为 ZERO 时回落到 DEFAULT_COMPACTION_PERIOD=20s），带 ±5% 抖动；每轮调 tenant.housekeeping()（tenant.rs:3381）做四件事：把 active timeline 上长期不动的 ephemeral layer 冻结（maybe_freeze_ephemeral_layer）、静默空闲的 walredo 进程（WALREDO_IDLE_TIMEOUT=180s，tenant.rs:3409）、刷新 feature-resolver 标志、打印 getpage 限流统计。再说进程级全局任务。secondary_download 与 heatmap_upload 是两个全局 scheduler，由 secondary::spawn_tasks（secondary.rs:374，从 bin/pageserver.rs:686）起：heatmap_uploader（heatmap_uploader.rs:32/:132）在 attached 侧上传热点层清单 JSON，并发 heatmap_upload_concurrency 默认 8（config.rs:685），周期 get_heatmap_period()，全局默认 Duration::ZERO 即关闭，实际由 storage controller 按租户设成 60s（reconciler.rs:29）；downloader_task（downloader.rs:58，per-tenant span :618）在 secondary 侧照清单预下载 layer，DEFAULT_DOWNLOAD_INTERVAL=60s（:56），并发默认 1（config.rs:686），下载时带上次成功的 ETag 做条件 GET、未变就早退。disk_usage_eviction_task：loop 在 disk_usage_eviction_task.rs:220（body :205，从 launch_disk_usage_global_eviction_task :166，bin/pageserver.rs:699 起），period 默认 Duration::from_secs(60)（config.rs:300，DiskUsageEvictionTaskConfig 的 Default 实现）；每轮用 statvfs 量文件系统级真实用量，超过 max_usage_pct（默认 80%，config.rs:297）或剩余低于 min_avail_bytes（默认 2_000_000_000，config.rs:298）才驱逐本地层文件回收空间，候选顺序 EvictionOrder::RelativeAccessed{highest_layer_count_loses_first:true}（默认，config.rs:490-496），即相对访问 LRU、层数多的租户先被削。注意它和 heatmap 用的是同一份 access-time 数据。计量类：consumption_metrics::run（consumption_metrics.rs:99，bin/pageserver.rs:805 起，受 background_jobs_barrier 门控）实际起两个 worker——collect_metrics（body :155，loop :196）周期 metric_collection_interval 默认 10 min（config.rs:680），采集 per-tenant/timeline 指标后 HTTP POST 到 metric_collection_endpoint（upload_metrics_http :243），同时刷本地磁盘缓存、可选上传到 metric_collection_bucket；注意 endpoint 默认是 None（config.rs:681），未配置时 run 直接早退（:104）。calculate_synthetic_size_worker（body :367，loop :378）周期 synthetic_size_calculation_interval 默认 10 min（config.rs:682），遍历 active 的 shard-zero 租户算计费用的 synthetic size。自监控类：metrics_collection_task（bin/pageserver.rs:771，loop :786-796）每 METRICS_COLLECTION_INTERVAL=30s（libs/utils/src/metrics_collector.rs:73）刷一次缓存的指标快照，若 force_metric_collection_on_scrape 打开则整个任务跳过；TLS 证书 reload 周期 ssl_cert_reload_period 默认 60s（config.rs:728），loop 在 ReloadingCertificateResolver::new（libs/http-utils/src/tls_certs.rs:162-171），仅启用 https 时活；basebackup_cache cleanup 周期默认 60s（config.rs:441，basebackup_cache.rs:433-450），但 basebackup_cache_config 默认 None（config.rs:837）所以通常不跑；删除队列的三个 worker（bin/pageserver.rs:542 spawn）严格说是消息驱动而非定时，但都带 autoflush 超时——list_writer 10s/100ms（list_writer.rs:41/45）、validator 10s（validator.rs:37）、deleter 10s（deleter.rs:19）；feature-resolver 拉 PostHog 特性标志，周期 posthog_config.refresh_interval，否则 DEFAULT_POSTHOG_REFRESH_INTERVAL=600s（feature_resolver.rs:21），loop 在 posthog_client_lite/src/background_loop.rs:72-76，仅配了 posthog_config 才起。另外确认过 bin/pageserver.rs 里 page_service listener、gRPC handler、signal handler 和一次性的 drive_init 都不是周期任务，是事件/连接驱动。最后一个约束：全租户后台并发被 CONCURRENT_BACKGROUND_TASKS 信号量（约 ¾ tokio 线程数）限住，所以任务再多也不会把 CPU 打满。")
 
+
 # ─────── pageserver 日志：稳态刷屏逐行解读 ───────
 p += 1
 std("s-ps-logs", "PAGESERVER", "读懂 pageserver 日志：稳态刷屏行逐条解码", [
@@ -4061,6 +4695,7 @@ std("s-ps-logs", "PAGESERVER", "读懂 pageserver 日志：稳态刷屏行逐条
       fs=11, color=DIM, lh=1.5),
 ], p, notes="这一页把 kubectl 拉 pageserver-pod 出来那一大片日志逐行解码（任务清单本身在上一页 s-ps-tasks），全部经 background agent 从源码核实过 file:line。总原则：compute 日志以 SQL/WAL streaming 为主，pageserver 日志相反，稳态下几乎全是后台周期任务的心跳，且大多是 no-op（无变化、跳过），真正的读请求 GetPage、basebackup 反而不常刷屏；所以看 pageserver 日志的第一步是看 span 名归类，第二步是判断这行是不是 no-op。逐行解码。第一行「Decided to check image layers: false. Distance-based decision: false, time-based decision: false」出自 pageserver/src/tenant/timeline.rs:5837 的 should_check_if_image_layers_required，它回答的问题是「本轮该不该去检查、进而物化新的 image layer」；distance 判据是自上次检查以来摄入的 WAL 量是否 ≥ image_layer_creation_check_threshold（默认 2，config.rs:902）× checkpoint_distance；time 判据是墙钟时间是否超过 checkpoint_timeout（默认 10m，config.rs:852，小租户可到 48h）。两个判据都 false 就直接跳过，是最典型的 no-op 行。相关 span：compact_timeline 在 tenant.rs:3223/3259，create_image_layers 在 compaction.rs:1390。日志里若出现 partition_mode=l0_l1_boundary，指在 L0/L1 边界处 repartition（compaction.rs:1307-1345），因为边界以下已被压成低读放大的 L1，repartition 很快。第二行「metadata key compaction: trigger_generation=false, delta_files_accessed=2, total_kb_retrieved=0, total_keys_retrieved=0, read_time=0.000054342s」出自 timeline.rs:5743 的 create_image_layer_for_metadata_keys。metadata key 指 aux 文件（复制槽、逻辑解码状态等），它们存在稀疏 keyspace 里，用一次 vectored scan 读；若这次扫描访问到的 delta 文件数 ≥ MAX_AUX_FILE_V2_DELTAS（16，pgdatadir_mapping.rs:63）就触发生成新的 image layer 来压平，本例只访问了 2 个，所以 trigger_generation=false、跳过；total_keys_retrieved=0 说明这个租户压根没有 aux 文件。第三行「Heatmap unchanged since last successful download」在 downloader.rs:731：secondary 下载时会带上次成功下载记下的 ETag 发条件 GET，对象存储返回 Unmodified 就早退、不重新下载整份 heatmap，这是 secondary 侧最常见的 no-op 心跳。heatmap 是 attached 侧上传的 JSON 清单（heatmap.rs），HeatMapTenant{generation,timelines,upload_period_ms}，每层 HeatMapLayer 带 name/metadata/access_time/cold，secondary 只拉 hot_layers()、跳过 cold 层；内容由 timeline.rs:4181 的 generate_heatmap 产生，排序决定下载优先级（cold 最后、L0 最后、新 LSN 优先）。第四行「Status: N tasks running, M pending」不是某个具体任务打的，而是两个 scheduler 共用的通用 helper：TenantBackgroundJobs::run() 在 secondary/scheduler.rs:182-186 每轮打一次，secondary_download_scheduler 和 heatmap_upload_scheduler 都 alias 到它，所以两个 span 下会出现格式完全相同的行，调度间隔 1~10s。一个很好用的交叉验证：日志里 secondary_download_scheduler 显示「1 tasks running」、heatmap_upload_scheduler 显示「8 tasks running」，正好分别等于 secondary_download_concurrency 默认 1（config.rs:686）和 heatmap_upload_concurrency 默认 8（config.rs:685）——说明两个 scheduler 都在并发上限上满负荷跑，pending 数就是排队的租户数。第五行「GET /metrics …」相关有两条：「metrics_collector: Collected 205 metric families in 7 ms」出自 libs/utils/src/metrics_collector.rs:53-57 的 metrics_collector span；「responded /metrics bytes=2194113 total_ms=13 spawning_ms=0 collection_ms=7 encoding_ms=5 stalenss_ms=5」出自 libs/http-utils/src/endpoint.rs:330-338。handler 是 endpoint.rs:254 的 prometheus_metrics_handler，它把活儿放到 spawn_blocking（:293）里跑，因为 gather + Prometheus 文本编码是 CPU 密集的同步工作，直接在 async 线程上跑会拖垮 tokio 执行器；这也是日志里能看到 blocking span 和 spawning_ms 计时的原因。注意 stalenss_ms 是源码里的拼写错误（应为 staleness），不是日志被截断，grep 时要按错的拼法搜。pageserver 默认 force_metric_collection_on_scrape=true 即每次抓取都重新采集，另有独立任务每 30s 刷缓存快照。读日志技巧总结：span 名就是任务名，一眼归类到上一页清单里的某个 loop；行里出现 false / unchanged / =0 这类字样基本都是 no-op 心跳，不必追查；真正需要警觉的是 warn/error 级、或者本该 no-op 的行突然带上非零耗时和重试。")
 
+
 # ─────── pageserver 无 compute 测读写 ───────
 p += 1
 std("s-ps-notest", "PAGESERVER", "不启 compute 怎么测 PS 的页面读写：读端天生可裸测", [
@@ -4117,6 +4752,7 @@ std("s-ps-notest", "PAGESERVER", "不启 compute 怎么测 PS 的页面读写：
       fs=11, color=DIM, lh=1.5),
 ], p, notes="这一页回答「不用 compute 能不能测 PS 的页面读写」。读端结论：天生可以，因为 PS 对外根本不说 SQL，page_service 是自定义命令 + pagestream 二进制子协议，compute 只是恰好是它的一个客户端。命令解析在 pageserver/src/page_service.rs:2813-3044 的 PageServiceCmd::parse：pagestream_v2 / pagestream_v3 <tenant> <timeline>（进入 pagestream 子协议后可发 GetPage / Exists / Nblocks / GetSlruSegment / GetDbSize，见 libs/pageserver_api/src/pagestream_api.rs），basebackup <tenant> <timeline> [lsn] [--gzip] [--replica]（:2813 文档注释，参数解析 :2918-2968，重复参数会报 duplicate parameter），fullbackup <tenant> <timeline> [lsn] [prev_lsn]（:2823/3020），lease lsn <tenant> <timeline> <lsn>（:2840/2982，给某个 LSN 打租约挡 GC，做时间点读测试时有用）。这些命令的单元测试样例就在同文件 :4454-4511，可以直接照抄字符串格式。gRPC 侧（page_api / pageserver_client_grpc）同样可以裸连，pagebench 的 --page-service-connstring 同时支持 postgres:// 和 grpc://，还有 --rich-client 切换用 client_grpc::PageserverClient 还是精简的 page_api::Client。现成工具 pagebench（pageserver/pagebench/src/main.rs:41-47 的 Subcommand）：Basebackup、GetPageLatestLsn（getpage_latest_lsn.rs，注释写明 GetPage@LatestLSN, uniformly distributed across the compute-accessible keyspace，keyspace 是从 mgmt API 拉的，不需要 compute 在跑）、TriggerInitialSizeCalculation、OndemandDownloadChurn、AuxFiles、IdleStreams；默认 --mgmt-api-endpoint http://localhost:9898、--page-service-connstring postgres://postgres@localhost:64000，支持 --pageserver-jwt / --num-clients。写端有三个层次。（a）两个 HTTP 导入口，注册在 pageserver/src/http/routes.rs:4246-4251：PUT /v1/tenant/:tenant_id/timeline/:timeline_id/import_basebackup?base_lsn=&end_lsn=&pg_version=（handler :3465-3545，走 import_basebackup_from_tar）和 PUT /v1/tenant/:tenant_id/timeline/:timeline_id/import_wal?start_lsn=&end_lsn=（handler :3547-3595，走 crate::import_datadir::import_wal_from_tar）。两个都用 request body 作为 tar 流（StreamReader 包 hyper body），import_wal 有个硬前置条件：timeline.get_last_record_lsn() 必须严格等于 start_lsn，否则直接返回 500「Cannot import WAL from Lsn … because timeline does not start from the same lsn」；导入完成后还会校验 last_record_lsn >= end_lsn。源码里有两条 TODO 值得注意：失败时不保证留下干净状态（要用 detach 清理），以及是否该 overshoot 未定。配合上一页的 WalGenerator 造出真 WAL、打成 tar，就能不经 Postgres 灌进 PS。（b）进程内基准 pageserver/benches/bench_ingest.rs：直接构造 SerializedValueBatch（wal_decoder::serialized_batch）写 InMemoryLayer，用 L0FlushGlobalState / IoConcurrency 等真实组件但完全不过网络协议，还带 KeyLayout::Sequential/Random 控制键分布（murmurhash32 造非顺序键），适合量纯 ingest 的 CPU 与写放大。另有 bench_walredo.rs 单独压 walredo 沙箱、bench_layer_map.rs 压 LayerMap 查找。（c）最贴真实的端到端做法其实最省事：PS 的 walreceiver 本来就是主动去连 SK 拉 WAL 的（PS 不是被 compute 推 WAL），所以只要按上一页 ① 的办法把 WAL 灌进 SK，PS 会自己连上来消化，于是「SK 写入 → PS ingest → getpage 读回」整条链路完全不需要启 compute。辅助工具：pageserver/ctl（pagectl）可以离线看 layer 文件、index_part.json、layer map、page trace（download_remote_object / index_part / layers / layer_map_analyzer / draw_timeline_dir / page_trace / key），用来验证写进去的东西真落成了什么布局。分工记忆：读走 page_service/pagebench，写要么 import_wal 灌 tar、要么让 PS 自己从 SK 拉，只想量 CPU 就用 bench_ingest 绕开一切协议。")
 
+
 # ─────── Metrics & 可观测 ───────
 p += 1
 std("s-metrics", "可观测", "关键指标：从背压到冷启动，看哪几个数就够", [
@@ -4155,6 +4791,7 @@ std("s-metrics", "可观测", "关键指标：从背压到冷启动，看哪几�
       "wait_for_spec / sync_safekeepers / pageserver_connect / basebackup / start_postgres / config 各段。",
       fs=11.5, color=FAINT, lh=1.6),
 ], p, notes="指标定义位置：背压 pageserver/src/metrics.rs:4289-4353（global 与 per-tenant 两套，标签 kind=pagestream）；compute 侧 backpressure_throttling_time() 在 pgxn/neon/neon.c:713，经 sql_exporter 暴露为 compute_backpressure_throttling_seconds_total。Layer：pageserver_layer_count metrics.rs:705-712、layers_per_read metrics.rs:136-170（含 batch/amortized 三个 global 变体）、storage_operations_seconds metrics.rs:88-128（operation 枚举 59-86 含 compact / create images / layer flush / layer flush delay / gc / find gc cutoffs）。WAL lag：safekeeper/src/metrics.rs:570-647 一整组 LSN gauge，peer_horizon_lsn 610-617 是最落后 SK；PS 侧 last_record_lsn 633-639、disk_consistent_lsn 642-648、wait_lsn_seconds 484-490、wait_lsn_in_progress_micros 504-518。WALredo：metrics.rs:2993-3035，含 wal_redo_seconds、records/bytes histogram、process_launch_duration。冷启动：basebackup_query_seconds metrics.rs:2259-2266 用专门的 COMPUTE_STARTUP_BUCKETS(2244-2251) 5ms~60s；proxy/src/metrics.rs:71-74 的 compute_connection_latency_seconds 标签组在 314-321 含 cold_start_info；compute_ctl 的 ComputeMetrics 结构在 libs/compute_api/src/responses.rs:244-284，不进 Prometheus，走 /metrics.json 给控制面。注意 Grafana dashboard JSON 不在本仓库。")
+
 
 # ─────── 故障演练 ───────
 p += 1
@@ -4201,9 +4838,10 @@ std("s-failure", "故障演练", "两个典型故障：SK 单点宕机 / PS 实�
       fs=12.5, color=DIM, lh=1.7),
 ], p, notes="SK 单点：quorum=2，1 挂仍可写，commit_lsn=GetAcknowledgedByQuorumWALPosition（walproposer.c:1994-2026），term-gated 提交（未追上 propTermStartLsn 的 SK 贡献按 0 算）。恢复两条路：walproposer 重选（safekeeper.rs:1052-1220 handle_vote/handle_elected + truncate_wal）或 peer recovery（recovery.rs:38-232，CHECK_INTERVAL_MS=2000，donor 须 term==last_log_term 且 term>=my.term，有活 compute 在流时强制不抢）；全丢用 pull_timeline.rs。WAL trim 到 min(remote_consistent_lsn, backup_lsn, commit_lsn, flush_lsn)（remove_wal.rs:5-33）。PS 宕机：controller 心跳 HEARTBEAT_INTERVAL=5s、MAX_OFFLINE_INTERVAL=30s（service.rs:129-143），heartbeater.rs:281/419 判 offline，ToOffline handler service.rs:7988-8057 clear observed location + demote_attached（tenant_shard.rs:337）+ schedule（:701）+ 入队 reconciler（并发默认 128）。单节点集群 / 全挂时跳过重调度。读失败窗口：有 warm secondary 近乎无缝（RFC 028:63-70/104-176），无则新 PS 下 index_part.json 再懒拉 layer，wait_lsn 阻塞到 wait_lsn_timeout（timeline.rs:1782-1836）。compute 侧经 notify-attach 改写 neon.pageserver_connstring 并 SIGHUP（libpagestore.c:130,266-350）。重建三步：扫本地 config（mgr.rs:392-417）→ /re-attach 拿 generation（mgr.rs:340-386，缺席 tenant 本地内容删）→ attach 逐 timeline 从远端加载（tenant.rs:1690-1829，download_index_part，缺层按需拉）。stale PS 校验 generation 前不 upload/delete（RFC 025:826-887），generation 变小即降 secondary（mgr.rs:626-635）。")
 
+
 # ─────── 备份语义 ───────
 p += 1
-std("s-backup", "运维", "Neon 要不要备份：内建持久化 vs 仍需外部备份", [
+std("s-backup", "备份恢复", "Neon 要不要备份：内建持久化 vs 仍需外部备份", [
     T("bk-desc", 96, 158, 1088, 44,
       "Neon 把「定期备份」变成了架构内生能力，日常<b>不用手动备份</b>；"
       "但这套能力有边界，跨过边界的场景<b>仍要做独立的外部备份</b>。两层要分清。",
@@ -4251,9 +4889,10 @@ std("s-backup", "运维", "Neon 要不要备份：内建持久化 vs 仍需外�
       fs=12, color=DIM, lh=1.6),
 ], p, notes="回答『Neon 的数据需要备份吗』：要分两层。第一层——Neon 架构把传统的定期备份变成了内生能力，日常不需要手动备份。三点：① WAL 多副本共识，commit 时 WAL 已被 Safekeeper Paxos 多数派 fsync（通常 3 副本 quorum=2），不依赖单机磁盘（见 docs/rfcs/004-durability.md）；② 不可变 Layer + 对象存储，Pageserver 把页面物化成 append-only layer 文件下沉 S3、永不覆盖，S3 本身 11 个 9 持久性；③ PITR / Time Travel / CoW 分支，在 history retention window 内可查询或建分支到过去任意 LSN/时间点，在线、秒级、只写元数据，等价于传统备份恢复才能拿到的东西，覆盖『防单盘故障 + 误删表回滚到某刻』。第二层——这套架构有边界，四类风险盖不住，仍建议做独立外部备份：① 超出 retention window（PITR 只能回到 history window 内，受 pitr_interval / GC 控制，见 docs/rfcs/011-retention-policy.md，窗口外历史被 GC 回收就找不回）；② 逻辑/误操作发现得晚（几周后才发现误删，早超窗口）；③ 整个 Neon 实例/账号级灾难（S3 桶被删、账号出问题、想迁出平台，数据都在这套系统内，供应商锁定风险）；④ 合规/长期归档（法规要求保留数年冷备，retention window 撑不了也不经济）。落地建议：日常防故障/误删回滚靠内建能力，不用手动备份；长期归档/跨窗口恢复/防平台级灾难则定期 pg_dump / pg_dumpall（或 pg_basebackup）逻辑导出到 Neon 外部的对象存储/异地，形成脱离 Neon 生命周期的独立副本。对应 RFC：011-retention-policy（PITR window 与 GC）、004-durability（WAL 持久化对比 Aurora）、009-snapshot-first-storage-pitr。")
 
+
 # ─────── S3 备份的元数据耦合陷阱 ───────
 p += 1
-std("s-backup-meta", "运维", "裸备份 S3 的陷阱：layer 文件离不开平台元数据", [
+std("s-backup-meta", "备份恢复", "裸备份 S3 的陷阱：layer 文件离不开平台元数据", [
     T("bm-desc", 96, 158, 1088, 44,
       "「直接拷 S3 桶」做备份看似省事，但 layer 对象<b>不是自包含的</b>：能不能 attach、拼不拼得出 key、"
       "归谁归哪条分支，都记在 <b>S3 之外</b>的两套库里。要能恢复，三者必须<b>时间点一致</b>地一起备。",
@@ -4306,9 +4945,10 @@ std("s-backup-meta", "运维", "裸备份 S3 的陷阱：layer 文件离不开�
       fs=12, color=DIM, lh=1.6),
 ], p, notes="承接上一页『S3 备份时平台数据库要不要一起备』：取决于备份方式。① 逻辑备份（pg_dump / pg_dumpall 导出到 Neon 外）——不需要备份平台元数据库，因为导出的是纯 SQL（schema+数据），自包含、不引用任何 tenant_id/timeline_id/layer 文件，可恢复到任意原生 PostgreSQL，天然绕开 S3↔元数据耦合，这也是推荐它做长期归档/DR 的原因。② 裸备份 S3 桶（拷 layer 文件）——用户担心的问题完全成立且更严重，裸对象离开元数据几乎不可恢复，耦合是多层的：(a) generation 编在 object key 里，远端 layer 路径是 {layer_name}-{generation:08x}（remote_timeline_client.rs），generation 由 storage controller 从它那套独立 PG 的 increment_generation 自增分配（persistence.rs），丢了 tenant_shards.generation 连该拼哪个 key 都不知道；(b) timeline 存在性/分片布局/SK 成员在 storcon DB 的 tenant_shards（generation、shard_stripe_size、count、placement_policy）和 timelines（start_lsn、sk_set、generation）表，没有这些 PS 无法 attach、不知拆几个 shard、条带多大；(c) 用户分支/项目/endpoint ↔ tenant_id/timeline_id 的映射在控制面 DB，不在 S3，裸桶恢复出来是一堆 UUID 目录不知哪个是哪个库；(d) 唯一自描述的是分支血缘 ancestor_timeline_id/ancestor_lsn，在 S3 的 index_part.json 里，所以 timeline 内部 layer 清单+父子关系 S3 自带，但『归谁、叫什么、当前 generation、attach 在哪』不在 S3。因此裸 S3 备份要能恢复必须同时且时间点一致地快照 S3 桶 + storage controller PG + 控制面 DB，否则就是 generation 错位/幽灵 timeline/缺层，即『timeline 记录和 S3 对不上』。这也是裸 S3 快照不是推荐 DR 路径的原因。对照表：逻辑 pg_dump 不用额外备份平台 DB、恢复简单；裸拷 S3 必须连 storcon PG+控制面 DB 一致性快照、恢复是深度手术易不一致。相关：storage_controller/src/persistence.rs（generation 分配）、storage_controller schema（tenant_shards/timelines 表，见 s-storcon-schema 页）、pageserver index_part.json（见 s-indexpart 页）。")
 
+
 # ─────── Neon 官方备份策略 ───────
 p += 1
-std("s-backup-official", "运维", "Neon 官方的三条备份策略：不是「每分支 pg_dump」", [
+std("s-backup-official", "备份恢复", "Neon 官方的三条备份策略：不是「每分支 pg_dump」", [
     T("bo-desc", 96, 158, 1088, 44,
       "Neon 托管服务<b>原生备份 = Instant Restore</b>（连续变更历史，非 snapshot / 非 pg_dump）；"
       "<span style=\"font-family:" + MONO + "\">pg_dump</span> 只是面向合规/DR 的<b>可选补充</b>。三者可单用可叠加。",
@@ -4349,9 +4989,10 @@ std("s-backup-official", "运维", "Neon 官方的三条备份策略：不是「
       fs=12, color=DIM, lh=1.6),
 ], p, notes="回答『Neon 官网怎么做备份，是不是每分支 pg_dump』：据 Neon 官方文档（neon.com/docs/manage/backups），托管服务提供三条可单用可叠加的备份策略，核心不是 per-branch pg_dump。① Instant Restore（PITR / history retention）——这是原生机制，系统自动保留变更历史，按套餐 1 到 30 天，可恢复到任意时刻，官方原话 'without the need for traditional database backups'，唯一配置是选 history window（越长越占存储）；底层就是 WAL + 不可变 layer + 按 LSN 建分支，不是 snapshot 也不是 pg_dump，是连续变更历史，恢复本质是在某 LSN 开一条分支，秒级、无需导出导入，覆盖误删回滚。所以用户猜的『每个分支各 pg_dump』不是它的做法——它是全 timeline 连续保历史。② 手动 pg_dump / pg_restore——标准 Postgres 工具，官方定位 'For business continuity, disaster recovery, or compliance'，即 Instant Restore 盖不住的跨窗口/防平台级灾难/长期归档边界；导出自包含 SQL、不依赖平台元数据，天然绕开 S3↔元数据耦合陷阱。③ 自动化 pg_dump 到 S3——官方两段式指南：建自有 S3 桶 + GitHub Action 每晚定时 pg_dump、可配保留期，是 ② 的工程化，备份的是导出的 SQL 而非裸拷 layer 文件。关键澄清：Neon 官方从不推荐裸拷 S3 桶当备份，因为会踩 generation/storcon PG/控制面 DB 的一致性问题（见上一页 s-backup-meta），它给的两条外部路径都是 pg_dump 这种自包含逻辑备份。来源：neon.com/docs/manage/backups、neon.com/docs/introduction/point-in-time-restore。")
 
+
 # ─────── 物理快照：冻结 S3 写入 ───────
 p += 1
-std("s-backup-freeze", "运维", "想物理快照 S3？光「停 GC」不够，要冻结全部写入", [
+std("s-backup-freeze", "备份恢复", "想物理快照 S3？光「停 GC」不够，要冻结全部写入", [
     T("bf-desc", 96, 158, 1088, 44,
       "「备份期间不 GC」只堵住了最危险的竞态，但 GC <b>不是 S3 上唯一改数据的来源</b>。"
       "要拿到可恢复的一致副本，得让这个 tenant 的 S3 <b>完全静止</b>，再三方对齐快照。",
@@ -4396,9 +5037,10 @@ std("s-backup-freeze", "运维", "想物理快照 S3？光「停 GC」不够，�
       fs=12, color=DIM, lh=1.62),
 ], p, notes="回答『备份 S3 期间不 GC 是不是就行、把元数据和 S3 都备份下』：方向对一半——不 GC 消除了最危险的竞态，但不够，因为 GC 不是 S3 上唯一删/改数据的来源，共三个独立来源：① GC（删超出 retention 的旧 layer，即用户想冻结的）；② Compaction（L0→L1、生成 image layer，既写新层也删旧层，与 GC 是两个独立任务 gc_iteration vs compaction_iteration，停 GC 它照删）；③ 持续 WAL ingest（只要 compute 还在写，Pageserver 就不断落新 layer 并覆盖 index_part.json 权威清单）。所以只关 GC，compaction 和 ingest 还在动 S3，拷到的是移动的靶子，拷一半清单和层就对不上。正确做法是让该 tenant 的 S3 完全静止=把 tenant quiesce 掉（停/detach compute，让 ingest/compaction/GC 全停），然后：记下此刻 index_part.json 版本 + 它引用的全部 layer（这份自洽）；同一时刻快照 storcon PG（尤其 tenant_shards.generation）+ 控制面 DB；再拷 S3；三者对齐即可恢复。隐藏坑——generation 必须匹配：备份期间只要一次 compute 重启或迁移，storcon 就会 increment_generation，新 index_part 落到新 generation 的 key 路径，旧的将来可能被回收；元数据快照记的 generation 必须和 S3 副本里实际存在的那份对得上，否则恢复时按元数据 generation 拼 key 会拼到不存在/已删对象；所以冻结写入本质也是冻结 generation。Neon 内部已有 deletion queue + generation 校验（pageserver/src/deletion_queue/validator.rs）机制：删除是延迟的、删前要向 controller 校验 generation，正是为了不删掉仍被引用的层。底线：这条路可行（适合超大库 pg_dump 太慢时的物理块级快照），代价是要停服窗口 + 自己保证 quiesce 和三方时间点一致，这正是它比 pg_dump 重、不被官方当推荐 DR 路径的原因。对照：只停 GC 边跑边拷=不可恢复（compaction/ingest 仍删改）；quiesce+三方一致快照=可恢复但要停服；pg_dump 逻辑导出=不停服、自包含、绕开全部耦合。")
 
+
 # ─────── 建指定 LSN 的 root timeline ───────
 p += 1
-std("s-root-at-lsn", "协调层", "创建「指定 LSN 的新 root timeline」：没有专用接口，两步拼出来", [
+std("s-root-at-lsn", "备份恢复", "创建「指定 LSN 的 root」：没有专用接口，两步拼出来", [
     T("rl-desc", 96, 158, 1088, 44,
       "storage_controller <b>没有</b> <span style=\"font-family:" + MONO + "\">restore</span> / <span style=\"font-family:" + MONO + "\">reset</span> 这类端点。"
       "「在某 LSN 上建一条无父 root」是用<b>同一个建 timeline 接口</b> + <b>detach_ancestor</b> 两步组合出来的 —— 官方 Instant Restore 也是控制面在上层编排这两个原语。",
@@ -4442,9 +5084,10 @@ std("s-root-at-lsn", "协调层", "创建「指定 LSN 的新 root timeline」�
       fs=12, color=DIM, lh=1.62),
 ], p, notes="回答『是 storage_controller 里有单独的接口吗？怎么创建指定了 LSN 的新 root timeline』：没有专用的 create-root-at-LSN 端点，也没有 restore/reset 端点（grep 确认 storage_controller/src/http.rs 里无 restore|reset 路由）。用同一个建 timeline 接口 + detach_ancestor 两步组合。第一步在指定 LSN 分支：路由 POST /v1/tenant/:tenant_id/timeline（http.rs:2565）→ handle_tenant_timeline_create（http.rs:448，463 解析 TimelineCreateRequest，467 调 service.tenant_timeline_create）；请求体 TimelineCreateRequest（libs/pageserver_api/src/models.rs），#[serde(flatten)] 出 TimelineCreateRequestMode，指定 LSN 走 Branch 变体，其中 ancestor_start_lsn: Option<Lsn> 就是『指定 LSN』的入口，ancestor_timeline_id 指定从哪条切；此时新 timeline 仍是子分支不是 root。第二步 detach_ancestor 升成无父 root：路由 POST /v1/tenant/:tenant_id/timeline/:timeline_id/detach_ancestor（http.rs:2583 → handle_tenant_timeline_detach_ancestor at http.rs:579 → service.tenant_timeline_detach_ancestor）；detach 会把分支点之前需要的数据实体化到这条 timeline 自己名下，之后 ancestor_timeline_id = None 成为真正 parentless root。DetachBehavior（models.rs:193）：no_ancestor_and_reparent（=v1，切断到祖先并把兄弟分支重挂祖先）、multi_level_and_no_reparent（=v2，多级切断不 reparent）。小结：建 root at LSN = timeline_create(Branch, ancestor_start_lsn=X) + detach_ancestor，不是原子操作；storage_controller 只提供底层积木，官方 Instant Restore 是控制面编排这两步 + 挪 compute/endpoint + 改名（旧分支存成 {branch_name}_old_{head_timestamp}）。相关积木：timeline_import（http.rs:1504，对应 ImportPgdata 模式，从外部 pgdata 导入）、block_gc/unblock_gc（http.rs:2593/2603，restore 期间锁住 GC）。建 timeline 三种模式 TimelineCreateRequestMode：Branch（带 LSN 分支）/ ImportPgdata（外部导入）/ Bootstrap（全新空库）。")
 
+
 # ─────── root restore 后子分支的 reparent 规则 ───────
 p += 1
-std("s-reparent", "协调层", "root restore 后，原 root 的子分支怎么办：v1 的 reparent 分流", [
+std("s-reparent", "备份恢复", "root restore 后，子分支怎么办：v1 的 reparent 分流", [
     T("rp-desc", 96, 158, 1088, 44,
       "root restore = fork <span style=\"font-family:" + MONO + "\">new_timeline</span>（父=旧 root，分叉点=snapshot_lsn）→ 对它调 <span style=\"font-family:" + MONO + "\">detach_ancestor</span>（默认 v1）。"
       "v1 会尝试把<b>旧 root 的直接子分支</b>按分叉点 LSN <b>分流</b>：一部分改挂到 new_timeline，其余留在旧 root。",
@@ -4489,12 +5132,13 @@ std("s-reparent", "协调层", "root restore 后，原 root 的子分支怎么�
       fs=11.5, color=DIM, lh=1.6),
 ], p, notes="回答『root 分支 restore 后原 root 的子分支怎么办』，并核对用户对 reparentable_timelines 的理解：结论基本正确，代码印证。root restore = fork new_timeline（父=旧 root timeline，分叉点=snapshot_lsn）再对它调 detach_ancestor（默认 v1 NoAncestorAndReparent）。判定在 pageserver/src/tenant/timeline/detach_ancestor.rs:1252 fn reparentable_timelines：先 tl_ancestor = tl.ancestor_timeline.as_ref()?（无父的 root 跳过），is_same = Arc::ptr_eq(ancestor, tl_ancestor)（tl 的直接父 == 被 detach 的旧 root），is_earlier = tl.get_ancestor_lsn() <= ancestor_lsn（子分支分叉点 <= detach 锚定的 ancestor_lsn，本流程里=snapshot_lsn），外加 !is_deleting；三者全真才 Some(tl) 加入候选。于是旧 root 的子分支分两类：① 分叉点 ≤ snapshot_lsn → 自动 reparent 到 new_timeline，安全性来自 detach 时 schedule_adding_existing_layers_to_index_detach_and_wait（:1086）把 ≤ancestor_lsn 的 layer 继承进 new_timeline，子分支读自己 [0,ancestor_lsn] 区间能从 new_timeline 拿到同一批 layer，内容与旧 root 一致（快照前历史不可变）；② 分叉点 > snapshot_lsn → 不 reparent，仍挂旧 root（保留的备份分支那条 timeline），因为它们依赖被回滚掉的数据。需修正/补充的精确点：(1) 只处理直接子分支——ptr_eq 比的是直接父，孙子级/多级后代不在候选，函数 reparented_direct_children（:675）；(2) reparent 的目标是 detached（new_parent），判据里的 ancestor 指旧 root，改挂用 schedule_reparenting_and_wait(&new_parent)（:1150）；(3) is_earlier 的界是 detach 实际锚定的 ancestor_lsn，在 root-restore 里恰好=snapshot_lsn（fork 时 ancestor_start_lsn=snapshot_lsn）；(4) reparent 尽力而为，部分失败返回 SomeReparentingFailed（:56 error），reparented_all = candidates==reparented.len()（:1193），不全成则 detach 不标记完成需重试。v1=NoAncestorAndReparent 做 reparent；v2=MultiLevelAndNoReparent 直接 return Reparented(HashSet::new()) 不 reparent（:1105-1108）。后果：留在旧 root 的子分支把旧 root 钉住无法删，正是多次 Instant Restore 后最早 root 一直无法回收的根源（呼应 s-root-at-lsn / 前面的 Instant Restore 讨论）。")
 
+
 # ─────── v1 vs v2 detach_behavior 选型 ───────
 p += 1
-std("s-detach-v1v2", "协调层", "detach_ancestor 用 v1 还是 v2：root restore 选 v1", [
+std("s-detach-v1v2", "备份恢复", "detach_ancestor 用 v1 还是 v2：多数 v1，PITR 外恢复需 v2", [
     T("dv-desc", 96, 158, 1088, 44,
       "分水岭不只是「reparent 与否」，更在 <span style=\"font-family:" + MONO + "\">prepare()</span>（detach_ancestor.rs:350-374）对<b>「祖先的祖先」</b>的处理。"
-      "root restore 拓扑天然单层（new_timeline 的父=旧 root，旧 root 本身无祖先）—— <b>v1 正合适</b>。",
+      "root restore 拓扑<b>通常</b>单层（new_timeline 的父=旧 root，旧 root 无祖先）→ v1；<b>但恢复点早于 PITR、要借锚点分支时会退化成多级链 → v2</b>（见底部例外）。",
       fs=13, color=DIM, lh=1.6),
     # left — v1
     R("dv1-bg", 96, 210, 530, 250, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
@@ -4529,20 +5173,27 @@ std("s-detach-v1v2", "协调层", "detach_ancestor 用 v1 还是 v2：root resto
     # bottom — decision
     R("dv-b-bg", 96, 476, 1090, 146, fill=PANEL, stroke=EDGE, radius=10),
     T("dv-b-h", 116, 488, 1000, 20, "选型一句话", fs=13, fw=800, color="#C89EFF"),
-    T("dv-b-b", 116, 514, 1050, 100,
+    T("dv-b-b", 116, 512, 1050, 104,
       "<b style='color:" + AC + "'>root restore → v1</b>：拓扑单层，v2 的「多级上卷」用不上；而 v1 独有的 reparent 恰好把 ≤snapshot_lsn 的子分支迁到新主干（见 <span style=\"font-family:" + MONO + "\">s-reparent</span>）。"
       "选 v2 会让所有子分支留在旧 root，你要的分流根本不发生。<br>"
       "<b style='color:#7CB3F4'>v2 的场景</b>：被 detach 的 timeline 挂在一条<b>多级链</b>上，想一路拍平成 root、且不需要兄弟 reparent；"
-      "还要求中间每层都是「分叉点 LSN == 自身祖先 LSN」的空转层，否则 <span style=\"font-family:" + MONO + "\">AncestorNotEmpty</span>。这是「深层扁平化」工具，不是 root restore 用的。",
-      fs=12, color=DIM, lh=1.62),
-], p, notes="回答『detach_ancestor 用 v1 还是 v2』：root restore 场景用 v1（NoAncestorAndReparent，默认）。真正的分水岭在 prepare()（pageserver/src/tenant/timeline/detach_ancestor.rs:350-374）对『祖先的祖先』的处理，不只是 reparent 与否。v1：(a) 被 detach 的 timeline 若有多级祖先，直接报 TooManyAncestors（:370-373），只支持单层祖先；(b) 做 reparent，把 ≤ancestor_lsn 的直接子分支改挂到 new_timeline（:1126）；(c) 检查 archived 子分支，有 archived 候选报 Archived（:1299）。v2（MultiLevelAndNoReparent）：(a) 沿 ancestor.ancestor_timeline 逐级上卷把多级链扁平化（:352-369），前提是每一级 ancestor_lsn == ancestor.ancestor_lsn，否则 AncestorNotEmpty（:353-357），即中间层必须是空转层；(b) 不做 reparent，直接 return Reparented(空 HashSet)（:1105-1108），所有子分支留在原祖先；(c) 跳过 archived 子分支检查（:1322-1324）。为什么 root restore 用 v1：① restore 时 new_timeline 的父是旧 root，旧 root 本身无祖先（它是 root），所以拓扑单层，v1 的 TooManyAncestors 不会触发，v2 的多级上卷能力用不上；② 要的正是 reparent——把旧 root 下 ≤snapshot_lsn 的子分支自动迁到新主干，这是 v1 独有、v2 明确放弃的；选 v2 会让所有子分支留旧 root，s-reparent 里讲的分流不发生；③ 官方 Instant Restore 语义依赖 reparent 让快照点前的子分支跟新主干走。v2 的适用场景：被 detach 的 timeline 挂在多级链上，想一路拍平成 root 且不在乎兄弟 reparent，且中间每层是分叉点 LSN==自身祖先 LSN 的空转层，这是深层分支扁平化工具，不是 root restore。呼应 s-reparent / s-root-at-lsn。")
+      "还要求中间每层都是「分叉点 LSN == 自身祖先 LSN」的空转层，否则 <span style=\"font-family:" + MONO + "\">AncestorNotEmpty</span>。<br>"
+      "<b style='color:" + AC2 + "'>例外（root restore 也会撞上 v2）</b>：恢复点早于 root 的 PITR、只能借一条既有锚点分支触达时 —— 建分支那道闸要求 "
+      "<span style=\"font-family:" + MONO + "\">start_lsn ≥ gc_cutoff</span>（tenant.rs:5033），过期点无法直接从 root 切，只能<b>从锚点分支再开孙子分支</b>，拓扑成 "
+      "<span style=\"font-family:" + MONO + "\">root→锚点→新分支</span>。此时 v1 报 <span style=\"font-family:" + MONO + "\">TooManyAncestors</span>，须改 v2（锚点须为空转层）—— 详见 <span style=\"font-family:" + MONO + "\">s-detach-v2-case</span>。",
+      fs=11.5, color=DIM, lh=1.56),
+], p, notes="回答『detach_ancestor 用 v1 还是 v2』：root restore 场景【通常】用 v1（NoAncestorAndReparent，默认），但有一个重要例外会退化成 v2，见文末。真正的分水岭在 prepare()（pageserver/src/tenant/timeline/detach_ancestor.rs:350-374）对『祖先的祖先』的处理，不只是 reparent 与否。v1：(a) 被 detach 的 timeline 若有多级祖先，直接报 TooManyAncestors（:370-373），只支持单层祖先；(b) 做 reparent，把 ≤ancestor_lsn 的直接子分支改挂到 new_timeline（:1126）；(c) 检查 archived 子分支，有 archived 候选报 Archived（:1299）。v2（MultiLevelAndNoReparent）：(a) 沿 ancestor.ancestor_timeline 逐级上卷把多级链扁平化（:352-369），前提是每一级 ancestor_lsn == ancestor.ancestor_lsn，否则 AncestorNotEmpty（:353-357），即中间层必须是空转层；(b) 不做 reparent，直接 return Reparented(空 HashSet)（:1105-1108），所有子分支留在原祖先；(c) 跳过 archived 子分支检查（:1322-1324）。为什么 root restore 通常用 v1：① 典型 restore 时 new_timeline 的父是旧 root，旧 root 本身无祖先（它是 root），拓扑单层，v1 的 TooManyAncestors 不触发，v2 的多级上卷用不上；② 要的正是 reparent——把旧 root 下 ≤snapshot_lsn 的子分支自动迁到新主干，这是 v1 独有、v2 明确放弃的；③ 官方 Instant Restore 语义依赖 reparent。"
+             "【澄清一个常见误解】『建分支当快照锚点会把 root 对应 LSN GC 掉』是反的：在 snapshot_lsn 上建分支时 insert_child 把该 LSN 登记进父 root 的 GcInfo.retain_lsns（tenant.rs:591、timeline.rs:507-514），GC 取 max_retain_lsn 保留所有起始 LSN ≤ 它的 layer（timeline.rs:6930），锚点分支是【钉住并保护】该 LSN、不是让它被回收；而且建分支时持 gc_cs 锁强校验 start_lsn ≥ latest_gc_cutoff 且 ≥ planned_cutoff（branch_timeline_impl，tenant.rs:5033-5058），根本不允许在已过期 LSN 上直接建分支，Instant Restore 还会 block_gc 兜住窗口。"
+             "【v2 会撞上 root restore 的真实场景】当恢复目标 LSN=L 已经早于 root 的 PITR 窗口（滑出 gc_cutoff），无法直接从 root 在 L 上开分支；但若早先存在一条锚点分支 A 恰好开在 L（把 L 的 layer 钉在 root 里保住），则只能【从 A 再开一条孙子分支 G（在 L）】，拓扑变成 root→A→G。对 G 做 detach：v1 的 prepare() 见 A 还有祖先 root → TooManyAncestors（:370-373）直接失败，必须改用 v2 沿 A→root 逐级上卷把 G 拍平成独立 root。这里 v2 的硬前提恰好满足：A 在 root 的分叉点与 G 在 A 的分叉点都 == L（A 是空转层），不触发 AncestorNotEmpty。所以『子分支再产生孙子分支、再用 v2』是成立的恢复路径，正是 s-detach-v2-case 讲的多级链扁平化。"
+             "v2 的通用适用场景：被 detach 的 timeline 挂在多级链上，想一路拍平成 root 且不在乎兄弟 reparent，且中间每层是分叉点 LSN==自身祖先 LSN 的空转层。呼应 s-detach-v2-case / s-reparent / s-root-at-lsn。")
+
 
 # ─────── v2 的适用场景：多级链扁平化 ───────
 p += 1
-std("s-detach-v2-case", "协调层", "v2 的唯一用武之地：把「多级链」上的分支拍平成 root", [
+std("s-detach-v2-case", "备份恢复", "v2 的用武之地：多级链扁平化，与 PITR 外恢复借锚点分支", [
     T("v2-desc", 96, 158, 1088, 40,
       "v2 只在<b>被 detach 的 timeline 不是直接挂在 root 下、而是挂在一条多级链上</b>时才有意义。"
-      "root restore 的 new_timeline 天生只有一层父，几乎永远用不到 v2。",
+      "除了「深层分支整理」，<b>恢复到早于 PITR 的老点</b>也会撞上它（下方「触发场景」）。",
       fs=13, color=DIM, lh=1.55),
     # before
     R("v2-bf-bg", 96, 206, 530, 268, fill=PANEL, stroke=EDGE, radius=12),
@@ -4571,69 +5222,22 @@ std("s-detach-v2-case", "协调层", "v2 的唯一用武之地：把「多级链
       "B 变成 <span style=\"font-family:" + MONO + "\">anc=None</span> 的独立 root，把 [0,L] 的 layer 都继承到自己名下。",
       fs=11.5, color=DIM, lh=1.55),
     # bottom — prerequisites
-    R("v2-b-bg", 96, 490, 1090, 132, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=10),
-    T("v2-b-h", 116, 502, 1000, 20, "硬前提 · 中间层必须是「空转层」", fs=13, fw=800, color=AC2),
-    T("v2-b-b", 116, 528, 1050, 86,
-      "上卷时每级都要求 <span style=\"font-family:" + MONO + "\">ancestor_lsn == ancestor.ancestor_lsn</span>（:353-357）——"
-      "即 <b>B 在 A 上的分叉点 LSN，必须正好等于 A 在 T0 上的分叉点 LSN</b>；否则报 <span style=\"font-family:" + MONO + "\">AncestorNotEmpty</span>。"
-      "含义：中间层 A 在那段区间<b>没写过独立新数据</b>（是「空转」的），扁平化才不用多切多拷 layer，当前实现只做这种情形。<br>"
-      "<b style='color:#7CB3F4'>一句话</b>：v2 = 给「深层分支想脱离整条祖先链、独立成库」的运维/整理场景；<b>单层 + 要迁子分支就用 v1</b>（root restore）。",
-      fs=11.5, color=DIM, lh=1.6),
-], p, notes="回答『什么情况下使用 v2』：v2（MultiLevelAndNoReparent）只在被 detach 的 timeline 挂在一条多级链上（不是直接挂 root 下）时才有意义。示例拓扑 root(T0) └ A(anc=T0,lsn=L) └ B(anc=A,lsn=L)，对 B 做 detach：v1 直接失败——prepare() 发现 ancestor(A).ancestor_timeline 非空（A 上面还有 T0），报 TooManyAncestors（detach_ancestor.rs:370-373），v1 只处理挂在 root 下的单层情况。v2 才能处理：沿 ancestor.ancestor_timeline 从 A→T0 逐级上卷（:352-369），把 B 一路扁平化到最顶层，最终 B 变成 anc=None 的独立 root，把 [0,L] 区间 layer 继承进自己名下。v2 三个前提/代价：(1) 每层必须是空转层——上卷要求 ancestor_lsn == ancestor.ancestor_lsn（:353-357），即 B 在 A 的分叉点 LSN 必须正好等于 A 在 T0 的分叉点 LSN，否则 AncestorNotEmpty；因为中间层 A 若在那段区间真写过独立数据，扁平化就要多切多拷 layer，当前实现不做，所以 v2 适用中间层没有独立新数据的链条；(2) 放弃 reparent，直接 return Reparented(空集)（:1105-1108），A、T0 下其它兄弟分支一个都不迁全留原地；(3) 跳过 archived 子分支检查（:1322-1324）。一句话区分：单层+要迁子分支→v1（root restore）；多级链+只想把目标拍平成 root、不管兄弟→v2。root restore 流程几乎永远用不到 v2，因为 restore 造的 new_timeline 天生只有一层父（旧 root）。v2 是给『深层分支想脱离整条祖先链、独立成库』的运维/整理场景准备的。呼应 s-detach-v1v2 / s-reparent。")
+    R("v2-b-bg", 96, 486, 1090, 150, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=10),
+    T("v2-b-h", 116, 496, 1000, 20, "硬前提「空转层」 · 触发场景「恢复到早于 PITR 的老点」", fs=13, fw=800, color=AC2),
+    T("v2-b-b", 116, 522, 1050, 108,
+      "<b>硬前提</b>：上卷每级要求 <span style=\"font-family:" + MONO + "\">ancestor_lsn == ancestor.ancestor_lsn</span>（:353-357）—— B 在 A 的分叉点 LSN 必须正好等于 A 在 T0 的分叉点 LSN，"
+      "否则 <span style=\"font-family:" + MONO + "\">AncestorNotEmpty</span>。即中间层 A 那段区间<b>没写过独立数据</b>（空转），扁平化才无需多切多拷。<br>"
+      "<b style='color:" + AC + "'>触发场景（root restore 也会撞上）</b>：要恢复到 LSN=L 但 L 已早于 root 的 PITR，"
+      "<span style=\"font-family:" + MONO + "\">start_lsn ≥ gc_cutoff</span> 那道闸（tenant.rs:5033）不让你直接从 root 在 L 切；"
+      "若早先有锚点分支 A 开在 L（把 L 钉在 root 里），就只能<b>从 A 再开孙子分支 G</b>→ <span style=\"font-family:" + MONO + "\">root→A→G</span>，对 G detach 时 v1 报 TooManyAncestors，必须 v2。<br>"
+      "<b style='color:#7CB3F4'>一句话</b>：单层 + 要迁子分支 → v1；多级链（深层整理，或 PITR 外恢复借锚点）+ 只想拍平成 root → v2。",
+      fs=11.5, color=DIM, lh=1.56),
+], p, notes="回答『什么情况下使用 v2』：v2（MultiLevelAndNoReparent）只在被 detach 的 timeline 挂在一条多级链上（不是直接挂 root 下）时才有意义。示例拓扑 root(T0) └ A(anc=T0,lsn=L) └ B(anc=A,lsn=L)，对 B 做 detach：v1 直接失败——prepare() 发现 ancestor(A).ancestor_timeline 非空（A 上面还有 T0），报 TooManyAncestors（detach_ancestor.rs:370-373），v1 只处理挂在 root 下的单层情况。v2 才能处理：沿 ancestor.ancestor_timeline 从 A→T0 逐级上卷（:352-369），把 B 一路扁平化到最顶层，最终 B 变成 anc=None 的独立 root，把 [0,L] 区间 layer 继承进自己名下。v2 三个前提/代价：(1) 每层必须是空转层——上卷要求 ancestor_lsn == ancestor.ancestor_lsn（:353-357），即 B 在 A 的分叉点 LSN 必须正好等于 A 在 T0 的分叉点 LSN，否则 AncestorNotEmpty；因为中间层 A 若在那段区间真写过独立数据，扁平化就要多切多拷 layer，当前实现不做，所以 v2 适用中间层没有独立新数据的链条；(2) 放弃 reparent，直接 return Reparented(空集)（:1105-1108），A、T0 下其它兄弟分支一个都不迁全留原地；(3) 跳过 archived 子分支检查（:1322-1324）。一句话区分：单层+要迁子分支→v1（root restore）；多级链+只想把目标拍平成 root、不管兄弟→v2。root restore 流程【通常】用不到 v2，因为 restore 造的 new_timeline 天生只有一层父（旧 root）；但有一个真实例外：当恢复点 L 已早于 root 的 PITR（start_lsn ≥ gc_cutoff 的闸拒绝直接从 root 切，tenant.rs:5033），而早先存在锚点分支 A 开在 L 把该点钉在 root 里，就只能从 A 再开孙子分支 G（root→A→G），对 G detach 时 v1 TooManyAncestors，必须用 v2 把 G 拍平成独立 root（A 为空转层，前提恰好满足）。所以 v2 既是『深层分支想脱离整条祖先链、独立成库』的整理工具，也是『恢复到 PITR 外、靠锚点分支保命的老点』的恢复路径。呼应 s-detach-v1v2 / s-reparent / s-root-at-lsn。")
 
-# ─────── role/database 归谁：控制面 spec vs LSN 快照 ───────
-p += 1
-std("s-role-db-backup", "运维", "role/database 到底归谁：控制面 spec（薄）vs LSN 快照（数据）", [
-    T("rd-desc", 96, 158, 1088, 44,
-      "「role/database 是控制面 spec 权威、下发给 compute」—— <b>对，但它只权威一个薄子集</b>（存在性+口令+owner）。"
-      "数据、ACL、成员关系归 LSN 快照。恢复 = <b>LSN 快照(数据) + 控制面 spec(叠配置)</b>，两者不能互相替代。",
-      fs=13, color=DIM, lh=1.55),
-    # left — control-plane spec (thin)
-    R("rd1-bg", 96, 212, 530, 244, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)", radius=12),
-    T("rd1-h", 116, 224, 494, 22, "控制面 spec 权威的 —— 薄子集", fs=13.5, fw=800, color="#7CB3F4"),
-    *TL("rd1-b", 116, 252, 500, 196, [
-        ("ComputeSpec.cluster.roles/databases", "#7CB3F4", 700),
-        ("&nbsp;&nbsp;spec.rs:555-574", DIM),
-        ("· role 存在性 + encrypted_password（口令）", FG),
-        ("&nbsp;&nbsp;口令控制面管，数据页里未必是最新", DIM),
-        ("· database 存在性 + owner + 少量 options", FG),
-        "",
-        ("属于「平台元数据」，不在 S3 layer 里 →", AC, 700),
-        ("&nbsp;&nbsp;跟 generation / endpoint 映射一起备份", AC),
-        ("&nbsp;&nbsp;（本就在控制面 DB 里，无需另抄）", DIM),
-        ("compute 侧靠它 reconcile：CreateRoles/", "#F4C77C"),
-        ("&nbsp;&nbsp;CreateDatabases、DeltaOp 处理 DROP/RENAME", DIM),
-    ], fs=11, lh=1.48),
-    # right — LSN snapshot (data)
-    R("rd2-bg", 656, 212, 530, 244, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
-    T("rd2-h", 676, 224, 494, 22, "LSN 快照权威的 —— 数据大头", fs=13.5, fw=800, color=AC),
-    *TL("rd2-b", 676, 252, 500, 196, [
-        ("控制面 spec 完全不碰的：", AC, 700),
-        ("· 每个库的表 / schema / 行数据", FG),
-        ("· 对象级权限 ACL（表/schema/函数 GRANT）", FG),
-        ("· 角色成员关系 pg_auth_members", FG),
-        ("· pg_db_role_setting、default privileges", FG),
-        "",
-        ("这些只在该 LSN 的 layer 里；按 LSN 建分支时", DIM),
-        ("pg_authid / pg_database 也随数据原子回来", DIM),
-        "",
-        ("→ 单独记 role/db 省不掉数据快照，", AC2, 700),
-        ("&nbsp;&nbsp;且是有损第二真相源，会与数据漂移", AC2),
-    ], fs=11, lh=1.48),
-    # bottom — restore = overlay
-    R("rd-b-bg", 96, 472, 1090, 150, fill=PANEL, stroke=EDGE, radius=10),
-    T("rd-b-h", 116, 484, 1000, 20, "恢复流程 = 两段叠加，各管一段", fs=13, fw=800, color="#C89EFF"),
-    T("rd-b-b", 116, 510, 1050, 104,
-      "<b>① 按 LSN 建分支</b> → 数据 + <span style=\"font-family:" + MONO + "\">pg_authid</span>/<span style=\"font-family:" + MONO + "\">pg_database</span> + ACL + 成员关系（无损、原子一致）<br>"
-      "<b>② 控制面按该 endpoint 的 spec reconcile</b> → 叠加口令、确保期望 role/db 存在（<span style=\"font-family:" + MONO + "\">spec_apply.rs</span>：CreateRoles/CreateDatabases、ChangeSchemaPerms 打 default_grants）<br>"
-      "<b style='color:" + AC + "'>结论</b>：role/database 的「存在性+口令+owner」跟控制面元数据<b>一起备</b>（你说得对，这部分要备）；但它是薄薄一层配置意图，"
-      "<b>数据/ACL/成员关系归 LSN 快照</b>。想「只记 role/db 就恢复」不成立——只会得到口令对、权限残缺、且与数据漂移的空壳。DDL forwarding（<span style=\"font-family:" + MONO + "\">s-ddl-fwd</span>）持续把 CREATE/DROP ROLE·DATABASE 上报控制面，正是维护这份薄清单，但它不是恢复数据的依据。",
-      fs=11.5, color=DIM, lh=1.6),
-], p, notes="回答『role/database 是控制面 spec 权威、下发给 compute，所以应该备份 role 和 database 吧』：你抓住了真实分工，但要厘清『谁对什么权威』。控制面 spec（ComputeSpec.cluster.roles/databases，libs/compute_api/src/spec.rs:555-574）确实权威、下发、compute reconcile，但它权威的只是一个薄子集：role 存在性 + encrypted_password（口令，控制面管，用户在 Console 改密码写进控制面再下发，数据页里那个 LSN 未必最新）、database 存在性 + owner + 少量 options。这个薄子集属于『平台元数据』（不在 S3 layer 里），应该跟 tenant_shards.generation、project/branch/endpoint↔tenant/timeline 映射一起备份——这点你对。但它不对『数据库内容』权威：控制面 spec 完全不碰每个库的表/schema/行数据、对象级 ACL（表/schema/函数 GRANT）、角色成员关系 pg_auth_members、pg_db_role_setting、default privileges——这些只在 LSN 快照 layer 里，按 LSN 建分支时 pg_authid/pg_database 随数据原子回来。所以『用记录的 role/database 直接恢复到新分支更简单』不成立：库数据/ACL/成员关系仍只能从 LSN 快照来，单独记的 spec 清单恢复时是叠加在 LSN 数据之上而非替代，且是有损第二真相源会与数据漂移。正确心智模型：恢复 endpoint/分支 = ① 按 LSN 建分支（数据 + pg_authid/pg_database + ACL + 成员关系，无损原子）+ ② 控制面按该 endpoint spec reconcile（叠加口令、确保期望 role/db 存在，compute_tools/src/spec_apply.rs：CreateRoles/CreateDatabases、DeltaOp 处理 DROP/RENAME/delete_role at :1240-1252、ChangeSchemaPerms 打 default_grants at :1122-1147），两者缺一不可且不能互相替代。DDL forwarding（s-ddl-fwd）实时把 CREATE/DROP ROLE·DATABASE 上报控制面，持续维护这份薄清单，但那是给控制面自己用（UI、给新 endpoint 下发 spec），不是恢复数据的依据。收敛：role/database 的存在性+口令+owner 跟控制面元数据一起备（要备），但数据/ACL/成员关系归 LSN 快照；恢复 = LSN 快照(数据) + 控制面 spec(叠配置)。呼应 s-backup-meta / s-backup-freeze / s-ddl-fwd。")
 
 # ─────── detach 后 S3 存几份 ───────
 p += 1
-std("s-detach-storage", "PAGESERVER", "detach_ancestor 后，S3 上两个 root 存两份还是一份？", [
+std("s-detach-storage", "备份恢复", "detach_ancestor 后，S3 上两个 root 存两份还是一份？", [
     T("ds-desc", 96, 158, 1088, 44,
       "答案：<b>S3 上存两份物理对象</b> —— 新 root 把分叉点前依赖的历史 layer 复制出自己一整套副本（server-side copy）。"
       "只有<b>本地磁盘</b>靠 hardlink 共享 inode，S3 没有 hardlink，只能真拷。",
@@ -4681,55 +5285,57 @@ std("s-detach-storage", "PAGESERVER", "detach_ancestor 后，S3 上两个 root �
       fs=11.5, color=DIM, lh=1.6),
 ], p, notes="回答『detach_ancestor 之后 S3 上两个 root 分支是存两份还是一份』：S3 上存两份物理对象——新 root 把分叉点前依赖的历史 layer 复制出自己一整套副本（server-side copy），不共享；只有本地磁盘靠 hardlink 省。代码依据：detach_ancestor.rs 的 prepare() 把旧 root 在 ≤ancestor_lsn 的历史 layer 过继给新 root（detached），分两类：① 跨分叉点的 delta layer（straddling_branchpoint，:483）→ upload_rewritten_layer（:760）裁剪出 ≤end_lsn 前缀上传一个新对象；② 完全在分叉点之前的历史 layer（rest_of_historic，:526）→ remote_copy（:851）→ copy_timeline_layer。关键在 copy_timeline_layer（remote_timeline_client.rs:1784）：算 source_remote_path（旧 root key）和 target_remote_path（新 root key），upload::copy_timeline_layer 做一次 S3 server-side copy，即在对象存储里生成新对象。为什么必须新对象不能共享 key：remote_layer_path 构成 = {tenant}/timelines/{timeline_id}/{layer_name}-{generation:08x}，key 里带 timeline_id，新 root 是不同 timeline_id 路径就不同；remote_copy 里还把 metadata.generation 改成新 timeline 的 generation（:860）、shard 改成自己的（:861）。所以同一份内容在旧/新 root 下是两个不同 S3 key，物理两份。本地 vs 远端要分开：本地磁盘 remote_copy（:873-914）对还常驻本地的 layer 做 std::fs::hard_link（did_hardlink=true），同 inode 本地不占额外空间；远端 S3 无论本地是否 hardlink 都走 copy_timeline_layer 生成独立对象，S3 没 hardlink 概念只能真拷。现实含义：detach 后新 root 自包含，把分叉点前依赖历史全 adopt 到自己名下不再引用旧 root，这是它成为无父 root 的物理前提；代价是 S3 上这段共享历史被复制成两份，呼应 tradeoff 页『S3 无廉价 mv，rename/adopt 类操作被放大成拷贝』（RFC 022）；多次 root restore 持续放大 S3 占用，每条独立 root 各存一份自分叉点回溯的历史而非共享，这是 detach_ancestor 属于重操作、推高存储账单的根因。一句话：逻辑上两条独立 root，物理上 S3 存两份 layer（server-side copy，各带自己的 timeline_id/generation），仅本地磁盘靠 hardlink 共享 inode。呼应 s-reparent / s-detach-v1v2 / s-ps-layer-name / s-tradeoff。")
 
-# ─────── Neon 的两种 checkpoint ───────
+
+# ─────── role/database 归谁：控制面 spec vs LSN 快照 ───────
 p += 1
-std("s-checkpoint", "COMPUTE", "Neon 也有 checkpoint 吗：有，但分裂成两个层面", [
-    T("ck-desc", 96, 158, 1088, 44,
-      "有，但「checkpoint」在 Neon 里裂成两件事：<b>pageserver 的 LSM flush 阈值</b>（真正高频、起作用）"
-      "与 <b>compute 里被架构弱化的 PG checkpoint</b>（不再管崩溃恢复和脏页落盘）。",
+std("s-role-db-backup", "备份恢复", "role/database 归谁：spec（薄）vs LSN 快照（数据）", [
+    T("rd-desc", 96, 158, 1088, 44,
+      "「role/database 是控制面 spec 权威、下发给 compute」—— <b>对，但它只权威一个薄子集</b>（存在性+口令+owner）。"
+      "数据、ACL、成员关系归 LSN 快照。恢复 = <b>LSN 快照(数据) + 控制面 spec(叠配置)</b>，两者不能互相替代。",
       fs=13, color=DIM, lh=1.55),
-    # left — pageserver checkpoint_distance
-    R("ck1-bg", 96, 212, 530, 250, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
-    T("ck1-h", 116, 224, 494, 22, "① Pageserver：checkpoint_distance（LSM flush）", fs=12.5, fw=800, color=AC),
-    *TL("ck1-b", 116, 254, 500, 200, [
-        ("config.rs：", DIM),
-        ("· checkpoint_distance 默认 256 MB（:851）", FG, 700),
-        ("· checkpoint_timeout 默认 10 分钟（:852）", FG, 700),
+    # left — control-plane spec (thin)
+    R("rd1-bg", 96, 212, 530, 244, fill="rgba(124,179,244,0.06)", stroke="rgba(124,179,244,0.3)", radius=12),
+    T("rd1-h", 116, 224, 494, 22, "控制面 spec 权威的 —— 薄子集", fs=13.5, fw=800, color="#7CB3F4"),
+    *TL("rd1-b", 116, 252, 500, 196, [
+        ("ComputeSpec.cluster.roles/databases", "#7CB3F4", 700),
+        ("&nbsp;&nbsp;spec.rs:555-574", DIM),
+        ("· role 存在性 + encrypted_password（口令）", FG),
+        ("&nbsp;&nbsp;口令控制面管，数据页里未必是最新", DIM),
+        ("· database 存在性 + owner + 少量 options", FG),
         "",
-        ("作用：InMemoryLayer（ephemeral=MemTable）", AC, 700),
-        ("&nbsp;&nbsp;写满 256MB 或距上次满 10min → freeze+flush", DIM),
-        ("&nbsp;&nbsp;滚成一个 L0 delta layer 落盘 / 传 S3", DIM),
+        ("属于「平台元数据」，不在 S3 layer 里 →", AC, 700),
+        ("&nbsp;&nbsp;跟 generation / endpoint 映射一起备份", AC),
+        ("&nbsp;&nbsp;（本就在控制面 DB 里，无需另抄）", DIM),
+        ("compute 侧靠它 reconcile：CreateRoles/", "#F4C77C"),
+        ("&nbsp;&nbsp;CreateDatabases、DeltaOp 处理 DROP/RENAME", DIM),
+    ], fs=11, lh=1.48),
+    # right — LSN snapshot (data)
+    R("rd2-bg", 656, 212, 530, 244, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=12),
+    T("rd2-h", 676, 224, 494, 22, "LSN 快照权威的 —— 数据大头", fs=13.5, fw=800, color=AC),
+    *TL("rd2-b", 676, 252, 500, 196, [
+        ("控制面 spec 完全不碰的：", AC, 700),
+        ("· 每个库的表 / schema / 行数据", FG),
+        ("· 对象级权限 ACL（表/schema/函数 GRANT）", FG),
+        ("· 角色成员关系 pg_auth_members", FG),
+        ("· pg_db_role_setting、default privileges", FG),
         "",
-        ("本质 = LSM memtable flush 阈值，不是 PG checkpoint", "#F4C77C", 700),
-        ("&nbsp;&nbsp;名字沿用，频率远高于传统 PG checkpoint", DIM),
-        ("&nbsp;&nbsp;呼应 s-flush-policy / s-ps-inmem", DIM),
-    ], fs=11, lh=1.5),
-    # right — compute PG checkpoint weakened
-    R("ck2-bg", 656, 212, 530, 250, fill=PANEL, stroke=EDGE, radius=12),
-    T("ck2-h", 676, 224, 494, 22, "② Compute：PG checkpoint 被存算分离掏空", fs=12.5, fw=800, color="#7CB3F4"),
-    *TL("ck2-b", 676, 254, 500, 200, [
-        ("内核改动（core_changes.md）：", DIM),
-        ("· Allow startup without checkpoint record", "#7CB3F4", 700),
-        ("&nbsp;&nbsp;compute 无状态，启动走 basebackup +", DIM),
-        ("&nbsp;&nbsp;从 SK/PS 拉 WAL，不依赖本地 checkpoint", DIM),
+        ("这些只在该 LSN 的 layer 里；按 LSN 建分支时", DIM),
+        ("pg_authid / pg_database 也随数据原子回来", DIM),
         "",
-        ("两个经典职责都被架构掏空：", AC2, 700),
-        ("· 「限制恢复回放的 WAL 量」→ 不需要", FG),
-        ("&nbsp;&nbsp;恢复不从本地 checkpoint 起", DIM),
-        ("· 「把脏页刷进数据文件」→ 不需要", FG),
-        ("&nbsp;&nbsp;没有本地权威数据文件，页都在 PS", DIM),
-        ("checkpointer 进程还在，但已非持久性关键路径", "#FF9E8A"),
-    ], fs=11, lh=1.5),
-    # bottom — comparison
-    R("ck-b-bg", 96, 478, 1090, 144, fill=PANEL, stroke=EDGE, radius=10),
-    T("ck-b-h", 116, 490, 1000, 20, "对比 · 持久性与恢复的职责搬家了", fs=13, fw=800, color="#C89EFF"),
-    T("ck-b-b", 116, 516, 1050, 98,
-      "• <b>持久性靠谁</b>：原生 PG = checkpoint + WAL fsync 到本地盘；<b>Neon = WAL 落 safekeeper 法定多数</b>（见 <span style=\"font-family:" + MONO + "\">s-sk1</span>），与 compute checkpoint 无关。<br>"
-      "• <b>崩溃恢复起点</b>：原生 PG = 最后一个 checkpoint record；<b>Neon = basebackup + 远端拉 WAL</b>，无需本地 checkpoint record。<br>"
-      "• <b>高频「落盘点」</b>：原生 PG = checkpoint 刷脏页进数据文件；<b>Neon = pageserver checkpoint_distance（256MB）滚 InMemoryLayer→L0</b>。<br>"
-      "<b style='color:" + AC + "'>一句话</b>：Neon 有 checkpoint，但真正起作用的是 PS 的 LSM flush 阈值；compute 里 PG 的传统 checkpoint 因存算分离 + WAL 法定多数持久化，已不再承担崩溃恢复与脏页落盘。",
+        ("→ 单独记 role/db 省不掉数据快照，", AC2, 700),
+        ("&nbsp;&nbsp;且是有损第二真相源，会与数据漂移", AC2),
+    ], fs=11, lh=1.48),
+    # bottom — restore = overlay
+    R("rd-b-bg", 96, 472, 1090, 150, fill=PANEL, stroke=EDGE, radius=10),
+    T("rd-b-h", 116, 484, 1000, 20, "恢复流程 = 两段叠加，各管一段", fs=13, fw=800, color="#C89EFF"),
+    T("rd-b-b", 116, 510, 1050, 104,
+      "<b>① 按 LSN 建分支</b> → 数据 + <span style=\"font-family:" + MONO + "\">pg_authid</span>/<span style=\"font-family:" + MONO + "\">pg_database</span> + ACL + 成员关系（无损、原子一致）<br>"
+      "<b>② 控制面按该 endpoint 的 spec reconcile</b> → 叠加口令、确保期望 role/db 存在（<span style=\"font-family:" + MONO + "\">spec_apply.rs</span>：CreateRoles/CreateDatabases、ChangeSchemaPerms 打 default_grants）<br>"
+      "<b style='color:" + AC + "'>结论</b>：role/database 的「存在性+口令+owner」跟控制面元数据<b>一起备</b>（你说得对，这部分要备）；但它是薄薄一层配置意图，"
+      "<b>数据/ACL/成员关系归 LSN 快照</b>。想「只记 role/db 就恢复」不成立——只会得到口令对、权限残缺、且与数据漂移的空壳。DDL forwarding（<span style=\"font-family:" + MONO + "\">s-ddl-fwd</span>）持续把 CREATE/DROP ROLE·DATABASE 上报控制面，正是维护这份薄清单，但它不是恢复数据的依据。",
       fs=11.5, color=DIM, lh=1.6),
-], p, notes="回答『Neon 也有 checkpoint 吗』：有，但 checkpoint 在 Neon 里裂成两个不同层面，和原生 PG 含义不同。① Pageserver 侧 checkpoint_distance——这才是 Neon 真正高频的 checkpoint。libs/pageserver_api/src/config.rs：checkpoint_distance: u64 默认 256MB（DEFAULT_CHECKPOINT_DISTANCE = 256*1024*1024，:851）；checkpoint_timeout 默认 10 分钟（:852）。控制 InMemoryLayer（ephemeral，pageserver 的 MemTable）何时 freeze+flush 成一个 L0 delta layer：写入累计到 256MB，或距上次满 10 分钟，就滚一层落盘/传 S3。跟 s-flush-policy（Ephemeral Layer 滚动策略）、s-ps-inmem 同一回事，是存储引擎的检查点，对应 LSM 的 memtable flush，不是 PG 的 checkpoint；名字沿用 PG 的 checkpoint 但本质是 LSM flush 阈值，频率远高于传统 PG checkpoint。② Compute（patched PG）侧传统 checkpoint 被大幅弱化。docs/core_changes.md 两条相关内核改动：Allow startup without checkpoint record——原生 PG 崩溃恢复必须从最后一个 checkpoint record 开始回放 WAL，Neon compute 无状态，启动走 basebackup + 从 safekeeper/pageserver 拉 WAL，不依赖本地 checkpoint record 也能起来；compute 本地盘只是缓存，dirty page 不需要像原生 PG 靠 checkpoint 刷回数据文件，因为没有本地权威数据文件，页都在 pageserver，持久性由 WAL 落 safekeeper 法定多数保证（s-sk1）不是 checkpoint。所以 compute 里 checkpoint 两个经典职责都被架构掏空：限制崩溃恢复要回放的 WAL 量→不需要（恢复不从本地 checkpoint 起）；把脏页刷进数据文件→不需要（没有本地数据文件）。PG 的 checkpointer 进程还在（WAL 里仍有 checkpoint record，walproposer 相关逻辑还要处理）但对持久性/恢复不再是关键路径。对比：持久性靠——原生 PG = checkpoint + WAL fsync 到本地；Neon = WAL 落 safekeeper 法定多数。崩溃恢复起点——原生 PG = 最后一个 checkpoint record；Neon = basebackup + 远端拉 WAL 无需本地 checkpoint。高频落盘点——原生 PG = checkpoint 刷脏页；Neon = pageserver checkpoint_distance（256MB）滚 InMemoryLayer→L0。结论：Neon 有 checkpoint，但真正起作用的是 pageserver 的 checkpoint_distance（LSM flush 阈值）；compute 里 PG 的传统 checkpoint 因存算分离 + WAL 法定多数持久化已不再承担崩溃恢复和脏页落盘职责。呼应 s-flush-policy / s-ps-inmem / s-core-compute / s-sk1 / s-lsn-chain。")
+], p, notes="回答『role/database 是控制面 spec 权威、下发给 compute，所以应该备份 role 和 database 吧』：你抓住了真实分工，但要厘清『谁对什么权威』。控制面 spec（ComputeSpec.cluster.roles/databases，libs/compute_api/src/spec.rs:555-574）确实权威、下发、compute reconcile，但它权威的只是一个薄子集：role 存在性 + encrypted_password（口令，控制面管，用户在 Console 改密码写进控制面再下发，数据页里那个 LSN 未必最新）、database 存在性 + owner + 少量 options。这个薄子集属于『平台元数据』（不在 S3 layer 里），应该跟 tenant_shards.generation、project/branch/endpoint↔tenant/timeline 映射一起备份——这点你对。但它不对『数据库内容』权威：控制面 spec 完全不碰每个库的表/schema/行数据、对象级 ACL（表/schema/函数 GRANT）、角色成员关系 pg_auth_members、pg_db_role_setting、default privileges——这些只在 LSN 快照 layer 里，按 LSN 建分支时 pg_authid/pg_database 随数据原子回来。所以『用记录的 role/database 直接恢复到新分支更简单』不成立：库数据/ACL/成员关系仍只能从 LSN 快照来，单独记的 spec 清单恢复时是叠加在 LSN 数据之上而非替代，且是有损第二真相源会与数据漂移。正确心智模型：恢复 endpoint/分支 = ① 按 LSN 建分支（数据 + pg_authid/pg_database + ACL + 成员关系，无损原子）+ ② 控制面按该 endpoint spec reconcile（叠加口令、确保期望 role/db 存在，compute_tools/src/spec_apply.rs：CreateRoles/CreateDatabases、DeltaOp 处理 DROP/RENAME/delete_role at :1240-1252、ChangeSchemaPerms 打 default_grants at :1122-1147），两者缺一不可且不能互相替代。DDL forwarding（s-ddl-fwd）实时把 CREATE/DROP ROLE·DATABASE 上报控制面，持续维护这份薄清单，但那是给控制面自己用（UI、给新 endpoint 下发 spec），不是恢复数据的依据。收敛：role/database 的存在性+口令+owner 跟控制面元数据一起备（要备），但数据/ACL/成员关系归 LSN 快照；恢复 = LSN 快照(数据) + 控制面 spec(叠配置)。呼应 s-backup-meta / s-backup-freeze / s-ddl-fwd。")
+
 
 # ─────── 局限 & tradeoff ───────
 p += 1
@@ -4767,6 +5373,7 @@ std("s-tradeoff", "局限", "架构局限 & Tradeoff：清醒地知道边界在�
           ], hc="#FFD54A", fs=12.5, headfs=15),
 ], p, notes="局限全部有据。单写者：docs/multitenancy.md:57-59、walservice.md:110-115、RFC 004:15,143；读副本物理复制 RFC 036。每读一 RPC + wait_lsn：timeline.rs:1782-1885、walservice.md:92-105。写放大：RFC 043:9,108-142（bottom-most gc-compaction 目标常数写放大，例子 1.5~2×）、RFC 038:26（aux v2 固定写放大）、RFC 031:12-21（单 PS 本地占用数倍逻辑库）、031:395-408（layer-spreading 被否因需单节点扛全部写和 compaction）。S3 无 mv：RFC 022:33。静态 sharding：RFC 031/032。跨 branch 无 join：timeline 严格 per-tenant，RFC 021:26、035:454-462。控制面 tradeoff 全部 RFC 025：:701-717 依赖控制面才恢复、:718-720 GC 停摆、:721-724 SK 涨满 + 手动逃生 generation、:220-231 迁移期 LSN 倒退、:636-696 对象泄漏靠 scrubber 清、:551-573 同 node ID 复用 VM 的竞态（当前 EC2 ephemeral disk 部署安全）。Design Tenet「已有强一致控制面 DB，避免再造共识」RFC 025:59-69。storage controller 可用性 RFC 2025-02-14:33,52；direct IO 取舍 RFC 2025-04-30:142-148。gc-compaction 失败不重试 RFC 043:163-179。")
 
+
 # ─────── Slide 27: 近期开发方向 ───────
 p += 1
 std("s-dev", "开发方向", "近期 Git 历史脉络（本 Fork）", [
@@ -4800,6 +5407,7 @@ std("s-dev", "开发方向", "近期 Git 历史脉络（本 Fork）", [
           ], hc="#C89EFF", fs=14, headfs=16),
 ], p, notes="近期 4 条开发主线：Bootstrap Template / 多云存储 / 运维闭环 / Compute Prewarm + Proxy 演进")
 
+
 # ─────── Slide 28: 源码入口 ───────
 p += 1
 std("s-src", "源码", "想深挖？从这里开始", [
@@ -4821,6 +5429,7 @@ std("s-src", "源码", "想深挖？从这里开始", [
       fs=15, color=DIM, lh=1.5, ff=MONO),
 ], p, notes="核心源码入口：pageserver/safekeeper/controller/compute/pgxn/proxy, 以及 60+ RFC")
 
+
 # ─────── Slide 29: 总结 ───────
 p += 1
 std("s-sum", "总结", "Neon 的核心设计哲学", [
@@ -4834,6 +5443,7 @@ std("s-sum", "总结", "Neon 的核心设计哲学", [
       "⑦ <b>Postgres 兼容</b>：基于 patch 后的官方 PG14/15/16/17，100% SQL 兼容",
       fs=16, color=DIM, lh=1.55),
 ], p, notes="七大设计哲学总结：存储计算分离 / WAL 独立 / 不可变层 / CoW 分支 / Generation / 弹性 / PG 兼容")
+
 
 # ─────── Slide 30: Back cover ───────
 p += 1
@@ -4981,7 +5591,7 @@ DECKS = [
         {"title": "核心数据流", "desc": "一次 INSERT / SELECT 的完整旅程：写路径 + 读路径",
          "pick": {"chapter": 3}},
         {"title": "标志性能力实现", "desc": "CoW 分支、Proxy、Scale-to-Zero、Autoscaling、多云存储",
-         "pick": {"chapter": 6}},
+         "pick": {"chapter": 4}},
      ]},
     {"key": "B", "file": "Neon_B_组件与原理.bento.html",
      "title": "Neon 架构解析 · B 组件与原理",
@@ -4990,17 +5600,17 @@ DECKS = [
      "docId": "neon-arch-deck-B",
      "sections": [
         {"title": "接入层 Proxy & TLS", "desc": "连接代理 · 路由认证 · Serverless 网关 · 两跳 TLS 与证书",
-         "pick": {"chapter": 4, "kickers": ["PROXY", "PROXY · TLS", "COMPUTE · TLS"]}},
+         "pick": {"chapter": 5, "kickers": ["PROXY", "PROXY · TLS", "COMPUTE · TLS"]}},
         {"title": "Compute", "desc": "patched PostgreSQL · compute_ctl · 状态机 · bootstrap · LFC · DDL 转发",
-         "pick": {"chapter": 4, "kickers": ["COMPUTE"]}},
+         "pick": {"chapter": 5, "kickers": ["COMPUTE"]}},
         {"title": "Safekeeper", "desc": "WAL 服务 · Paxos-like 复制 · 关键 LSN · 成员迁移",
-         "pick": {"chapter": 4, "kickers": ["SAFEKEEPER"]}},
+         "pick": {"chapter": 5, "kickers": ["SAFEKEEPER"]}},
         {"title": "Pageserver", "desc": "存储引擎 · 多租户 · Layer/LSM · LayerMap · index_part · 读路径",
-         "pick": {"chapter": 4, "kickers": ["PAGESERVER", "读路径"]}},
-        {"title": "协调层", "desc": "Storage Broker & Controller · 元数据表",
-         "pick": {"chapter": 4, "kickers": ["协调层"]}},
+         "pick": {"chapter": 5, "kickers": ["PAGESERVER", "读路径"]}},
+        {"title": "协调层", "desc": "Storage Broker & Controller & Scrubber",
+         "pick": {"chapter": 5, "kickers": ["协调层"]}},
         {"title": "核心原理深度剖析", "desc": "落盘策略、L0→L1、LSN 链路、沙箱、背压、GC、分片、防脑裂",
-         "pick": {"chapter": 5}},
+         "pick": {"chapter": 6}},
      ]},
     {"key": "C", "file": "Neon_C_运维与落地.bento.html",
      "title": "Neon 架构解析 · C 运维·备份恢复·局限落地",
@@ -5015,8 +5625,8 @@ DECKS = [
         {"title": "备份与恢复", "desc": "内建持久化 vs 外部备份 · root restore / detach_ancestor · role/db · checkpoint",
          "pick": {"ids": ["s-backup", "s-backup-meta", "s-backup-official",
                           "s-backup-freeze", "s-root-at-lsn", "s-reparent",
-                          "s-detach-v1v2", "s-detach-v2-case", "s-role-db-backup",
-                          "s-detach-storage", "s-checkpoint"]}},
+                          "s-detach-v1v2", "s-detach-v2-case", "s-detach-storage",
+                          "s-role-db-backup", "s-checkpoint"]}},
         {"title": "局限·演进·总结", "desc": "架构局限 & tradeoff · Git 历史脉络 · 源码入口 · 设计哲学",
          "pick": {"ids": ["s-tradeoff", "s-dev", "s-src", "s-sum"]}},
      ]},
@@ -5182,7 +5792,3 @@ for _deck in DECKS:
         _f.write(_dhtml)
     print("Wrote {} ({} slides, {} sections)".format(
         _deck["file"], len(_deck_slides), len(_deck["sections"])))
-
-
-
-
