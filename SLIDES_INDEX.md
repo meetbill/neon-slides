@@ -2,7 +2,7 @@
 
 由 `gen_neon_bento.py` 自动生成，请勿手改；改动幻灯片后重新运行生成脚本即可刷新。
 
-- 总页数：**113**
+- 总页数：**116**
 - 生成物：`Bento_Slides.bento.html`（内嵌 `bento/slides` JSON）
 
 | # | 章节 | 分类 | 标题 | slide id |
@@ -105,33 +105,37 @@
 | 96 | 07 运维·限制·对比·落地 | PAGESERVER | 不启 compute 怎么测 PS 的页面读写：读端天生可裸测 | `s-ps-notest` |
 | 97 | 07 运维·限制·对比·落地 | 可观测 | 关键指标：从背压到冷启动，看哪几个数就够 | `s-metrics` |
 | 98 | 07 运维·限制·对比·落地 | 故障演练 | 两个典型故障：SK 单点宕机 / PS 实例宕机 | `s-failure` |
-| 99 | 07 运维·限制·对比·落地 | 备份恢复 | Neon 要不要备份：内建持久化 vs 仍需外部备份 | `s-backup` |
-| 100 | 07 运维·限制·对比·落地 | 备份恢复 | 裸备份 S3 的陷阱：layer 文件离不开平台元数据 | `s-backup-meta` |
-| 101 | 07 运维·限制·对比·落地 | 备份恢复 | Neon 官方的三条备份策略：不是「每分支 pg_dump」 | `s-backup-official` |
-| 102 | 07 运维·限制·对比·落地 | 备份恢复 | 想物理快照 S3？光「停 GC」不够，要冻结全部写入 | `s-backup-freeze` |
-| 103 | 07 运维·限制·对比·落地 | 备份恢复 | 创建「指定 LSN 的 root」：没有专用接口，两步拼出来 | `s-root-at-lsn` |
-| 104 | 07 运维·限制·对比·落地 | 备份恢复 | root restore 后，子分支怎么办：v1 的 reparent 分流 | `s-reparent` |
-| 105 | 07 运维·限制·对比·落地 | 备份恢复 | detach_ancestor 用 v1 还是 v2：多数 v1，PITR 外恢复需 v2 | `s-detach-v1v2` |
-| 106 | 07 运维·限制·对比·落地 | 备份恢复 | v2 的用武之地：多级链扁平化，与 PITR 外恢复借锚点分支 | `s-detach-v2-case` |
-| 107 | 07 运维·限制·对比·落地 | 备份恢复 | detach_ancestor 后，S3 上两个 root 存两份还是一份？ | `s-detach-storage` |
-| 108 | 07 运维·限制·对比·落地 | 备份恢复 | role/database 归谁：spec（薄）vs LSN 快照（数据） | `s-role-db-backup` |
-| 109 | 07 运维·限制·对比·落地 | 局限 | 架构局限 & Tradeoff：清醒地知道边界在哪 | `s-tradeoff` |
-| 110 | 07 运维·限制·对比·落地 | 开发方向 | 近期 Git 历史脉络（本 Fork） | `s-dev` |
-| 111 | 07 运维·限制·对比·落地 | 源码 | 想深挖？从这里开始 | `s-src` |
-| 112 | 07 运维·限制·对比·落地 | 总结 | Neon 的核心设计哲学 | `s-sum` |
-| 113 | 07 运维·限制·对比·落地 | — | Thank You | `s-end` |
+| 99 | 07 运维·限制·对比·落地 | 故障切换 | Pageserver 故障切换流程：从失联到读恢复 | `s-ps-failover` |
+| 100 | 07 运维·限制·对比·落地 | 故障切换 | Compute 故障自愈：Node 静默宕机后的一次连接失败即恢复 | `s-compute-selfheal` |
+| 101 | 07 运维·限制·对比·落地 | 故障切换 | Safekeeper 空盘重建：pull_timeline 把 WAL 拷回 | `s-sk-rebuild` |
+| 102 | 07 运维·限制·对比·落地 | 备份恢复 | Neon 要不要备份：内建持久化 vs 仍需外部备份 | `s-backup` |
+| 103 | 07 运维·限制·对比·落地 | 备份恢复 | 裸备份 S3 的陷阱：layer 文件离不开平台元数据 | `s-backup-meta` |
+| 104 | 07 运维·限制·对比·落地 | 备份恢复 | Neon 官方的三条备份策略：不是「每分支 pg_dump」 | `s-backup-official` |
+| 105 | 07 运维·限制·对比·落地 | 备份恢复 | 想物理快照 S3？光「停 GC」不够，要冻结全部写入 | `s-backup-freeze` |
+| 106 | 07 运维·限制·对比·落地 | 备份恢复 | 创建「指定 LSN 的 root」：没有专用接口，两步拼出来 | `s-root-at-lsn` |
+| 107 | 07 运维·限制·对比·落地 | 备份恢复 | root restore 后，子分支怎么办：v1 的 reparent 分流 | `s-reparent` |
+| 108 | 07 运维·限制·对比·落地 | 备份恢复 | detach_ancestor 用 v1 还是 v2：多数 v1，PITR 外恢复需 v2 | `s-detach-v1v2` |
+| 109 | 07 运维·限制·对比·落地 | 备份恢复 | v2 的用武之地：多级链扁平化，与 PITR 外恢复借锚点分支 | `s-detach-v2-case` |
+| 110 | 07 运维·限制·对比·落地 | 备份恢复 | detach_ancestor 后，S3 上两个 root 存两份还是一份？ | `s-detach-storage` |
+| 111 | 07 运维·限制·对比·落地 | 备份恢复 | role/database 归谁：spec（薄）vs LSN 快照（数据） | `s-role-db-backup` |
+| 112 | 07 运维·限制·对比·落地 | 局限 | 架构局限 & Tradeoff：清醒地知道边界在哪 | `s-tradeoff` |
+| 113 | 07 运维·限制·对比·落地 | 开发方向 | 近期 Git 历史脉络（本 Fork） | `s-dev` |
+| 114 | 07 运维·限制·对比·落地 | 源码 | 想深挖？从这里开始 | `s-src` |
+| 115 | 07 运维·限制·对比·落地 | 总结 | Neon 的核心设计哲学 | `s-sum` |
+| 116 | 07 运维·限制·对比·落地 | — | Thank You | `s-end` |
 
 ## 按分类归组
 
 - **PAGESERVER**（25 页）：55 Pageserver — 存储引擎核心、56 Pageserver 子系统内部架构、57 Pageserver 侧关键 LSN（timeline.rs / models.rs）、58 多租户模型：Tenant / Timeline、59 Pageserver 存储引擎：LSM-like 分层总览、60 Layer 文件：不可变的两级 LSM、61 写入缓冲 InMemoryLayer：pageserver 的 MemTable、62 S3 上怎么区分 L0 / L1：光看文件名就够了、63 LayerMap：(Key, LSN) 二维查找索引、64 index_part.json：远端 timeline 的权威清单、65 PS 本地 tenant 目录：config-v1 逐段解码、66 heatmap-v1.json：attached 端产，secondary 端用、76 一条 WAL 的完整生命周期：8 个 LSN 检查点、78 为什么 S3 有延迟：Ephemeral Layer 的滚动策略、79 L0 什么时候变成 L1：计数阈值 + 事件驱动、80 Compaction & GC 关键参数、81 Timeline / 分支 GC：谁能被回收、82 History Window 配在哪：一路从控制台落到 pageserver 的 GC、84 WAL Redo：每租户独立的 seccomp 沙箱、85 沙箱边界细节：seccomp 白名单、加固与逃逸风险、86 Sharding & Generation Number、87 Secondary Location：热备用的只读缓存、94 pageserver 周期任务清单：per-tenant 三件套 + 进程级全局、95 读懂 pageserver 日志：稳态刷屏行逐条解码、96 不启 compute 怎么测 PS 的页面读写：读端天生可裸测
 - **COMPUTE**（17 页）：36 Compute Node — patched PostgreSQL 的四点关键改动、37 内核存算分离改动 · Compute 侧（改 PG 源码）、38 内核存算分离改动 · WAL redo 进程 & 其它兼容、39 扩展打包 patch（compute/patches/ · 构建期打）、40 compute_ctl —— compute 容器里的 PostgreSQL 监护进程、41 内部端口 3081 —— 4 个路由，两类调用方、42 Compute VM 里都有哪些常驻进程、43 compute_ctl 状态机 —— ComputeStatus 全 11 态、44 POST /configure 之后：compute_ctl 与 PG 的这 2 秒、45 Bootstrap Template 机制（本地 Fork 特性）、46 basebackup：无状态 Compute 的冷启动包、47 ComputeSpec：一份「期望状态」文档，热加载不重启、48 lakebase_mode：Databricks 托管形态总开关、49 LFC：Local File Cache、50 DDL Forwarding：库/角色变更实时联动控制面、77 Neon 也有 checkpoint 吗：有，但分裂成两个层面、90 读懂 compute 日志：四类方括号前缀
-- **备份恢复**（10 页）：99 Neon 要不要备份：内建持久化 vs 仍需外部备份、100 裸备份 S3 的陷阱：layer 文件离不开平台元数据、101 Neon 官方的三条备份策略：不是「每分支 pg_dump」、102 想物理快照 S3？光「停 GC」不够，要冻结全部写入、103 创建「指定 LSN 的 root」：没有专用接口，两步拼出来、104 root restore 后，子分支怎么办：v1 的 reparent 分流、105 detach_ancestor 用 v1 还是 v2：多数 v1，PITR 外恢复需 v2、106 v2 的用武之地：多级链扁平化，与 PITR 外恢复借锚点分支、107 detach_ancestor 后，S3 上两个 root 存两份还是一份？、108 role/database 归谁：spec（薄）vs LSN 快照（数据）
+- **备份恢复**（10 页）：102 Neon 要不要备份：内建持久化 vs 仍需外部备份、103 裸备份 S3 的陷阱：layer 文件离不开平台元数据、104 Neon 官方的三条备份策略：不是「每分支 pg_dump」、105 想物理快照 S3？光「停 GC」不够，要冻结全部写入、106 创建「指定 LSN 的 root」：没有专用接口，两步拼出来、107 root restore 后，子分支怎么办：v1 的 reparent 分流、108 detach_ancestor 用 v1 还是 v2：多数 v1，PITR 外恢复需 v2、109 v2 的用武之地：多级链扁平化，与 PITR 外恢复借锚点分支、110 detach_ancestor 后，S3 上两个 root 存两份还是一份？、111 role/database 归谁：spec（薄）vs LSN 快照（数据）
 - **SAFEKEEPER**（7 页）：51 WAL 服务：Paxos-like 复制、52 Safekeeper 子系统内部架构、53 Safekeeper 的 6 个持久 LSN + 1 个派生值、54 SK 成员迁移：generation 双阶段递增（RFC 035）、91 safekeeper 周期任务清单：以 timeline_manager 为调度中枢、92 safekeeper 常见刷屏日志诊断：首段未初始化 vs 预期 NotFound、93 不启 compute 怎么测 SK 的 WAL 读写：三条路
 - **协调层**（7 页）：68 Storage Broker & Storage Controller、69 storage_broker 子系统内部架构、70 storage_controller 子系统内部架构、71 Storage Controller 的元数据表（依赖一套独立 PG）、72 如何防止 Compute / Pageserver 脑裂、73 storage_scrubber：S3 的对账人与清道夫、74 storage_scrubber 子系统内部架构
 - **PROXY**（6 页）：19 wake_compute：从「连接请求」到「一台活着的 Postgres」、25 连接代理：路由 + 认证 + Serverless 网关、26 proxy 子系统内部架构、27 连上 Neon：Proxy 怎么知道你要连哪个库、28 neon_proxy_params_compat：启动参数透传的兼容开关、29 Proxy 为什么依赖 Redis：无状态集群的共享短时状态层
 - **BRANCHING**（5 页）：14 Copy-on-Write 分支 —— Neon 的杀手锏、15 CoW 分支 vs 传统快照、16 Synthetic Size：与物理布局解耦的计费、17 分支 Schema Diff：Butterfly 的实现（Neon 上游未实现）、18 Time Travel：查询「过去某一刻」的数据库
 - **PROXY · TLS**（5 页）：30 Neon 的 TLS：两跳加密，两套证书、31 客户端握手：SSLRequest 升级，或直接开打 TLS、32 CertResolver：一张通配证，按 SNI 剥域名匹配、33 SCRAM Channel Binding：把认证钉在这张叶子证上、35 pg-sni-router：嵌进主 Proxy 的运维端口，以及 sslmode 边界
 - **核心卖点**（3 页）：20 Scale-to-Zero：闲置即销毁、21 Autoscaling：三个组件，一套 goal-CU 算法、22 扩缩容前的两道关卡：调度器插槽 & vm-monitor 安全阀
+- **故障切换**（3 页）：99 Pageserver 故障切换流程：从失联到读恢复、100 Compute 故障自愈：Node 静默宕机后的一次连接失败即恢复、101 Safekeeper 空盘重建：pull_timeline 把 WAL 拷回
 - **定位**（2 页）：5 Neon vs 传统 PostgreSQL：核心区别、6 核心定位与核心价值
 - **读路径**（2 页）：12 一次 SELECT 的旅程、67 Page → LSN：Compute 怎么知道该用什么 LSN 请求
 - **目录**（1 页）：2 大章节总览
@@ -145,7 +149,7 @@
 - **数字**（1 页）：89 关键参数一览
 - **可观测**（1 页）：97 关键指标：从背压到冷启动，看哪几个数就够
 - **故障演练**（1 页）：98 两个典型故障：SK 单点宕机 / PS 实例宕机
-- **局限**（1 页）：109 架构局限 & Tradeoff：清醒地知道边界在哪
-- **开发方向**（1 页）：110 近期 Git 历史脉络（本 Fork）
-- **源码**（1 页）：111 想深挖？从这里开始
-- **总结**（1 页）：112 Neon 的核心设计哲学
+- **局限**（1 页）：112 架构局限 & Tradeoff：清醒地知道边界在哪
+- **开发方向**（1 页）：113 近期 Git 历史脉络（本 Fork）
+- **源码**（1 页）：114 想深挖？从这里开始
+- **总结**（1 页）：115 Neon 的核心设计哲学

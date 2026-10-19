@@ -4839,6 +4839,143 @@ std("s-failure", "故障演练", "两个典型故障：SK 单点宕机 / PS 实�
 ], p, notes="SK 单点：quorum=2，1 挂仍可写，commit_lsn=GetAcknowledgedByQuorumWALPosition（walproposer.c:1994-2026），term-gated 提交（未追上 propTermStartLsn 的 SK 贡献按 0 算）。恢复两条路：walproposer 重选（safekeeper.rs:1052-1220 handle_vote/handle_elected + truncate_wal）或 peer recovery（recovery.rs:38-232，CHECK_INTERVAL_MS=2000，donor 须 term==last_log_term 且 term>=my.term，有活 compute 在流时强制不抢）；全丢用 pull_timeline.rs。WAL trim 到 min(remote_consistent_lsn, backup_lsn, commit_lsn, flush_lsn)（remove_wal.rs:5-33）。PS 宕机：controller 心跳 HEARTBEAT_INTERVAL=5s、MAX_OFFLINE_INTERVAL=30s（service.rs:129-143），heartbeater.rs:281/419 判 offline，ToOffline handler service.rs:7988-8057 clear observed location + demote_attached（tenant_shard.rs:337）+ schedule（:701）+ 入队 reconciler（并发默认 128）。单节点集群 / 全挂时跳过重调度。读失败窗口：有 warm secondary 近乎无缝（RFC 028:63-70/104-176），无则新 PS 下 index_part.json 再懒拉 layer，wait_lsn 阻塞到 wait_lsn_timeout（timeline.rs:1782-1836）。compute 侧经 notify-attach 改写 neon.pageserver_connstring 并 SIGHUP（libpagestore.c:130,266-350）。重建三步：扫本地 config（mgr.rs:392-417）→ /re-attach 拿 generation（mgr.rs:340-386，缺席 tenant 本地内容删）→ attach 逐 timeline 从远端加载（tenant.rs:1690-1829，download_index_part，缺层按需拉）。stale PS 校验 generation 前不 upload/delete（RFC 025:826-887），generation 变小即降 secondary（mgr.rs:626-635）。")
 
 
+# ─────── Pageserver 故障切换完整流程（时序）───────
+p += 1
+std("s-ps-failover", "故障切换", "Pageserver 故障切换流程：从失联到读恢复", [
+    *[e for i, (n, txt, c) in enumerate([
+        ("1", "Storage Controller 每 <b>5s</b> 向每台 PS 发一次心跳（HEARTBEAT_INTERVAL=5s）", AC2),
+        ("2", "连续漏心跳 ≥ <b>30s</b>（MAX_OFFLINE_INTERVAL）→ heartbeater 判该节点 <b>Offline</b>", AC2),
+        ("3", "handle_node_availability_transition(<b>ToOffline</b>)：清空该节点 observed.conf=None，不再信任旧配置", AC2),
+        ("4", "逐 shard：intent.<b>demote_attached</b> 把宕机 PS 从 attached 摘除，sequence+1（tenant_shard.rs:337）", "#7CB3F4"),
+        ("5", "<b>schedule</b> 另选一台活 PS 当新 attached —— <b>优先已有 secondary</b> 的节点（tenant_shard.rs:701）", "#7CB3F4"),
+        ("6", "maybe_reconcile_shard 入队 <b>Reconciler</b>（service.rs:7988-8057，并发默认 128）", "#7CB3F4"),
+        ("7", "Reconciler：<b>increment_generation</b> 分配更大 generation（reconciler.rs:895-903）", "#C89EFF"),
+        ("8", "location_config PUT 新 PS → attach：<b>download_index_part</b> 重建 LayerMap，按需从 S3 拉 layer", "#C89EFF"),
+        ("9", "compute_notify → 控制面改写 <b>neon.pageserver_connstring</b> 并 SIGHUP 重连（libpagestore.c:106）", AC),
+        ("10", "读恢复：有热 secondary 近乎无缝；无则读极新 LSN 时 <b>wait_lsn</b> 阻塞，最近 WAL 从 SK 重新 ingest", AC),
+    ]) for e in (
+        R(f"pf{i}bg", 96, 174 + i * 42, 1088, 36, fill="rgba(255,255,255,0.035)", stroke="none", sw=0, radius=8),
+        T(f"pf{i}nt", 108, 181 + i * 42, 30, 18, n, fs=12, fw=800, color=c, align="center", ff=MONO),
+        T(f"pf{i}t", 150, 180 + i * 42, 1020, 22, txt, fs=13.5, fw=500, color=DIM, lh=1.4),
+    )],
+    T("pf-note", 96, 604, 1088, 60,
+      "<b>靠 generation number 而非共识做切换</b>：旧 PS 若复活，因 generation 更小被判 stale、自动降级 secondary（mgr.rs:626-635），不脑裂覆盖。<br>"
+      "<b>边界</b>：单节点集群 / 全部 PS 不可调度时跳过重调度（service.rs:8009-8024）；校验 generation 前 stale PS 不 upload/delete。",
+      fs=12.5, color=AC, lh=1.6),
+], p, notes="Pageserver 故障切换完整时序，补充 s-failure 里压缩的 PS 卡片，全部经源码核实 file:line。检测：Storage Controller 的 heartbeater 每 HEARTBEAT_INTERVAL_DEFAULT=5s（service.rs:140）探活，连续不可达超过 MAX_OFFLINE_INTERVAL_DEFAULT=30s（service.rs:129）判 Offline（WarmingUp 窗口最长 MAX_WARMING_UP_INTERVAL_DEFAULT=300s，service.rs:137）。转移：handle_node_availability_transition 收到 AvailabilityTransition::ToOffline（service.rs:7988）→ 先把该节点上所有 shard 的 observed_loc.conf 置 None（:8004-8007，表示配置未知、不再信任）→ intent.demote_attached 摘除 attached（tenant_shard.rs:337）→ schedule 重新调度，优先把已有 secondary 的节点提为 attached（tenant_shard.rs:701）→ maybe_reconcile_shard 入队 Reconciler。重调度的两个跳过分支：nodes.len()==1 单节点集群（service.rs:8009），以及没有任何 MaySchedule::Yes 的节点即全部 PS 不可用（:8016-8024），避免误把租户 detach。重建：Reconciler::reconcile（reconciler.rs:836）对非匹配 observed 走 increment_generation 拿更大 generation（:895-903，persistence.increment_generation 从 DB 自增，persistence.rs:729）→ location_config PUT 到新 PS → 新 PS attach（tenant.rs:1690）调 load_remote_timeline（:2012）download_index_part（:2082）重建 LayerMap，缺的 layer 按需从 S3 懒拉，disk_consistent_lsn 之后的 WAL 继续从 SK ingest。通知 compute：compute_notify（reconciler.rs:1030）→ compute_hook notify_attach（compute_hook.rs:1026）POST 给控制面 → 控制面改写 compute 的 neon.pageserver_connstring（PGC_SIGHUP GUC，libpagestore.c:106-111）并 pg_reload_conf()，compute 重新连到新 PS。读影响：有 warm secondary（heatmap 预拉本地层）切换近乎无缝；无 secondary 时读非常新的 LSN 会在 wait_lsn 阻塞到 wait_lsn_timeout（timeline.rs:1782-1836）。防脑裂底座：generation number 取代 fencing，旧 PS 即便没死透继续写，也因 generation 更小被判 stale，re-attach 时控制面给出更小 generation → 本地 demote 成 secondary 而非 detach，保住本地缓存（mgr.rs:612-637）；stale PS 在向 controller 校验 generation 前不 upload/delete（RFC 025）。")
+
+
+# ─────── Compute 故障自愈（本地 Fork 特性）───────
+p += 1
+std("s-compute-selfheal", "故障切换", "Compute 故障自愈：Node 静默宕机后的一次连接失败即恢复", [
+    T("csh-desc", 96, 164, 1088, 42,
+      "Compute Pod <b>无状态</b>（数据在 PS/SK），Node 静默宕机（preStop <span style=\"font-family:" + MONO + "\">/unregister</span> 都没发出）时，"
+      "系统不救 Pod，只把 Endpoint <b>重新指向一个健康新 Pod</b>。关键：不是坐等 Proxy 缓存 4m idle TTL 过期，而是<b>连接失败即自愈</b>。",
+      fs=13, color=DIM, lh=1.5),
+    # three defense layers
+    *card("csh1", 96, 216, 352, 268,
+          "① 连接层 · Proxy", [
+              ("连旧 Pod 失败即作废缓存", FG, 700),
+              ("invalidate-on-failure，非 wait-for-TTL", DIM),
+              "",
+              ("命中缓存地址 + 可重试错误", DIM),
+              ("&nbsp;→ invalidate_cache 作废本地", DIM),
+              ("&nbsp;→ 立即重新 wake_compute", DIM),
+              "",
+              ("预算（neon proxy 默认）：", FG, 700),
+              ("&nbsp;connect 5 次 /200ms/2x ≈6s", DIM),
+              ("&nbsp;wake 8 次 /100ms/1.6x ≈7s", DIM),
+              ("&nbsp;TCP connect 超时 ≈2s", DIM),
+          ], hc=AC2, fs=11.5, headfs=15),
+    *card("csh2", 464, 216, 352, 268,
+          "② 唤醒层 · 控制面 wake", [
+              ("探测旧 compute，不健康则重分配", FG, 700),
+              ("wake_endpoint_under_lock", FAINT),
+              "",
+              ("按 Endpoint 加 Redis 分布式锁", DIM),
+              ("&nbsp;key wake:{endpoint_id} TTL 30s", DIM),
+              ("&nbsp;→ 并发 wake 被串行化", DIM),
+              "",
+              ("_check_existing_compute 拉 /status(5s)：", FG, 700),
+              ("&nbsp;RUNNING → 复用", DIM),
+              ("&nbsp;INIT_IN_PROGRESS → 稍后重试", DIM),
+              ("&nbsp;None/其它 → 解绑 + 预热池分配新 Pod", DIM),
+          ], hc=AC, fs=11.5, headfs=15),
+    *card("csh3", 832, 216, 352, 268,
+          "③ 巡检层 · 清残留", [
+              ("独立于用户请求的兜底发现", FG, 700),
+              "",
+              ("Pod 删除回调 /unregister", DIM),
+              ("&nbsp;suspend_endpoint_for_lost_pod", FAINT),
+              "",
+              ("周期巡检 existence_check", DIM),
+              ("&nbsp;DB / ALLOCATED 回指 / K8s 三方比对", DIM),
+              ("&nbsp;缺失即挂起 + 摘残留 ComputePod", DIM),
+              "",
+              ("统一记 OperationType.COMPUTE_LOST", AC2, 700),
+              ("&nbsp;Endpoint 仍置 suspended，保留透明 wake", DIM),
+          ], hc="#7CB3F4", fs=11.5, headfs=15),
+    T("csh-note", 96, 500, 1088, 110,
+      "<b>时序（最坏情况·无回调）</b>：用户新连接 → Proxy 用缓存旧地址连旧 Pod → connect 失败(≈2s) → 作废缓存 + 重新 wake "
+      "→ 控制面加锁探测旧 /status(5s→None) 判不健康 → 解绑 + 从预热池分配新 Pod → Proxy 连新地址成功。<br>"
+      "<b>用户侧表现</b>：一次明显变慢的连接（数秒量级），而非卡死到缓存过期。三层彼此独立、互为兜底，最终只分配一个新 Pod。",
+      fs=12, color=AC, lh=1.65),
+], p, notes="Compute 故障自愈（本地 Fork / butterfly 特性，Neon 上游无此控制面编排）。依据：butterfly static/docs/compute-self-heal.md + 源码核实。背景：Compute Pod 无状态，数据都在 Pageserver/Safekeeper，所以 Node 故障不恢复 Pod 本身，只把 Endpoint 重指到健康新 Pod。最坏情况是 Node 静默宕机、连 preStop /unregister 回调都没发出。核心结论：不会卡到 Proxy 的 node-info 缓存 idle_ttl（默认 4m，neon proxy/src/config.rs:119 CACHE_DEFAULT_OPTIONS=\"size=4000,idle_ttl=4m\"）过期，而是连接失败即自愈。三道防线：①连接层 Proxy：node-info 缓存是每 Proxy 进程内本地缓存、不共享；连旧 Pod 失败(ConnectionRefused/connect 超时≈2s)后，若地址来自缓存且错误可重试 should_retry_wake_compute，走 invalidate_cache(connect_compute.rs:152)作废并重新 wake_compute(:154)，这是 invalidate-on-failure 不是 wait-for-TTL。重试预算取自 proxy 默认：CONNECT_TO_COMPUTE_DEFAULT_VALUES num_retries=5,base=200ms,exponent=2（config.rs:253，总计≈6s）、WAKE_COMPUTE_DEFAULT_VALUES num_retries=8,base=100ms,exponent=1.6（config.rs:257，≈7s）。边界：只有地址来自缓存(node_info.cached())才重新 wake；刚从控制面新鲜拉取的地址连不上则原地重试不重 wake（connect_compute.rs:135）。②唤醒层 控制面：Proxy 重新打来的 wake 落 wake_endpoint_under_lock（butterfly handlers/proxy_callback/lib_compute_wake.py:632），整个过程包在按 Endpoint 的 Redis 分布式锁里（endpoint_wake_lock key \"wake:{endpoint_id}\" ttl=30000ms，handlers/_shared/lib_endpoint_wake_lock.py:9/12），与 Endpoint 删除共享这把锁，多 Proxy/多来源并发唤醒被串行化。Endpoint active 且带 compute_id 时走 _check_existing_compute（lib_compute_wake.py:123）：拉旧 Pod compute_ctl /status(5s 超时失败返回 None)，RUNNING 复用(:156)、INIT_IN_PROGRESS 既不解绑也不复用让 Proxy 稍后重试(:164)、其它含 None（Node 宕机连不上）判不健康调 unbind_unhealthy_endpoint_compute(:175，handlers/compute_provider/endpoint_compute.py:198)解绑 + 从预热池分配新 Pod。因有锁，N 个并发 wake 只第一个真重分配，后续拿锁时已指向新健康 Pod 探测通过直接复用，不会分配第二个 Pod；代价是排队者尾部延迟，极端情况下排队者可能先耗尽自己 ≈6-7s 的 connect/wake 预算给用户返回一次失败，随后新连接通常已能复用新 Pod——属故障瞬间尾延不是长挂死。③巡检层：两条独立于用户请求的被动丢失发现——Pod 删除回调 preStop /unregister（hook_pod_unregister.py:104）调 suspend_endpoint_for_lost_pod 止损；周期巡检 endpoint_compute_existence_check 遍历 active endpoint 三方比对(DB ComputePod 行/该行 ALLOCATED 回指/K8s 真实存在)，缺失即挂起 Endpoint 并摘残留 ComputePod（api_computes_cleanup_missing.py:167）。两类统一记 OperationType.COMPUTE_LOST（constants.py:296），与优雅挂起 SUSPEND_COMPUTE 区分，但 Endpoint 仍置 suspended（非新异常态）保留透明 wake/自愈，下次连接照常冷启动；计费回放把 COMPUTE_LOST 与 SUSPEND_COMPUTE 同等视为开机会话收口（lib_operation.py:301）。时序：Node 静默宕机→用户新连接 Proxy 用缓存旧地址连旧 Pod→connect 失败≈2s→作废缓存+重新 wake→控制面加 Redis 锁探测旧 /status(5s→None)判不健康→解绑+预热池分配新 Pod→Proxy 拿新地址连接成功；异步巡检/unregister 清残留记 COMPUTE_LOST。")
+
+
+# ─────── Safekeeper 空盘重建 / pull_timeline ───────
+p += 1
+std("s-sk-rebuild", "故障切换", "Safekeeper 空盘重建：pull_timeline 把 WAL 拷回", [
+    T("csk-desc", 96, 156, 1088, 44,
+      "闲置数月后唤醒，3 副本里只剩 <b>1 台有全量 WAL</b>、另 2 台重启后<b>空盘</b>。"
+      "读照常、写阻塞；空盘 SK <b>不会自愈</b>，必须控制面用 <span style=\"font-family:" + MONO + "\">pull_timeline</span> 把整条 timeline 拷回来。",
+      fs=13, color=DIM, lh=1.5),
+    *card("csk1", 96, 212, 528, 236,
+          "唤醒时发生了什么", [
+              ("读：正常", AC, 700),
+              ("&nbsp;PS 已持久化历史页，读路径不依赖 SK", DIM),
+              "",
+              ("写：阻塞", AC2, 700),
+              ("&nbsp;walproposer 需 quorum=⌊3/2⌋+1=2 台问候+投票", DIM),
+              ("&nbsp;只剩 1 台 → 永远凑不齐多数派，commit 挂起", DIM),
+              "",
+              ("空盘 SK 不会自己长出 timeline", FG, 700),
+              ("&nbsp;generations 模式 allow_timeline_creation=false", DIM),
+              ("&nbsp;→ receive_wal 返回 TimelineNoCreate 不隐式建", DIM),
+              ("&nbsp;已 commit 数据仍在那 1 台盘上 → 0 丢失", DIM),
+          ], hc="#C89EFF", fs=12, headfs=15),
+    *card("csk2", 656, 212, 528, 236,
+          "谁来重建：storage_controller 下发", [
+              ("SK 不自发 pull，只收 POST /v1/pull_timeline", FG, 700),
+              ("&nbsp;storage_controller 才是下发方（client 侧）", DIM),
+              "",
+              ("① 创建时补种 → 全自动", AC, 700),
+              ("&nbsp;某 SK 漏建，reconciler 自动发 Pull", DIM),
+              "",
+              ("② 空盘重建既有 timeline → 需外部发起", AC2, 700),
+              ("&nbsp;当前无后台扫描自动补种（TODO #12189）", DIM),
+              ("&nbsp;要调 safekeeper_migrate API 走成员迁移", DIM),
+              ("&nbsp;→ 第 5 步 pull_from_peers 把空盘 SK 种回", DIM),
+          ], hc="#7CB3F4", fs=12, headfs=15),
+    T("csk-pt", 96, 464, 1088, 24,
+      "<b>pull_timeline 具体做什么</b>（safekeeper/src/pull_timeline.rs）：", fs=13, fw=800, color=AC2),
+    *[e for i, (n, txt) in enumerate([
+        ("1", "挑 donor：拉各 peer /timeline_status，选 (epoch, flush_lsn, term, commit_lsn) 最领先的一台；容忍最多 1 台缺席"),
+        ("2", "donor 侧 stream_snapshot：把 timeline 控制文件 + WAL 段打成 tar 流式发出（resident 直读盘 / offloaded 从 S3）"),
+        ("3", "接收侧落盘：边收边解 tar，逐文件写入临时目录并 fsync，再 fsync 目录（basebackup 式整表快照）"),
+        ("4", "validate_temp_timeline 校验 → load_temp_timeline 挂载 → membership_switch(mconf) 防被旧 generation 删除"),
+    ]) for e in (
+        R(f"cpt{i}bg", 96, 496 + i * 34, 1088, 30, fill="rgba(255,255,255,0.035)", stroke="none", sw=0, radius=7),
+        T(f"cpt{i}nt", 108, 501 + i * 34, 28, 18, n, fs=11.5, fw=800, color=AC2, align="center", ff=MONO),
+        T(f"cpt{i}t", 146, 500 + i * 34, 1026, 20, txt, fs=12.5, fw=500, color=DIM, lh=1.35),
+    )],
+    T("csk-note", 96, 642, 1088, 42,
+      "<b>要点</b>：pull_timeline 由 <b>storage_controller 下发</b>、空盘 SK 去 donor 拉（SK 不自发）；空盘重建既有 timeline 需外部调 safekeeper_migrate（TODO #12189）。"
+      "<b>入参顺序敏感</b>：new_sk_set 是 Vec，同 3 个 ID 换序不触发实际 pull（拉谁用 HashSet 判，列表为空），但 <b>cur==new 早退失效</b> → 空跑一遍迁移 + generation 白涨一代（joint 态还可能报 Conflict）。",
+      fs=11, color=FAINT, lh=1.55),
+], p, notes="场景：PG 实例闲置数月后唤醒，SK 3 副本中 2 台宕机并以空盘重启，仅 1 台保有全量 WAL。唤醒影响：读正常（Pageserver 已持久化历史页，读路径不经 SK）；写阻塞——walproposer 选举与提交都需要 quorum=n/2+1=2（pgxn/neon/walproposer.c:181 定义，884 行校验 quorum 问候，1120-1158 VotesCollectedMset/MsetHasQuorum 校验 quorum 投票），只剩 1 台活 SK 永远凑不齐多数派，commit_lsn 推不动。空盘 SK 不会自愈生出 timeline：proto_version=3 默认开 generations 模式（walproposer_pg.c:68 safekeeper_proto_version=3；SendStartWALPush 在 generations 开启时 allow_timeline_creation=false，walproposer.c:655-661），receive_wal.rs:348-368 在 allow_timeline_creation=false 且本地无该 timeline 时直接返回 CopyStreamHandlerEnd::TimelineNoCreate，不隐式创建。已 commit 的数据仍在那 1 台存活 SK 的盘上，不丢。谁来重建——关键：safekeeper 自身从不自发 pull，它只被动接收 POST /v1/pull_timeline（safekeeper/src/http/routes.rs:771）；下发方永远是 storage_controller（client 侧方法 safekeeper_client.rs:134 pull_timeline → POST；高层编排 safekeeper_service.rs:988 tenant_timeline_pull_from_peers，把请求发给要重建的 SK、http_hosts 填 donor）。两类触发：①创建时补种，全自动——tenant_timeline_create_safekeepers 对 quorum 之外漏建的 SK 写 Pull pending_op（safekeeper_service.rs:359-367）并 schedule_request（:398-406），后台 safekeeper_reconciler.rs:349-389 reconcile_one 在 Pull 分支构造 PullTimelineRequest{http_hosts=其余 SK（:357-362 过滤自身）, mconf:None} 调 client.pull_timeline；这是目前 Pull 路径的唯一自动用途（reconciler.rs:367-371 注释：pull_timeline reconciliation 现仅用于 timeline 创建）。②空盘重建既有 timeline，需外部发起——没有后台扫描去对比「DB sk_set vs 各 SK 实际是否有该 timeline」并自动补种（即上面 TODO #12189 的缺口），所以要靠外部（cplane/运维）调 storage_controller 的 POST /v1/tenant/:tid/timeline/:tlid/safekeeper_migrate（http.rs:642/2623 → service.tenant_timeline_safekeeper_migrate）走 RFC 035 成员迁移，其第 5 步 tenant_timeline_pull_from_peers（safekeeper_service.rs:1323）把新/空盘 SK 从当前集 pull_timeline 种回。注意：空盘 SK 重启后向控制面注册会被置 SkSchedulingPolicy::Activating（safekeeper_service.rs:819），待心跳 Available 后由 service.rs:1423-1454 提为 Active 并 start_reconciler——但这只是让该 SK 可被调度/可跑 reconciler，本身不会凭空产生针对既有 timeline 的 Pull op。凑回 2 台后恢复 quorum，写解除阻塞。pull_timeline 机制（safekeeper/src/pull_timeline.rs）：handle_request(449) 先按 mconf 校验成员（458 mconf.contains(sk_id)），若本地已存在该 timeline 则只做 membership_switch 返回（469-493）；否则并发拉各 http_hosts 的 /timeline_status（508-521），min_required_successful=(http_hosts.len()-1).max(1) 容忍最多一台缺席（547-556），用 max_by_key 选 (epoch, flush_lsn, term, commit_lsn) 最领先的 donor（622-637）。pull_timeline(689)：create_temp_timeline_dir 建临时目录 → client.snapshot() 向 donor 要 basebackup tar 流（713-715）→ 边收边解 Archive entries 逐 Regular 文件写盘并 sync_all（724-752）→ fsync 目录（755）→ validate_temp_timeline 校验（760）→ load_temp_timeline 挂载（769）→ 若带 mconf 做 membership_switch 以防被更旧 generation 的请求删除（773-781）。donor 侧 stream_snapshot(45)：try_wal_residence_guard 命中走 stream_snapshot_resident_guts 直读本地 WAL，未命中（已 offload）走 stream_snapshot_offloaded_guts 从 remote storage 读；SnapshotContext.from_to_segno=None 表示 timeline 尚无写入、只发控制文件（100-102）。对比：pull_timeline 是整条 timeline 的一次性 tar 快照（本地全丢/空盘用），peer recovery（recovery.rs 每 2s）是增量追 WAL（本地只是落后用）。成员迁移在 2/3 不可用场景会卡在需要当前集多数派的步骤，极端情况需走强制恢复路径由控制面直接重建成员配置后再 pull。入参顺序敏感性（safekeeper_migrate）：请求体 TimelineSafekeeperMigrateRequest.new_sk_set 是 Vec<NodeId>（controller_api.rs:603-605），迁移入口 tenant_timeline_safekeeper_migrate（safekeeper_service.rs:1127）里几处比较都用 Vec 的顺序敏感 ==/ne：① 早退判断 cur_sk_set == new_sk_set（:1241，Vec 逐元素比较）——同样 3 个 ID 换个顺序这里为 false，不会 no-op 短路；② 若正处 joint 态，presistent_new_sk_set.iter().ne(new_sk_set.iter())（:1217-1220）换序会被判成「正在迁移到另一个不同集」而返回 Conflict。但真正决定拉谁的第 5 步用 HashSet（from_ids = cur_safekeepers 的 id 集，:1316）过滤 new_safekeepers 里不在当前集的成员（:1317-1321），与顺序无关——同 3 ID 换序 → pull_to_safekeepers 为空 → tenant_timeline_pull_from_peers 拿空列表直接返回，不会真的 pull 任何 SK。净效果：传入同 3 个 ID 换顺序【不会触发实际 pull_timeline 拷数据】，但【不是 no-op】——会空跑一遍 RFC-035 迁移：generation.next() 白涨一代（:1248）、写 joint_config、对当前集 PUT configuration 收 quorum、bump_term、finish，仅第 5 步 pull 列表为空；若恰处 joint 态还可能直接报 Conflict。make_member_set（:43-50 / :1162）只校验无重复 SK，不做排序归一化；代码对 new_sk_set 入参也无排序归一化，故调用方要幂等重试迁移须自己保证传入顺序稳定。")
+
+
 # ─────── 备份语义 ───────
 p += 1
 std("s-backup", "备份恢复", "Neon 要不要备份：内建持久化 vs 仍需外部备份", [
@@ -5621,7 +5758,8 @@ DECKS = [
         {"title": "日志·可观测·故障演练", "desc": "关键数字 · 各组件周期任务/日志解读 · 裸测 · 指标 · 故障演练",
          "pick": {"ids": ["s-numbers", "s-log-prefix", "s-sk-tasks", "s-sk-logs",
                           "s-sk-notest", "s-ps-tasks", "s-ps-logs", "s-ps-notest",
-                          "s-metrics", "s-failure"]}},
+                          "s-metrics", "s-failure", "s-ps-failover", "s-compute-selfheal",
+                          "s-sk-rebuild"]}},
         {"title": "备份与恢复", "desc": "内建持久化 vs 外部备份 · root restore / detach_ancestor · role/db · checkpoint",
          "pick": {"ids": ["s-backup", "s-backup-meta", "s-backup-official",
                           "s-backup-freeze", "s-root-at-lsn", "s-reparent",
