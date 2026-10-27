@@ -270,7 +270,7 @@ std("s-log-is-db", "理论基石", "“The log is the database.” — Aurora, S
     R("lid-obs-bg", 96, 244, 530, 180, fill=PANEL, stroke=EDGE, radius=12),
     T("lid-obs-h", 116, 256, 500, 22, "关键观察", fs=14, fw=800, color=AC),
     T("lid-obs-b", 116, 284, 490, 128,
-      "PostgreSQL/MySQL 的<b>崩溃恢复</b>就是「从检查点开始重放 WAL」——<br>"
+      "PostgreSQL/MySQL 的<b>崩溃恢复</b>就是「从 checkpoint 开始重放 WAL」——<br>"
       "说明 WAL 本身<b>已足够重建任意页面</b>。<br><br>"
       "既然如此：<b>页面物化</b>这件事可以从 compute 剥离，交给存储层自己完成。",
       fs=13, color=DIM, lh=1.7),
@@ -278,7 +278,7 @@ std("s-log-is-db", "理论基石", "“The log is the database.” — Aurora, S
     R("lid-aur-bg", 656, 244, 530, 180, fill=PANEL, stroke=EDGE, radius=12),
     T("lid-aur-h", 676, 256, 500, 22, "Aurora 的落地", fs=14, fw=800, color=AC2),
     T("lid-aur-b", 676, 284, 500, 128,
-      "• Compute <b>只发 redo 日志</b>，不再写脏页 / 刷 checkpoint<br>"
+      "• Compute <b>只发 redo 日志</b>，不再写脏页 / 执行脏页刷盘式 checkpoint<br>"
       "• WAL → 跨 3 AZ 共 6 副本存储层<br>"
       "• 各副本<b>独立重放 WAL 物化页面</b>；读时按 (Page, LSN) 版本请求<br>"
       "• 网络流量降到约 <b>1/7.7</b>（只传 redo 而非整页）",
@@ -291,7 +291,7 @@ std("s-log-is-db", "理论基石", "“The log is the database.” — Aurora, S
       "&nbsp;&nbsp;• <b>Safekeeper</b> — Paxos-like 共识，只负责 WAL 的持久化与仲裁<br>"
       "&nbsp;&nbsp;• <b>Pageserver</b> — 消费 WAL，用 delta / image layer 类 LSM 结构物化页面，冷数据下沉对象存储（S3）<br>"
       "&nbsp;&nbsp;• <b>Compute</b> — 替换 smgr、去掉 checkpoint、启动不扫 data directory 的<b>无状态 Postgres</b><br>"
-      "代价：多一跳网络　　收益：两层可分别针对<b>低延迟写</b>和<b>高吞吐读</b>优化，页面物化可建在廉价对象存储上。",
+      "代价：<b>读页多一跳网络</b>（compute→Pageserver，相对本地磁盘）　　收益：两层可分别针对<b>低延迟写</b>和<b>高吞吐读</b>优化，页面物化可建在廉价对象存储上。",
       fs=13, color=DIM, lh=1.7),
 ], p, notes="Aurora SIGMOD 2017 论文提出的核心观察『The log is the database.』：WAL 已足够重建任意页面（因为崩溃恢复就是重放 WAL），所以页面物化可以从计算节点剥离到存储层。Aurora 做法：compute 只发 redo 日志、不写脏页 / 不做 checkpoint；WAL 跨 3 AZ 共 6 副本；副本各自独立重放物化；按 (Page, LSN) 版本请求；网络流量降到约 1/7.7。这是存算分离和 Serverless 数据库的理论基石。Neon 是这一思想的开源重实现，并把 Aurora 合在一起的存储层进一步拆成 Safekeeper（WAL 共识层）+ Pageserver（页面物化 + 类 LSM 分层 + 对象存储）；compute 替换 smgr、去掉 checkpoint、启动不扫 data dir。仓库中虽不直接使用『log is the database』这个句子，但 docs/rfcs/004-durability.md:64 明确对比过 Aurora 的差异。参考文献：Verbitski et al., Amazon Aurora: Design Considerations for High Throughput Cloud-Native Relational Databases, SIGMOD 2017。")
 
@@ -319,6 +319,59 @@ std("s-position", "定位", "Neon vs 传统 PostgreSQL：核心区别", [
       fs=16, color=DIM, lh=1.7),
     R("pos-div", 636, 190, 2, 400, fill="rgba(255,255,255,0.12)", stroke="none", sw=0, radius=1),
 ], p, notes="对比传统 Postgres 与 Neon 存储计算分离架构")
+
+
+# ─────── 对比：Neon vs PolarDB-PG vs TDSQL-C PG ───────
+p += 1
+def _cmp_rows():
+    cols = [("Neon", AC, 250, 300),
+            ("阿里云 PolarDB-PG", "#7CB3F4", 558, 300),
+            ("腾讯云 TDSQL-C PG", "#C89EFF", 866, 318)]
+    # 表头
+    out = [T("cmp-lblh", 104, 178, 146, 26, "维度", fs=13, fw=800, color=AC2, lh=1.1)]
+    for name, c, x, w in cols:
+        out.append(T("cmp-h-" + name[:3], x, 178, w, 26, name, fs=15, fw=800, color=c, lh=1.1))
+    rows = [
+        ("架构范式",
+         "日志即数据库<br>WAL→SK→Pageserver 物化页",
+         "共享存储 Shared-Storage<br>计算共享一份 PolarFS 盘",
+         "日志即数据库（Aurora 类）<br>redo 下推分布式存储"),
+        ("存储 &amp; 只读扩展",
+         "多租户 Pageserver（LSM+对象存储）<br>读副本物理复制、共享 PS",
+         "1 写 + 多 RO 共享同一份盘<br>LogIndex 增量同步，非全量回放",
+         "1 写 + 多达 15 RO 共享存储<br>存储层回放日志成页"),
+        ("Serverless 弹性",
+         "<b>Scale-to-Zero</b>：计算真正缩到 0<br>秒级冷启动唤醒",
+         "计算 / 存储分别弹性<br>云上有 Serverless 版（自动伸缩）",
+         "Serverless 自动暂停 / 恢复<br>按用量计费"),
+        ("分支 · 克隆",
+         "<b>任意 LSN 秒级 CoW 分支</b><br>只写元数据，不拷数据",
+         "存储级快照克隆<br>无 LSN 级分支语义",
+         "秒级克隆（基于存储快照）<br>无 LSN 级分支语义"),
+        ("PITR",
+         "历史窗口内任意 LSN 查询 / 建分支",
+         "快照 + WAL 回放到时间点",
+         "备份集 + 日志回放到时间点"),
+        ("开源 &amp; 形态",
+         "<b>开源 Apache 2.0</b>，可自建",
+         "内核开源 Apache 2.0<br>云服务为商业版",
+         "闭源，仅腾讯云托管"),
+    ]
+    ys = 216
+    rh = 68
+    for i, (lbl, a, b, cc) in enumerate(rows):
+        ry = ys + i * (rh + 4)
+        fill = "rgba(255,255,255,0.045)" if i % 2 == 0 else "rgba(255,255,255,0.02)"
+        out.append(R(f"cmp-row{i}", 96, ry, 1088, rh, fill=fill, stroke="none", sw=0, radius=8))
+        out.append(T(f"cmp-l{i}", 104, ry + 10, 146, rh - 16, lbl, fs=12.5, fw=700, color=FG, lh=1.3))
+        for (name, c, x, w), txt in zip(cols, (a, b, cc)):
+            out.append(T(f"cmp-{i}-{x}", x, ry + 10, w - 12, rh - 16, txt,
+                         fs=11.5, fw=500, color=DIM, lh=1.35))
+    return out
+
+std("s-cloud-compare", "定位", "对比：Neon vs 阿里云 PolarDB-PG vs 腾讯云 TDSQL-C PG",
+    _cmp_rows(), p,
+    notes="横向对比三款『存算分离』云 Postgres。关键区分：①架构范式——Neon 与腾讯云 TDSQL-C PG 都是『日志即数据库』（log-as-the-database，compute 把 WAL/redo 推给存储层、存储层物化成页，Aurora SIGMOD 2017 血统）；阿里云 PolarDB-PG 走的是另一条路线『共享存储（Shared-Storage）』——一份数据放在分布式文件系统 PolarFS 上，1 个读写主节点 + 多个只读节点共享同一份物理盘，RO 节点不各自全量回放 WAL 落自己的数据副本，而是读共享页 + 靠 LogIndex 同步内存可见性。②只读扩展：Neon 读副本是物理复制只读、共享 Pageserver 存储（RFC 036）；PolarDB-PG 多 RO 共享 PolarFS；TDSQL-C 官方称最多 15 个只读实例共享存储。③Serverless：Neon 的 Scale-to-Zero 能把计算真正缩到 0（闲置 suspend、秒级冷启动）；PolarDB 云上有 Serverless 形态（自动伸缩，弹性更偏自动扩缩算力而非缩到 0 的心智）；TDSQL-C Serverless 支持自动暂停/恢复、按量计费。④分支/克隆：Neon 独有任意 LSN 秒级 Copy-on-Write 分支（只写元数据不拷数据），PolarDB-PG 与 TDSQL-C 都是『存储快照级克隆』，秒级但没有 Neon 那种 per-LSN 版本化分支语义。⑤PITR：三家都支持时间点恢复，实现各异。⑥开源形态：Neon 全开源 Apache 2.0、可自建（本 fork 即基于此）；PolarDB-PG 内核在 github.com/ApsaraDB(polardb)/PolarDB-for-PostgreSQL 以 Apache 2.0 开源，但云上商业版另算；TDSQL-C（原 CynosDB）闭源、仅腾讯云托管。来源说明：PolarDB-PG 开源许可证与 shared-storage/PolarFS/LogIndex 为其官方文档（polardb.github.io）架构；TDSQL-C 为腾讯云官方文档所述『计算存储分离 + 日志即数据库』、闭源托管——均为外部产品，非本仓库代码，表述刻意克制、不夸大未经核实的细节（如 RO 上限数字以官方公开口径为准）。呼应 s-position（Neon vs 传统 PG）、s-log-is-db（Aurora 理论基石）、s-tradeoff。")
 
 
 p += 1
@@ -843,9 +896,9 @@ std("s-auto-nego", "核心卖点", "扩缩容前的两道关卡：调度器插�
     T("an-lh1", 176, 180, 480, 20, "autoscaler-agent ↔ scheduler-plugin（HTTP :10299）", fs=12, fw=800, color=AC),
     T("an-lh2", 668, 180, 508, 20, "autoscaler-agent ↔ vm-monitor（WebSocket :10301）", fs=12, fw=800, color="#7CB3F4"),
     # ── Row 1: scale up
-    R("an-r1", 96, 204, 1088, 108, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.28)", radius=10),
-    T("an-r1-t", 104, 214, 66, 90, "<b>扩容</b><br>Upscale", fs=11, fw=700, color=AC, lh=1.5),
-    T("an-r1-c", 176, 212, 480, 92,
+    R("an-r1", 96, 204, 1088, 150, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.28)", radius=10),
+    T("an-r1-t", 104, 214, 66, 130, "<b>扩容</b><br>Upscale", fs=11, fw=700, color=AC, lh=1.5),
+    T("an-r1-c", 176, 214, 480, 134,
       "agent 定期 <span style=\"font-family:" + MONO + "\">PluginRequestTick</span>"
       "（<span style=\"font-family:" + MONO + "\">Scheduler.RequestAtLeastEverySeconds</span> 减抖动）"
       "带 goal-CU 请求调度器<br>"
@@ -856,17 +909,17 @@ std("s-auto-nego", "核心卖点", "扩缩容前的两道关卡：调度器插�
       "→ <b>从不实现 Bind/Permit</b>：真正的 Pod 绑定是 K8s 默认调度器做的，"
       "本插件只影响 Filter/Score/Reserve",
       fs=10.5, color=DIM, lh=1.55),
-    T("an-r1-p", 668, 212, 508, 92,
+    T("an-r1-p", 668, 214, 508, 134,
       "调度器批准的资源额度回传给 agent 后，agent 才调 <b>NeonVM</b>（上一页 QMP）真正扩容，"
       "扩完再通过 WebSocket 发 "
       "<span style=\"font-family:" + MONO + "\">UpscaleNotification&#123;granted&#125;</span> 告知 vm-monitor，"
       "&nbsp;<span style='color:" + FAINT + "'>vm-monitor 收到后调高 cgroup 内存阈值 / LFC 上限，此前一直用旧阈值运行。</span>",
       fs=10.5, color=DIM, lh=1.55),
     # ── Row 2: scale down safety check
-    R("an-r2", 96, 322, 1088, 130, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=10),
-    T("an-r2-t", 104, 332, 66, 110, "<b>缩容</b><br>Downscale<br>安全阀", fs=11, fw=700, color=AC2, lh=1.5),
-    T("an-r2-h", 176, 330, 490, 17, "vm-monitor 说不安全，缩容就不会发生", fs=13, fw=800, color=HL, lh=1.25),
-    T("an-r2-c", 176, 347, 480, 96,
+    R("an-r2", 96, 364, 1088, 130, fill="rgba(255,158,138,0.07)", stroke="rgba(255,158,138,0.3)", radius=10),
+    T("an-r2-t", 104, 374, 66, 110, "<b>缩容</b><br>Downscale<br>安全阀", fs=11, fw=700, color=AC2, lh=1.5),
+    T("an-r2-h", 176, 372, 490, 17, "vm-monitor 说不安全，缩容就不会发生", fs=13, fw=800, color=HL, lh=1.25),
+    T("an-r2-c", 176, 389, 480, 96,
       "agent 想缩容前，<b>先</b>发 WebSocket "
       "<span style=\"font-family:" + MONO + "\">DownscaleRequest&#123;target&#125;</span> 问 vm-monitor<br>"
       "vm-monitor 检查最近 cgroup <span style=\"font-family:" + MONO + "\">memory.stat</span> 采样：<br>"
@@ -874,7 +927,7 @@ std("s-auto-nego", "核心卖点", "扩缩容前的两道关卡：调度器插�
       "&nbsp;&nbsp;采样太少 / 太旧（&gt;5s 无新数据）→ 同样拒绝或报错<br>"
       "只有<b>批准</b>后，agent 才敢真的调小 NeonVM（QMP unplug / virtio-mem 收缩）",
       fs=10.5, color=DIM, lh=1.5),
-    T("an-r2-p", 668, 347, 508, 96,
+    T("an-r2-p", 668, 389, 508, 96,
       "批准后 vm-monitor 才真正执行：<br>"
       "① <b>先调小 LFC</b>：SQL "
       "<span style=\"font-family:" + MONO + "\">ALTER SYSTEM SET neon.file_cache_size_limit=…</span>"
@@ -2175,7 +2228,9 @@ std("s-basebackup", "COMPUTE", "basebackup：无状态 Compute 的冷启动包",
     T("bb1-h", 116, 228, 500, 24, "tar 包里有什么（＝没有用户数据）", fs=16, fw=800, color=AC),
     T("bb1-b", 116, 262, 500, 240,
       "<b>只装非关系型数据</b>，关系文件一个都不带：<br>"
-      "• <span style=\"font-family:" + MONO + "\">global/pg_control</span>　由 checkpoint 记录<b>现场合成</b><br>"
+      "• <span style=\"font-family:" + MONO + "\">global/pg_control</span>　由 PS <b>现场合成</b>（非 compute 扫 WAL）<br>"
+      "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">get_checkpoint</span>(CHECKPOINT_KEY)＋<span style=\"font-family:" + MONO + "\">get_control_file</span><br>"
+      "&nbsp;&nbsp;→ <span style=\"font-family:" + MONO + "\">generate_pg_control()</span> 填事务 ID 水位等，打进 tar<br>"
       "• SLRU：<span style=\"font-family:" + MONO + "\">pg_xact</span>（clog）、<span style=\"font-family:" + MONO + "\">pg_multixact/{offsets,members}</span><br>"
       "• 目录骨架 + <span style=\"font-family:" + MONO + "\">PG_VERSION</span> + <span style=\"font-family:" + MONO + "\">pg_filenode.map</span>（relmap）<br>"
       "• two-phase 文件（未决 2PC 事务）、aux files（含复制槽状态）<br>"
@@ -2190,15 +2245,16 @@ std("s-basebackup", "COMPUTE", "basebackup：无状态 Compute 的冷启动包",
     T("bb2-h", 676, 228, 490, 24, "怎么生成 / 怎么加速", fs=16, fw=800, color=AC2),
     T("bb2-b", 676, 262, 490, 240,
       "<span style=\"font-family:" + MONO + "\">send_basebackup_tarball(timeline, req_lsn, …)</span><br>"
-      "&nbsp;&nbsp;所有内容都是从 layer 里 <b>GetPage 读出来现拼的</b><br>"
-      "&nbsp;&nbsp;→ 所以能取<b>任意历史 LSN</b>，这正是分支/PITR 的地基<br><br>"
-      "<b>prev_lsn 的限制</b>：PS 只留最新记录的前驱<br>"
-      "&nbsp;&nbsp;→ 非时间线末尾取包时只能填 <span style=\"font-family:" + MONO + "\">Lsn(0)</span><br><br>"
-      "<b>full_backup=true</b>（调试/导出）才连关系文件全带<br>"
-      "<b>replica=true</b> 走 hot standby 变体<br>"
-      "<b>gzip</b> 可选压缩<br><br>"
+      "&nbsp;&nbsp;所有内容从 layer <b>GetPage 现拼</b> → 可取<b>任意历史 LSN</b><br>"
+      "&nbsp;&nbsp;这正是分支 / PITR 的地基<br>"
+      "<b>prev_lsn 限制</b>：PS 只留最新记录前驱<br>"
+      "&nbsp;&nbsp;→ 非时间线末尾取包只能填 <span style=\"font-family:" + MONO + "\">Lsn(0)</span><br>"
+      "<b>pg_control 的 redo 指针</b>：启动<b>不回放 WAL</b><br>"
+      "&nbsp;&nbsp;→ online ckpt 填 0、shutdown ckpt 填 end LSN<br>"
+      "<b>full_backup=true</b> 才带全部关系文件（调试/导出）<br>"
+      "<b>replica=true</b> 走 hot standby；<b>gzip</b> 可选压缩<br>"
       "<b>BasebackupCache</b>：本地磁盘缓存成品 tar<br>"
-      "&nbsp;&nbsp;固定参数组合（gzip=true, full=false, replica=false）<br>"
+      "&nbsp;&nbsp;固定组合 (gzip=true, full=false, replica=false)<br>"
       "&nbsp;&nbsp;后台异步 prepare，命中则 scale-to-zero 唤醒更快",
       fs=11.5, color=DIM, lh=1.65),
     # bottom
@@ -2208,9 +2264,10 @@ std("s-basebackup", "COMPUTE", "basebackup：无状态 Compute 的冷启动包",
       "• <b>启动时间与数据量解耦</b>：包大小只随「库/表数量、SLRU 大小」增长，与实际数据体积无关 → TB 级库也能秒级起<br>"
       "• <b>关系数据留给 GetPage 按需拉</b>：真正用到的页才走网络，配合 LFC / prewarm 逐步变热<br>"
       "• <b>shard 0 必须自足</b>：dbdir、SLRU 等非 rel-block key 固定落 shard 0，所以出包只问 shard 0（见 Sharding 页）<br>"
+      "• <b>pg_control 是「现场合成」而非 compute 自己找 checkpoint</b>：PS 用摄入 WAL 时存下的 checkpoint 信息拼出恢复基线，compute 解包即用（呼应 s-checkpoint）<br>"
       "• 代价：SLRU 很大时（长事务、海量 multixact）包会变大，冷启动变慢 —— 这也是 SLRU 分片/裁剪的动因",
       fs=12, color=DIM, lh=1.65),
-], p, notes="basebackup 是无状态 compute 的冷启动包，与 pg_basebackup 无关（代码注释明确吐槽命名）。内容只有非关系型数据：现场合成的 global/pg_control、SLRU(pg_xact clog / pg_multixact offsets+members)、目录骨架+PG_VERSION+pg_filenode.map relmap、two-phase 文件、aux files、PGDATA_SPECIAL_FILES、pg_hba.conf、一个 dummy WAL segment、neon.signal 与 zenith.signal（写 PREV LSN 供 PG 拼 xl_prev）。唯一例外是 unlogged 表的 init fork 会带且同时当 main fork 发一份，因为 PG reinit.c 依赖。生成方式 send_basebackup_tarball，所有内容都是从 layer GetPage 现拼，所以能取任意历史 LSN，这是分支和 PITR 的地基。prev_lsn 限制：PS 只保留最新记录的前驱，非时间线末尾只能填 Lsn(0)。参数 full_backup 才带关系文件（调试导出用）、replica 走 hot standby 变体、gzip 可选。BasebackupCache 在本地磁盘缓存固定参数组合(gzip=true,full=false,replica=false)的成品 tar，后台异步 prepare，加速 scale-to-zero 唤醒。设计意义：启动时间与数据量解耦，包大小只随库表数量和 SLRU 大小增长；关系数据留给 GetPage 按需拉；shard 0 自足所以只问 shard 0。代价是 SLRU 大时包变大。代码：pageserver/src/basebackup.rs:102 send_basebackup_tarball，:788 signal 文件，pageserver/src/basebackup_cache.rs。")
+], p, notes="basebackup 是无状态 compute 的冷启动包，与 pg_basebackup 无关（代码注释明确吐槽命名）。内容只有非关系型数据：现场合成的 global/pg_control、SLRU(pg_xact clog / pg_multixact offsets+members)、目录骨架+PG_VERSION+pg_filenode.map relmap、two-phase 文件、aux files、PGDATA_SPECIAL_FILES、pg_hba.conf、一个 dummy WAL segment、neon.signal 与 zenith.signal（写 PREV LSN 供 PG 拼 xl_prev）。pg_control 构造链路（关键：主语是 Pageserver 不是 compute）：compute 冷启动不像原生 PG 那样自己扫 WAL 找 checkpoint record，而是向 PS 请求 basebackup；PS 在 send_tarball()（basebackup.rs:335）里先 get_checkpoint(lsn)（:345-349，取出此前摄入 WAL 时持久化在 CHECKPOINT_KEY 的 checkpoint 结构，pgdatadir_mapping.rs:2235）、get_control_file(lsn)（:350-354），再调 postgres_ffi::generate_pg_control(control, checkpoint, lsn, pg_version)（:355-361）合成 global/pg_control，最后打进 tar 包末尾（:799-801，放末尾是为了半截失败的包缺 pg_control 从而无法被误启动）。compute 解包即得现成 pg_control 作为恢复基线，自己不检索 WAL。redo 指针特殊处理：Neon 启动根本不做 WAL replay，所以 walingest 把 online checkpoint 的 redo 字段写 0、shutdown checkpoint 写记录 end LSN（walingest.rs:1302-1329），不需要真实 redo 起点。唯一例外是 unlogged 表的 init fork 会带且同时当 main fork 发一份，因为 PG reinit.c 依赖。生成方式 send_basebackup_tarball，所有内容都是从 layer GetPage 现拼，所以能取任意历史 LSN，这是分支和 PITR 的地基。prev_lsn 限制：PS 只保留最新记录的前驱，非时间线末尾只能填 Lsn(0)。参数 full_backup 才带关系文件（调试导出用）、replica 走 hot standby 变体、gzip 可选。BasebackupCache 在本地磁盘缓存固定参数组合(gzip=true,full=false,replica=false)的成品 tar，后台异步 prepare，加速 scale-to-zero 唤醒。设计意义：启动时间与数据量解耦，包大小只随库表数量和 SLRU 大小增长；关系数据留给 GetPage 按需拉；shard 0 自足所以只问 shard 0。代价是 SLRU 大时包变大。代码：pageserver/src/basebackup.rs:102 send_basebackup_tarball，:788 signal 文件，pageserver/src/basebackup_cache.rs。")
 
 
 # ─────── compute spec ───────
@@ -2412,6 +2469,108 @@ std("s-ddl-fwd", "COMPUTE", "DDL Forwarding：库/角色变更实时联动控制
       "<span style=\"font-family:" + MONO + "\">neon.forward_ddl</span>（默认 on）",
       fs=12, color=DIM, lh=1.6),
 ], p, notes="DDL Forwarding：用户直接执行 CREATE DATABASE/DROP ROLE 等，pgxn/neon 插件 ProcessUtility_hook 拦截记到 DdlHashTable，子事务用哈希表栈处理 SAVEPOINT（PushTable/MergeTable/PopTable），事务 PRE_COMMIT 时 NeonXactCallback 调 SendDeltasToControlPlane，curl PATCH 到 neon.console_url?endpoint_id=xxx，Bearer per-compute JWT（NEON_CONTROL_PLANE_TOKEN），body {dbs:[],roles:[]} op=set/del + name/old_name/owner/password。控制面 upsert neon_pg_databases/neon_pg_roles 按 (branch_id,name) 幂等。防双写循环：compute_ctl 执行 spec DDL 前 SET neon.forward_ddl=false。token 与 writer 身份绑定，换 writer 递增 writer_generation 使旧 token 失效。已知缺陷：转发后事务仍可能 abort 未处理。源码 pgxn/neon/neon_ddl_handler.c，控制面 handlers/compute_callback/hook_ddl_notify.py。")
+
+
+# ─────── Slide: compute 内置 SQL 迁移 ───────
+p += 1
+std("s-migrations", "COMPUTE", "内置 SQL 迁移：给「受管特权角色」配权限", [
+    T("mig-desc", 96, 160, 1088, 46,
+      "compute_ctl 冷启动后<b>异步</b>执行一组<b>固定顺序的 SQL 迁移</b>"
+      "（源码 <span style=\"font-family:" + MONO + "\">compute_tools/src/migrations/*.sql</span>，"
+      "<b>编译期 <span style=\"font-family:" + MONO + "\">include_str!</span> 嵌进二进制</b>），"
+      "给受管特权角色 <span style=\"font-family:" + MONO + "\">neon_superuser</span>"
+      "（lakebase 下替换为 databricks_superuser）精确授予/收敛权限。"
+      "<span style='color:" + DIM + "'>spec.rs:handle_migrations / migration.rs:MigrationRunner</span>",
+      fs=12, color=DIM, lh=1.6),
+    # Left card: mechanism
+    R("mig-l-bg", 96, 214, 530, 308, fill=PANEL, stroke=EDGE, radius=12),
+    T("mig-l-h", 116, 226, 490, 22, "① 执行机制：幂等 + 只增不改", fs=14, fw=800, color=AC),
+    *TL("mig-l-b", 116, 256, 494, 256, [
+        "版本表 <span style=\"font-family:" + MONO + "\">neon_migration.migration_id</span>（单行高水位）",
+        "每条迁移<b>独立事务</b>：成功即 +1，失败回滚并中止",
+        "启动从高水位续跑，已应用的不重复 → <b>幂等</b>",
+        "数组<b>只能往后追加</b>，严禁插入/重排（源码大字警告）",
+        "<span style=\"font-family:" + MONO + "\">-- SKIP</span> 开头：不执行但仍 +1（废弃占位）",
+        "lakebase：文本里 neon_superuser→databricks_superuser",
+        "异步 spawn，<b>不阻塞冷启动</b>；失败计 DB_MIGRATION_FAILED",
+        ("测试 failpoint compute-migration 可模拟中途失败", DIM),
+    ], fs=11.5, color=DIM, lh=1.75),
+    # Right card: the 12 migrations
+    R("mig-r-bg", 656, 214, 528, 308, fill=PANEL, stroke=EDGE, radius=12),
+    T("mig-r-h", 676, 226, 490, 22, "② 当前 12 条在做什么", fs=14, fw=800, color=AC2),
+    *TL("mig-r-b", 676, 256, 492, 256, [
+        ("权限授予（生效中）", AC, 700),
+        "0001 BYPASSRLS；0004 pg_monitor（WITH ADMIN）",
+        "0012 pg_signal_backend（WITH ADMIN，终止会话）",
+        "0003 pg_create_subscription（PG16+ 逻辑复制）",
+        "0010 pg_export_snapshot / pg_log_standby_snapshot（16+）",
+        "0011 pg_show_replication_origin_status",
+        ("事故修复（长期保留）", AC2, 700),
+        "0002 INC-110：成员补 INHERIT、非成员补 NOBYPASSRLS",
+        ("已废弃占位 -- SKIP（0005–0009）", DIM, 700),
+        "默认权限 / WITH GRANT OPTION，已被 handle_grants() 内联取代",
+    ], fs=11.5, color=DIM, lh=1.62),
+    # Bottom: why
+    R("mig-b-bg", 96, 534, 1088, 128, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("mig-b-h", 116, 546, 900, 20, "为什么要这组迁移：托管 PG 没有用户可用的 superuser", fs=13, fw=800, color=AC),
+    T("mig-b-b", 116, 572, 1048, 84,
+      "• <span style=\"font-family:" + MONO + "\">neon_superuser</span> 是用户 owner 角色继承的「准超级角色」；迁移把一批 "
+      "<b>pg_* 预定义角色</b>和函数执行权<b>按需下放</b>给它——既满足监控/逻辑复制/快照同步等运维需求，又不过度放权。<br>"
+      "• 与 ComputeSpec 的 role/db 创建<b>解耦</b>：迁移只调特权角色<b>自身能力</b>，每次 compute 启动都幂等跑一遍；"
+      "改权限策略 = <b>往数组尾部加一条新迁移</b>。<br>"
+      "• ⚠ <b>编译期嵌入</b>：镜像里<b>没有这些 .sql 文件</b>，改迁移必须<b>重编 compute_ctl</b>（区别于 bootstrap template 运行时读 "
+      "<span style=\"font-family:" + MONO + "\">/usr/local/share/compute-bootstrap/</span>，见 s-boot）。",
+      fs=11, color=DIM, lh=1.55),
+], p, notes="compute_tools/src/migrations 下是一组编号 SQL 迁移，这些 .sql 在编译期由 spec.rs:255-308 的 include_str! 嵌进 compute_ctl 二进制（运行时镜像里并没有这些文件，改迁移必须重新编译/构建 compute 镜像才生效；这点区别于 Bootstrap Template——后者是运行时读镜像目录 /usr/local/share/compute-bootstrap/ 即 spec_apply.rs:1318 BOOTSTRAP_TEMPLATE_ROOT）。由 spec.rs:handle_migrations 在冷启动后用 tokio::spawn 异步执行（不阻塞冷启动），runner 是 migration.rs:MigrationRunner。机制：prepare_database 建 neon_migration schema + migration_id 单行高水位表（key=0,id=bigint，owner cloud_admin，REVOKE ALL FROM PUBLIC）；run_migrations 从高水位续跑，每条迁移在独立事务里跑、成功即 UPDATE migration_id=+1，失败 error 并 DB_MIGRATION_FAILED 计数后中止。数组只能往后追加（源码三行感叹号警告，插入/重排会错位）。-- SKIP 开头的迁移不执行但仍递增 id（保持集群状态可推理）。lakebase_mode 时把迁移文本里的 neon_superuser 替换成 databricks_superuser。测试构建有 failpoint compute-migration 模拟中途失败。privileged_role_name 默认 neon_superuser（compute_ctl.rs:102）。当前 12 条：0001 BYPASSRLS；0002 修复 INC-110（2023-12-08 误把 BYPASSRLS 应用到所有角色，成员补 INHERIT、非 pg_/非成员补 NOBYPASSRLS，长期保留以便任意集群可修）；0003 GRANT pg_create_subscription（PG16+）；0004 GRANT pg_monitor WITH ADMIN；0005/0006 SKIP（ALTER DEFAULT PRIVILEGES ALL ON TABLES/SEQUENCES，被判不足）；0007/0008 SKIP（WITH GRANT OPTION，已移到 handle_grants() 内联）；0009 SKIP（revoke replication，不足）；0010 GRANT pg_export_snapshot/pg_log_standby_snapshot（PG16+）；0011 GRANT pg_show_replication_origin_status；0012 GRANT pg_signal_backend WITH ADMIN。本质是给受管「准超级角色」精确授权，因为托管形态不给用户真 superuser。migrations/tests 下是各迁移的测试期望（供 test_runner/regress/test_compute_migrations.py 的 e2e 用）。")
+
+
+# ─────── Slide: 本地改造 — neon_bypassrls 豁免组 ───────
+p += 1
+std("s-migrations-bypassrls", "COMPUTE · 本地改造", "让 Bootstrap 的 role 保住 BYPASSRLS：neon_bypassrls 豁免组", [
+    T("mbr-desc", 96, 158, 1088, 48,
+      "<b>问题</b>：在 Bootstrap Template 里建的 role 设了 <span style=\"font-family:" + MONO + "\">BYPASSRLS</span>，"
+      "首次冷启动后却被迁移 <b>0002</b> 悄悄收回成 <span style=\"font-family:" + MONO + "\">NOBYPASSRLS</span>。"
+      "<span style='color:" + DIM + "'>本页是本 Fork 对上游 0002 的定向改造（与 s-migrations、s-boot 配套）</span>",
+      fs=12.5, color=FG, lh=1.55),
+    # Left: root cause (ordering)
+    R("mbr-l-bg", 96, 214, 530, 214, fill=PANEL, stroke=EDGE, radius=12),
+    T("mbr-l-h", 116, 226, 490, 22, "根因：执行顺序 + 0002 的全量扫描", fs=14, fw=800, color=AC2),
+    *TL("mbr-l-b", 116, 256, 494, 166, [
+        "冷启动同一次里先后发生（compute.rs:apply_config）：",
+        "&nbsp;&nbsp;① apply_spec_sql → <b>bootstrap</b> 建带 BYPASSRLS 的 role",
+        "&nbsp;&nbsp;② 之后 spawn <b>handle_migrations</b> 跑 0002",
+        "0002 第 2 个循环：<b>非 neon_superuser 成员 + 非 pg_</b>",
+        "&nbsp;&nbsp;一律 <span style=\"font-family:" + MONO + "\">ALTER ROLE … NOBYPASSRLS</span>",
+        ("→ bootstrap role 正好命中，被收回", AC2),
+        "（0002 是 INC-110 一次性修复，只在 id 1→2 跑一次）",
+    ], fs=11.5, color=DIM, lh=1.62),
+    # Right: the fix
+    R("mbr-r-bg", 656, 214, 528, 214, fill=PANEL, stroke=EDGE, radius=12),
+    T("mbr-r-h", 676, 226, 490, 22, "改法：标记组 + to_regrole 安全判定", fs=14, fw=800, color=AC),
+    *TL("mbr-r-b", 676, 256, 492, 166, [
+        "建 NOLOGIN 组 <span style=\"font-family:" + MONO + "\">neon_bypassrls</span> 当<b>标签</b>",
+        "0002 第 2 个循环 WHERE 追加排除：",
+        "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">AND NOT (CASE WHEN to_regrole(…)</span>",
+        "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">IS NULL THEN false ELSE pg_has_role(…) END)</span>",
+        ("to_regrole 对不存在的组返回 NULL（不报错）", AC),
+        "&nbsp;&nbsp;→ 没建组的普通集群零影响",
+        "同步改 migrations/tests/0002 断言，否则 e2e 挂",
+    ], fs=11.5, color=DIM, lh=1.62),
+    # Bottom: how to use + caveats
+    R("mbr-b-bg", 96, 440, 1088, 220, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("mbr-b-h", 116, 450, 900, 20, "用法（Bootstrap Template 里，不在本仓库）＋ 两个边界", fs=13, fw=800, color=AC),
+    T("mbr-b-code", 116, 478, 1048, 96,
+      "<span style=\"font-family:" + MONO + "\">CREATE ROLE neon_bypassrls NOLOGIN;&nbsp;&nbsp;-- 幂等建组（标签）</span><br>"
+      "<span style=\"font-family:" + MONO + "\">CREATE ROLE myrole LOGIN NOINHERIT;</span><br>"
+      "<span style=\"font-family:" + MONO + "\">ALTER&nbsp;&nbsp;ROLE myrole BYPASSRLS;&nbsp;&nbsp;&nbsp;&nbsp;-- 属性必须显式设</span><br>"
+      "<span style=\"font-family:" + MONO + "\">GRANT&nbsp;&nbsp;neon_bypassrls TO myrole;&nbsp;-- 打标签，0002 据此跳过</span>",
+      fs=11.5, color=FG, lh=1.5),
+    T("mbr-b-note", 116, 582, 1048, 72,
+      "⚠ <b>组成员资格不继承属性</b>：BYPASSRLS/LOGIN/CREATEDB 等是角色<b>属性</b>，GRANT 组只传权限，组只能当标签，每个 role 仍要显式 <span style=\"font-family:" + MONO + "\">ALTER ROLE … BYPASSRLS</span>。<br>"
+      "⚠ <b>只对全新集群生效</b>：0002 已过 migration_id 高水位的老库不会重跑此 SQL；且迁移<b>编译期嵌入</b>，改完要<b>重编 compute_ctl 镜像</b>。<br>"
+      "✓ 别用 <span style=\"font-family:" + MONO + "\">IN ROLE neon_superuser</span> 绕过——那会被 0002 第 1 个循环强制 INHERIT，反而继承 neon_superuser 全部权限。",
+      fs=11, color=DIM, lh=1.6),
+], p, notes="本 Fork 对 compute 内置迁移 0002-alter_roles.sql 的定向改造，配套 Bootstrap Template 特性（见 s-boot、s-migrations）。问题：bootstrap template 里建的 role 设了 BYPASSRLS，但首次冷启动时执行顺序是 compute.rs:apply_config 先 apply_spec_sql()（内部跑完整 ApplySpecPhase 链，bootstrap template 挂在所有 catalog phase 之后，spec_apply.rs:358 run_bootstrap_template）建好带 BYPASSRLS 的 role，返回后 compute.rs:2016 才 tokio::spawn(handle_migrations) 跑 0002。0002 第二个循环把『非 privileged_role_name(默认 neon_superuser) 成员且非 pg_ 开头』的角色一律 ALTER ROLE … NOBYPASSRLS（这是 2023-12-08 INC-110 的一次性擦除脚本，靠 neon_migration.migration_id 高水位只在 id 1→2 跑一次，恰好和首次 boot 建 role 撞在同一次启动）。bootstrap role 既非 neon_superuser 成员又非 pg_ 开头 → 命中被收回。改法：引入 NOLOGIN 标记组 neon_bypassrls，0002 第二个循环 WHERE 追加 AND NOT (CASE WHEN pg_catalog.to_regrole('neon_bypassrls') IS NULL THEN false ELSE pg_catalog.pg_has_role(rolname, pg_catalog.to_regrole('neon_bypassrls'), 'member') END)。用 to_regrole 而非 'x'::regrole 或裸 pg_has_role 名字，是因为 to_regrole 对不存在的角色返回 NULL 而不报错，所以没建该组的普通集群走 false 分支、零影响、不会因 role 不存在而使迁移失败；CASE 显式兜成 false 是因为 pg_has_role(role, NULL, 'member') 返回 NULL，WHERE NOT NULL 会把本该处理的普通角色漏掉（反了），必须显式转 false。所有调用加 pg_catalog. schema 限定（与文件既有防 search_path 投毒约定一致）。同步改 compute_tools/src/migrations/tests/0002-alter_roles.sql 的断言循环（否则 test_runner/regress/test_compute_migrations.py::test_compute_migrations_e2e 会抛 '% can bypass RLS'）。用法（在 bootstrap template SQL 里，不在本仓库）：幂等 CREATE ROLE neon_bypassrls NOLOGIN；CREATE ROLE myrole LOGIN NOINHERIT；ALTER ROLE myrole BYPASSRLS；GRANT neon_bypassrls TO myrole。关键边界：①BYPASSRLS/LOGIN/CREATEDB/CREATEROLE/REPLICATION/SUPERUSER 是角色属性不是可授权限，GRANT 组成员资格只传权限不传属性，组只能当标签，属性仍要每个 role 显式 ALTER ROLE；②改 0002 SQL body 只对全新集群（从 migration_id=0 起的新 branch root）生效，老库已过高水位不重跑；③不要用 IN ROLE neon_superuser 让 0002 跳过，因为 0002 第一个循环会给所有 neon_superuser 成员强制 INHERIT，使该 role 继承 neon_superuser 全部权限，正是要避免的。源码：compute_tools/src/migrations/0002-alter_roles.sql、compute_tools/src/migrations/tests/0002-alter_roles.sql。")
 
 
 # ─────── Slide 16: Safekeeper ───────
@@ -3794,17 +3953,19 @@ std("s-checkpoint", "COMPUTE", "Neon 也有 checkpoint 吗：有，但分裂成�
         ("· 「把脏页刷进数据文件」→ 不需要", FG),
         ("&nbsp;&nbsp;没有本地权威数据文件，页都在 PS", DIM),
         ("checkpointer 进程还在，但已非持久性关键路径", "#FF9E8A"),
-    ], fs=11, lh=1.5),
+        ("checkpoint record 仍随 WAL 流入 PS → CHECKPOINT_KEY：", AC, 700),
+        ("&nbsp;&nbsp;供冷启动基线 pg_control + 事务 ID 水位，非 GC", DIM),
+    ], fs=10.5, lh=1.45),
     # bottom — comparison
     R("ck-b-bg", 96, 478, 1090, 144, fill=PANEL, stroke=EDGE, radius=10),
     T("ck-b-h", 116, 490, 1000, 20, "对比 · 持久性与恢复的职责搬家了", fs=13, fw=800, color="#C89EFF"),
     T("ck-b-b", 116, 516, 1050, 98,
       "• <b>持久性靠谁</b>：原生 PG = checkpoint + WAL fsync 到本地盘；<b>Neon = WAL 落 safekeeper 法定多数</b>（见 <span style=\"font-family:" + MONO + "\">s-sk1</span>），与 compute checkpoint 无关。<br>"
-      "• <b>崩溃恢复起点</b>：原生 PG = 最后一个 checkpoint record；<b>Neon = basebackup + 远端拉 WAL</b>，无需本地 checkpoint record。<br>"
+      "• <b>崩溃恢复起点</b>：原生 PG = 从最后一个 checkpoint record 的 <b>redo 指针</b>回放（如 ckpt@LSN 10000 记 redo=8000，则从 <b>8000</b> 起重放而非 10000：8000 前的改动已落基线页）；<b>Neon = basebackup + 远端拉 WAL</b>，redo 填 0、启动不回放。<br>"
       "• <b>高频「落盘点」</b>：原生 PG = checkpoint 刷脏页进数据文件；<b>Neon = pageserver checkpoint_distance（256MB）滚 InMemoryLayer→L0</b>。<br>"
       "<b style='color:" + AC + "'>一句话</b>：Neon 有 checkpoint，但真正起作用的是 PS 的 LSM flush 阈值；compute 里 PG 的传统 checkpoint 因存算分离 + WAL 法定多数持久化，已不再承担崩溃恢复与脏页落盘。",
       fs=11.5, color=DIM, lh=1.6),
-], p, notes="回答『Neon 也有 checkpoint 吗』：有，但 checkpoint 在 Neon 里裂成两个不同层面，和原生 PG 含义不同。① Pageserver 侧 checkpoint_distance——这才是 Neon 真正高频的 checkpoint。libs/pageserver_api/src/config.rs：checkpoint_distance: u64 默认 256MB（DEFAULT_CHECKPOINT_DISTANCE = 256*1024*1024，:851）；checkpoint_timeout 默认 10 分钟（:852）。控制 InMemoryLayer（ephemeral，pageserver 的 MemTable）何时 freeze+flush 成一个 L0 delta layer：写入累计到 256MB，或距上次满 10 分钟，就滚一层落盘/传 S3。跟 s-flush-policy（Ephemeral Layer 滚动策略）、s-ps-inmem 同一回事，是存储引擎的检查点，对应 LSM 的 memtable flush，不是 PG 的 checkpoint；名字沿用 PG 的 checkpoint 但本质是 LSM flush 阈值，频率远高于传统 PG checkpoint。② Compute（patched PG）侧传统 checkpoint 被大幅弱化。docs/core_changes.md 两条相关内核改动：Allow startup without checkpoint record——原生 PG 崩溃恢复必须从最后一个 checkpoint record 开始回放 WAL，Neon compute 无状态，启动走 basebackup + 从 safekeeper/pageserver 拉 WAL，不依赖本地 checkpoint record 也能起来；compute 本地盘只是缓存，dirty page 不需要像原生 PG 靠 checkpoint 刷回数据文件，因为没有本地权威数据文件，页都在 pageserver，持久性由 WAL 落 safekeeper 法定多数保证（s-sk1）不是 checkpoint。所以 compute 里 checkpoint 两个经典职责都被架构掏空：限制崩溃恢复要回放的 WAL 量→不需要（恢复不从本地 checkpoint 起）；把脏页刷进数据文件→不需要（没有本地数据文件）。PG 的 checkpointer 进程还在（WAL 里仍有 checkpoint record，walproposer 相关逻辑还要处理）但对持久性/恢复不再是关键路径。对比：持久性靠——原生 PG = checkpoint + WAL fsync 到本地；Neon = WAL 落 safekeeper 法定多数。崩溃恢复起点——原生 PG = 最后一个 checkpoint record；Neon = basebackup + 远端拉 WAL 无需本地 checkpoint。高频落盘点——原生 PG = checkpoint 刷脏页；Neon = pageserver checkpoint_distance（256MB）滚 InMemoryLayer→L0。结论：Neon 有 checkpoint，但真正起作用的是 pageserver 的 checkpoint_distance（LSM flush 阈值）；compute 里 PG 的传统 checkpoint 因存算分离 + WAL 法定多数持久化已不再承担崩溃恢复和脏页落盘职责。呼应 s-flush-policy / s-ps-inmem / s-core-compute / s-sk1 / s-lsn-chain。")
+], p, notes="回答『Neon 也有 checkpoint 吗』：有，但 checkpoint 在 Neon 里裂成两个不同层面，和原生 PG 含义不同。① Pageserver 侧 checkpoint_distance——这才是 Neon 真正高频的 checkpoint。libs/pageserver_api/src/config.rs：checkpoint_distance: u64 默认 256MB（DEFAULT_CHECKPOINT_DISTANCE = 256*1024*1024，:851）；checkpoint_timeout 默认 10 分钟（:852）。控制 InMemoryLayer（ephemeral，pageserver 的 MemTable）何时 freeze+flush 成一个 L0 delta layer：写入累计到 256MB，或距上次满 10 分钟，就滚一层落盘/传 S3。跟 s-flush-policy（Ephemeral Layer 滚动策略）、s-ps-inmem 同一回事，是存储引擎的检查点，对应 LSM 的 memtable flush，不是 PG 的 checkpoint；名字沿用 PG 的 checkpoint 但本质是 LSM flush 阈值，频率远高于传统 PG checkpoint。② Compute（patched PG）侧传统 checkpoint 被大幅弱化。docs/core_changes.md 两条相关内核改动：Allow startup without checkpoint record——原生 PG 崩溃恢复必须从最后一个 checkpoint record 开始回放 WAL，Neon compute 无状态，启动走 basebackup + 从 safekeeper/pageserver 拉 WAL，不依赖本地 checkpoint record 也能起来；compute 本地盘只是缓存，dirty page 不需要像原生 PG 靠 checkpoint 刷回数据文件，因为没有本地权威数据文件，页都在 pageserver，持久性由 WAL 落 safekeeper 法定多数保证（s-sk1）不是 checkpoint。所以 compute 里 checkpoint 两个经典职责都被架构掏空：限制崩溃恢复要回放的 WAL 量→不需要（恢复不从本地 checkpoint 起）；把脏页刷进数据文件→不需要（没有本地数据文件）。PG 的 checkpointer 进程还在（WAL 里仍有 checkpoint record，walproposer 相关逻辑还要处理）但对持久性/恢复不再是关键路径。补充：checkpoint record 并非被丢弃——它仍随 WAL 流被 pageserver 摄入（walingest.rs:1230-1341 处理 XLOG_CHECKPOINT_ONLINE/SHUTDOWN），写进 CHECKPOINT_KEY（pgdatadir_mapping.rs:2235），维护 CheckPoint 结构里的 nextXid/oldestXid 等事务 ID 水位，并在 cold start 时据此重建 pg_control 塞进 basebackup（SHUTDOWN checkpoint 还会 prepare_basebackup，walingest.rs:1339-1341）。注意这只是『版本基线 + 事务 ID 水位』用途，不驱动 pageserver 的 layer GC——GC 是基于 PITR / LSN horizon 回收旧 layer（见 s-gc / s-pitr-cfg），与 checkpoint record 无关。对比：持久性靠——原生 PG = checkpoint + WAL fsync 到本地；Neon = WAL 落 safekeeper 法定多数。崩溃恢复起点——原生 PG = 最后一个 checkpoint record；Neon = basebackup + 远端拉 WAL 无需本地 checkpoint。高频落盘点——原生 PG = checkpoint 刷脏页；Neon = pageserver checkpoint_distance（256MB）滚 InMemoryLayer→L0。结论：Neon 有 checkpoint，但真正起作用的是 pageserver 的 checkpoint_distance（LSM flush 阈值）；compute 里 PG 的传统 checkpoint 因存算分离 + WAL 法定多数持久化已不再承担崩溃恢复和脏页落盘职责。呼应 s-flush-policy / s-ps-inmem / s-core-compute / s-sk1 / s-lsn-chain。")
 
 
 # ─────── Slide 10b: 落盘 → 上传 S3 的时机策略 ───────
@@ -5739,7 +5900,7 @@ DECKS = [
         {"title": "接入层 Proxy & TLS", "desc": "连接代理 · 路由认证 · Serverless 网关 · 两跳 TLS 与证书",
          "pick": {"chapter": 5, "kickers": ["PROXY", "PROXY · TLS", "COMPUTE · TLS"]}},
         {"title": "Compute", "desc": "patched PostgreSQL · compute_ctl · 状态机 · bootstrap · LFC · DDL 转发",
-         "pick": {"chapter": 5, "kickers": ["COMPUTE"]}},
+         "pick": {"chapter": 5, "kickers": ["COMPUTE", "COMPUTE · 本地改造"]}},
         {"title": "Safekeeper", "desc": "WAL 服务 · Paxos-like 复制 · 关键 LSN · 成员迁移",
          "pick": {"chapter": 5, "kickers": ["SAFEKEEPER"]}},
         {"title": "Pageserver", "desc": "存储引擎 · 多租户 · Layer/LSM · LayerMap · index_part · 读路径",
