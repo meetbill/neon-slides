@@ -4552,6 +4552,158 @@ std("s-log-prefix", "COMPUTE", "读懂 compute 日志：四类方括号前缀", 
 ], p, notes="这一页解释 kubectl compute-pod 日志里那些方括号前缀分别是什么、来自哪个子系统，全部经 background agent 从源码逐条核实过 file:line。四个前缀的来源并不统一：[NEON] 是 Postgres 内核 fork 补丁（不是扩展），在 src/backend/access/transam/xlog.c 的 readNeonSignalFile() 里用内联 elog(LOG, \"[NEON] ...\") 直接打，没有宏，各主版本行号不同（v17 xlog.c:5511、v16 :5140、v15 :4988、v14 :5736），作用是启动时读 basebackup 里的 neon.signal 文件、把 prev record LSN 设好，让 WAL 插入能正确接链。[NEON_SMGR] 来自 pgxn/neon 扩展的存储管理器层，宏 NEON_TAG \"[NEON_SMGR] \" 定义在 neon.h:53，日志走 neon_log / neon_shard_log 宏；日志里那行 [NEON_SMGR][shard 0] connected to pageserver 出自 libpagestore.c:785 的 pageserver_connect()，[shard N] 段是 neon_shard_log 变体加的；这一层把 PG 的本地文件存储替换成向 pageserver 分片拉页。[WP] 是 walproposer，宏 WP_LOG_PREFIX \"[WP] \" 在 walproposer.h:949，wp_log 用于纯 walproposer 代码（walproposer.c）、wpg_log 用于 PG 胶水层（walproposer_pg.c）；它作为名为 WAL proposer 的 bgworker 注册在 walproposer_pg.c:688，入口 WalProposerMain，跑 Paxos-like 共识把 WAL 流给 safekeeper quorum，日志里能看到 parse neon.safekeepers、连接、ProposerGreeting/AcceptorGreeting、elected term、WAL proposer starts streaming 这条生命周期。[COMMUNICATOR] 比较特殊，它是较新的独立 bgworker（名 Storage communicator process），内部跑 Rust tokio 多线程运行时，当前只对外提供 metrics/控制 socket，规划是将来接管全部与 pageserver 的 GetPage 通信；Rust 线程本身用 tracing/info! 打日志不带方括号，前缀是转发到 PG 日志时在 C 侧补的——communicator_process.c:231 的 errmsg_internal(\"[COMMUNICATOR] %s\", errbuf)。最后统一收口：这四类行本质都是 Postgres 进程（内核或其 bgworker）写到 stderr 的，compute_ctl（compute_tools，Rust）在 compute.rs:1829 调 handle_postgres_logs 接住子进程 stderr，并在 pg_helpers.rs:595 的 handle_postgres_logs_async 里给每条（可能多行）消息前面加 PG: 前缀、多行用零宽空格 U+200B 拼成一行，好让下游日志处理区分 Postgres 输出和 compute_ctl 自己的日志。所以看日志的判断法：PG: 是 compute_ctl 加的外层壳，方括号是 PG 侧各子系统自己加的内层标签。")
 
 
+# ─────── compute 日志导出 ───────
+p += 1
+std("s-log-export", "可观测", "compute 日志怎么导出：默认链路 + 三条通道", [
+    T("le-desc", 96, 160, 1088, 44,
+      "compute 是无状态临时容器，日志不主动外送就会随 pod 消失。"
+      "一条默认链路 + 三条官方通道（<b>A 就是 syslog 导出</b>），配齐才能让用户排查数据库报错。"
+      "<span style='color:" + DIM + "'>（源码 compute_tools / libs/compute_api）</span>",
+      fs=14, color=DIM, lh=1.55),
+    # Left: default path
+    R("le-l-bg", 96, 214, 530, 252, fill=PANEL, stroke=EDGE, radius=12),
+    T("le-l-h", 116, 226, 490, 22, "① 默认链路：全部落在容器 stderr", fs=14, fw=800, color=AC),
+    *TL("le-l-b", 116, 256, 494, 202, [
+        "PostgreSQL ──stderr──▶ compute_ctl 管道",
+        "&nbsp;&nbsp;handle_postgres_logs：多行合并 + 加 <b>PG:</b> 前缀",
+        "compute_ctl 自身 tracing ──────────▶ stderr",
+        "容器运行时收集 → <span style=\"font-family:" + MONO + "\">kubectl logs</span> / pod log",
+        "",
+        ("⚠ compute 是临时的：scale-to-zero 销毁后 pod 日志即丢失", AC2),
+        ("pg_helpers.rs:564-621 · compute.rs:1829", FAINT),
+    ], fs=11, color=DIM, lh=1.7),
+    # Right: three channels
+    R("le-r-bg", 656, 214, 528, 252, fill=PANEL, stroke=EDGE, radius=12),
+    T("le-r-h", 676, 226, 490, 22, "② 三条导出通道", fs=14, fw=800, color=AC2),
+    *TL("le-r-b", 676, 254, 492, 204, [
+        ("A. logs_export_host = syslog 导出（同一个开关）", AC, 700),
+        "&nbsp;&nbsp;spec 字段 → log_destination='stderr,syslog'（追加）",
+        "&nbsp;&nbsp;rsyslog omfwd TCP → OTel collector :10514（<b>推</b>，非拉）",
+        ("&nbsp;&nbsp;⚠ 内存队列 1000、重试 3 次 → Collector 挂时丢日志", AC2),
+        ("&nbsp;&nbsp;⚠ 只匹配 programname=postgres，compute_ctl 不走", AC2),
+        ("&nbsp;&nbsp;⚠ rsyslogd 不支持动态 reload，开关需重启", AC2),
+        ("B. COMPUTE_CTL_LOG_DIRECTORY —— 文件兜底", "#7CB3F4", 700),
+        "&nbsp;&nbsp;按天 pgcctl.YYYY-MM-DD，JSON 与 PG jsonlog 同构",
+        "&nbsp;&nbsp;带 pg_instance_id / compute_id，最多留 2 天",
+        ("C. pgaudit（Extended / Full）—— 审计专用", "#C89EFF", 700),
+        "&nbsp;&nbsp;pgdata/log → imfile → 注入 endpoint_id/project_id",
+    ], fs=10.8, color=DIM, lh=1.55),
+    # Bottom: attribution gap + recommendation
+    R("le-b-bg", 96, 478, 1088, 182, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("le-b-h", 116, 488, 1040, 20,
+      "关键缺口：日志行里没有租户标识 —— 用户问「我的库为什么报错」时无从定位（归属选型见下一页）", fs=13, fw=800, color=AC),
+    T("le-b-b", 116, 514, 1048, 138,
+      "• <b>logs_export_host 不是另一套机制</b>：它是 spec 里的开关字段，syslog 是它的传输方式；"
+      "<span style=\"font-family:" + MONO + "\">log_destination='stderr,syslog'</span> 是<b>追加</b>，stderr 始终保留"
+      "（<span style=\"font-family:" + MONO + "\">config.rs:356-359</span>；置 None 即回到默认 stderr，rsyslog 配置残留但无消息流入）。<br>"
+      "• 建议双路：<b>pod 日志</b>（compute_ctl 启动/迁移/扩展错误 + PG 兜底）+ <b>logs_export_host</b>（PG 逐行、无 PG: 前缀、可只导 PG）"
+      "→ 按 project 隔离存储 → 控制台 Logs API。<br>"
+      "• 报错默认就会记录（<span style=\"font-family:" + MONO + "\">log_min_error_statement=error</span>）；不要全局 "
+      "<span style=\"font-family:" + MONO + "\">log_statement=all</span>；"
+      "<span style=\"font-family:" + MONO + "\">log_parameter_max_length_on_error</span> 默认 0，勿随意调大；对外展示前做脱敏。",
+      fs=10.5, color=DIM, lh=1.55),
+], p, notes="这一页讲 compute 日志从哪里来、怎么导出，以及面向终端用户排错时的关键缺口。全部经源码核实。默认链路：Postgres 默认 log_destination=stderr（compute_tools/src/config.rs 只在 spec.logs_export_host 存在时才追加 log_destination='stderr,syslog'，见 config.rs:357），compute_ctl 在 compute.rs:1829（以及 initdb 路径 :1531）调 pg_helpers.rs:564 的 handle_postgres_logs 接管 PG 子进程 stderr，handle_postgres_logs_async(:575) 用时间戳正则判断消息边界、把多行用零宽空格 U+200B 合并，并在 :595 加 'PG:' 前缀写回 compute_ctl 的 stderr；compute_ctl 自身用 tracing 也写 stderr（logger.rs:31-42，with_ansi(false)、with_target(false)）。容器运行时（K8s）收集 pod 的 stdout/stderr，所以 kubectl logs 能看到两类日志。关键：compute 是无状态临时容器，scale-to-zero 销毁后 pod 日志随之消失，必须实时外送。三条通道：A) 官方导出 logs_export_host，字段定义在 libs/compute_api/src/spec.rs:193，注释示例 config-...-collector-monitoring.neon-telemetry.svc.cluster.local:10514；设置后 compute.rs:987-988（启动）与 :2127-2128（configure）调 rsyslog.rs:229 configure_postgres_logs_export，生成 /etc/rsyslog.d/postgres_logs.conf 并重启 rsyslogd（rsyslog.rs:74 restart_rsyslog），模板 compute_rsyslog_postgres_export_template.conf 只匹配 if $programname == 'postgres'，用 omfwd TCP + RSYSLOG_SyslogProtocol23Format 转发，队列 linkedList size=1000、resumeRetryCount=3，collector 挂时会丢；因此 compute_ctl 自身日志不在这条路上。B) COMPUTE_CTL_LOG_DIRECTORY 环境变量（compute_ctl.rs:228 附近传入 logger.rs:19 init_tracing_and_logging 的 log_dir_opt），tracing_appender 按天滚动、filename_prefix='pgcctl'、max_log_files(2)，事件格式 PgJsonLogShapeFormatter 把日志整形成 PG jsonlog 同构 JSON，含 backend_type=compute_ctl_self、pg_instance_id、pg_compute_id（UNKNOWN_IDS 兜底，IDS 由 update_ids 写入），源码注释明确说是为了复用同一套 Lumberjack 采集。C) 审计通道：audit_log_level=Extended/Full 时 config.rs:293-304 配 pgaudit.log='all' 等、log_rotation_age=5，日志写 pgdata/log；compute.rs:955-981 读 AUDIT_LOGGING_ENDPOINT / AUDIT_LOGGING_TLS_ENDPOINT、endpoint_id、project_id，调 configure_audit_rsyslog 生成 compute_audit_rsyslog_template.conf（imfile 读 *.log，注入 endpoint_id/project_id 到 JSON，omfwd 支持 TLS），并 launch_pgaudit_gc 清理磁盘。关键缺口：全仓库没有任何地方设置 log_line_prefix（grep 无结果），所以 PG 日志只有默认前缀，不含 endpoint_id/tenant_id/project_id；compute_ctl 加的外层只有 PG:。解决办法：①采集侧按 pod label 注入归属（pod 与 endpoint 一一对应，最可靠）；②ComputeSpec.cluster.settings 会被原样追加到 postgresql.conf（spec.rs:536 GenericOptions，config.rs:245 附近 'If there are any extra options in the settings field, append those'），可下发 log_line_prefix='%m [%p] user=%u db=%d app=%a '，但 log_line_prefix 没有 endpoint id 转义符，且 %a（application_name）由客户端控制、可伪造，不能替代采集侧打标；③让应用层在 application_name 里带请求标识。排错实践：PG 默认 log_min_error_statement=error，失败语句本来就会记录；不建议全局 log_statement=all（量大且可能泄露数据）；log_parameter_max_length_on_error 默认 0 即不记录绑定参数，不要随意调大；日志对外展示前应在 collector 做脱敏，并按 project 做存储隔离。建议架构：pod 日志采集（覆盖 compute_ctl）+ logs_export_host（覆盖 PG）双路汇入日志存储（Loki/ClickHouse/ES），按 project 隔离，再由控制台提供 Logs API/UI 按 project/endpoint/severity/时间过滤。补充：官方博客 https://neon.com/blog/logs-open-telemetry 印证了这条链路，并披露了仓库外的 Collector 侧实现——collector 用 syslog receiver（rfc5424/TCP 0.0.0.0:10514），先 transform/match_pod 把 net.peer.ip 复制成 k8s.pod.ip（绕过已知 bug），再用 k8sattributes 按源 IP 关联 Pod、按 neon/project-id label 过滤并提取 project id + pod name，最后 export 到客户自选的 OTLP 后端（Datadog/New Relic 等）。所以官方给日志打租户标签靠的是『源 IP→Pod→K8s label』，而不是改 log_line_prefix，这也解释了为什么仓库里搜不到 log_line_prefix。博客同时说明：选 rsyslogd 推送是因为 Collector 无法按 label 抓 pod 日志、且 NeonVM 多进程日志非结构化难过滤；Postgres 配置可热加载但 rsyslogd 不支持动态 reload，所以开关导出要重启 rsyslogd；HIPAA 审计复用同一个 rsyslogd 转安全长期存储。博客未覆盖 compute_ctl 日志导出、查询/UI/权限、按 project 的 retention 与成本，这些仍需平台自建。")
+
+
+# ─────── 日志租户归属：prefix vs 反查 ───────
+p += 1
+std("s-log-tenant", "可观测", "租户归属：log_line_prefix 还是 Collector 反查？", [
+    T("lt-desc", 96, 158, 1088, 52,
+      "一个 compute 只服务一个 endpoint/project，但仓库<b>从不设置 log_line_prefix</b>。"
+      "官方靠 Collector 用源 IP 反查 Pod label；两者不是替代关系，<b>按日志通道分工</b>。"
+      "<span style='color:" + DIM + "'>（配套 s-log-export）</span>",
+      fs=12.5, color=FG, lh=1.55),
+    # Left: prefix
+    R("lt-l-bg", 96, 216, 530, 236, fill=PANEL, stroke=EDGE, radius=12),
+    T("lt-l-h", 116, 228, 490, 22, "方案 A · log_line_prefix（spec 注入字面量）", fs=14, fw=800, color=AC),
+    *TL("lt-l-b", 116, 258, 494, 186, [
+        "控制面按 compute 下发，把租户<b>字面量</b>写进前缀：",
+        "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">log_line_prefix = 'project=… endpoint=… %m [%p] %u@%d '</span>",
+        ("PG 没有租户转义符，但 spec 本身按 compute 生成 → 写死即可", AC),
+        ("vartype 必须 \"string\"，否则含空格的前缀会被截断", AC2),
+        "SIGHUP 级：configure 后 pg_reload_conf()，无需重启（compute.rs:2144）",
+        ("只作用于 PG 服务端日志；compute_ctl 完全无效", AC2),
+        ("用户可写 settings 时可覆盖 —— 控制面必须强制最后写入", AC2),
+    ], fs=10.8, color=DIM, lh=1.55),
+    # Right: collector
+    R("lt-r-bg", 656, 216, 528, 236, fill=PANEL, stroke=EDGE, radius=12),
+    T("lt-r-h", 676, 228, 490, 22, "方案 B · Collector 用源 IP 反查 Pod", fs=14, fw=800, color="#7CB3F4"),
+    *TL("lt-r-b", 676, 258, 492, 186, [
+        "Collector 拿 syslog 报文的源地址，反查 Pod：",
+        "&nbsp;&nbsp;<span style=\"font-family:" + MONO + "\">net.peer.ip → k8s.pod.ip → k8sattributes</span>",
+        "&nbsp;&nbsp;再取 <span style=\"font-family:" + MONO + "\">neon/project-id</span> label 作 resource attributes",
+        ("归属来自控制面 label：权威、结构化、不可伪造", AC),
+        "只对 logs_export_host(syslog) 通道必要 —— 出 pod 即丢 k8s 上下文",
+        ("pod stdout 通道由采集端 agent 直接带 label，无需反查", AC),
+        ("对 NAT / 日志延迟 / Pod 已销毁敏感：查不到就丢归属", AC2),
+    ], fs=10.8, color=DIM, lh=1.55),
+    # Bottom: why official chose B + recommendation
+    R("lt-b-bg", 96, 464, 1088, 196, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("lt-b-h", 116, 474, 1040, 20, "为什么官方不用 log_line_prefix，而选 IP 反查？", fs=13, fw=800, color=AC),
+    T("lt-b-b", 116, 500, 1048, 152,
+      "① <b>覆盖统一</b>：反查对 PG、compute_ctl、任意进程一视同仁；prefix 只管 PG 服务端日志。<br>"
+      "② <b>归属权威</b>：label 由控制面写入，用户改不了；prefix 是第二份副本，settings 若用户可写就能覆盖/伪造 → 不能用于鉴权与路由。<br>"
+      "③ <b>结构化</b>：label 是 resource attributes，可直接做租户路由、retention、权限过滤；prefix 是自由文本，还得解析。<br>"
+      "④ <b>成本与解耦</b>：百万级 compute 每行重复 UUID 是真实体积；而官方 rsyslog 链路出 pod 后本来就只剩源 IP。<br>"
+      "✓ <b>推荐</b>：pod stdout（label 兜底）+ logs_export_host（正式导出）+ log_line_prefix（每行冗余）三件套；"
+      "IP 反查仅作 syslog 兜底，查不到就不猜。",
+      fs=10.5, color=DIM, lh=1.55),
+], p, notes="本页讲日志的租户归属方案选型，配套 s-log-export，源码均已核实。前提事实：①全仓库 grep log_line_prefix 无结果，Neon 从不设置该 GUC；②ComputeSpec.cluster.settings 会被 config.rs:246-250 原样追加到 postgresql.conf（as_pg_settings → GenericOption::to_pg_setting，vartype=\"string\" 时走 escape_conf_value 加引号并转义单引号/反斜杠；vartype 其它值则裸写，带空格的前缀会被截断，所以必须用 string）；③配置每次 configure 都会 File::create 重写 postgresql.conf，随后 compute.rs:2144 调 pg_reload_conf()，log_line_prefix 是 SIGHUP 级参数，因此无需重启 PG 即生效；④log_line_prefix 只影响 PostgreSQL 服务端日志，compute_ctl 自身日志走 tracing 的 fmt layer（logger.rs:31-42，纯文本 stderr）和 PgJsonLogShapeFormatter 的 JSON 文件（logger.rs:47-56），GUC 对其无效。关键认知：『PG 没有租户转义符』不等于带不了租户——cluster.settings 是按 compute 下发的，控制面可以把 project/endpoint 字面量直接写进前缀，这是权威来源；风险只在于 settings 是否对终端用户可写，若可写则用户能覆盖或伪造，控制面必须把它作为受管设置最后写入并禁止用户设置同名 GUC。官方方案：compute 日志经 logs_export_host 走 syslog → rsyslog omfwd → OTel Collector，出 pod 后 k8s 上下文丢失，Collector 用 net.peer.ip 复制成 k8s.pod.ip，再用 k8sattributes 按源 IP 关联 Pod、按 neon/project-id label 提取 project id（见 https://neon.com/blog/logs-open-telemetry）；这条通道只匹配 programname=postgres，compute_ctl 不走。为什么官方选反查而不是 prefix（以下为基于代码与公开设计的推断，非官方逐条说明）：①覆盖统一，反查对 PG/compute_ctl/任意进程一致，prefix 只管 PG；②归属权威，label 来自控制面，不依赖数据库配置，也不受用户可写 settings 影响，不能用于鉴权的信息不适合做租户路由；③结构化，label 是 resource attributes，可直接做路由、retention、权限过滤，prefix 是自由文本需解析；④成本与解耦，百万级 compute 每行重复 UUID 是真实体积，且日志路由不应依赖 PG 配置和 reload，而 rsyslog 链路出 pod 后本来就只剩源 IP；⑤反查只在采集点做一次，不改变数据库行为。边界：反查对 NAT/多跳（源 IP 变成 node IP）、日志延迟、Pod 已销毁（查不到 label）敏感；pod stdout 通道由节点日志 agent 直接带 label，不需要反查；compute_ctl 的 JSON 文件只有 pg_instance_id/pg_compute_id，要 project/endpoint 需改 formatter。推荐组合：pod stdout（label 兜底，覆盖 compute_ctl）+ logs_export_host（PG 正式导出）+ log_line_prefix（每行冗余，解决延迟/落文件/跨系统后的归属）；IP 反查仅作 syslog 通道在没有 prefix 时的兜底。另注意 logs_export_host 就是 syslog 导出的开关：config.rs:356-359 写 log_destination='stderr,syslog' 是追加不是替换；置 None 时不再写该行（回到默认 stderr），rsyslog 配置残留但无消息流入（rsyslog.rs:230-236 特意跳过重启）；目标格式 host:port，host 必须合法域名/IPv4/IPv6、端口必填；rsyslog 配置变化需 pkill 重启 rsyslogd（无 reload）；模板是 include_str! 编译期嵌入，定制要重编 compute_ctl 镜像。")
+
+
+# ─────── OTel Collector 部署位置 ───────
+p += 1
+std("s-log-collector", "可观测", "Collector 放哪：控制面填地址，集群内部署", [
+    T("lc-desc", 96, 158, 1088, 48,
+      "<span style=\"font-family:" + MONO + "\">logs_export_host</span> 由控制面按 endpoint 下发；"
+      "Collector 必须与 compute <b>同集群、同 pod 网络</b>，否则源 IP 反查直接失效。"
+      "<span style='color:" + DIM + "'>（配套 s-log-export、s-log-tenant）</span>",
+      fs=12.5, color=FG, lh=1.55),
+    # Left: control plane config
+    R("lc-l-bg", 96, 214, 530, 228, fill=PANEL, stroke=EDGE, radius=12),
+    T("lc-l-h", 116, 226, 490, 22, "① 配置点：控制面 → ComputeSpec", fs=14, fw=800, color=AC),
+    *TL("lc-l-b", 116, 256, 494, 178, [
+        "<span style=\"font-family:" + MONO + "\">spec.logs_export_host</span>（spec.rs:191-194），按 endpoint 下发",
+        "官方示例：<span style=\"font-family:" + MONO + "\">config-…-collector-monitoring.neon-telemetry.svc.cluster.local:10514</span>",
+        "控制面做「region/cluster → Collector」映射，别硬编码",
+        ("本仓库 neon_local 写死 None（endpoint.rs:823）→ 自建要自己填", AC2),
+        "改地址 = 一次 reconfigure + rsyslogd 重启（无 reload）",
+        "格式必须 <span style=\"font-family:" + MONO + "\">host:port</span>，host 需合法域名/IP",
+    ], fs=10.6, color=DIM, lh=1.55),
+    # Right: deployment location
+    R("lc-r-bg", 656, 214, 528, 228, fill=PANEL, stroke=EDGE, radius=12),
+    T("lc-r-h", 676, 226, 490, 22, "② 部署点：同集群内网 Service", fs=14, fw=800, color="#7CB3F4"),
+    *TL("lc-r-b", 676, 256, 492, 178, [
+        ("硬条件：与 compute 同 K8s 集群、同 pod 网络", AC),
+        "源 IP 必须是 Pod IP；中间不能有 LB / NodePort / NAT",
+        "每个 region/集群一套；pod IP 跨集群不可路由",
+        "Deployment 2+ 副本 + ClusterIP（简单、好升级）",
+        "量大：DaemonSet + <span style=\"font-family:" + MONO + "\">internalTrafficPolicy: Local</span>",
+        "NetworkPolicy：只放 compute egress 10514",
+        ("receiver 无认证/TLS → 禁止暴露到集群外", AC2),
+        ("rsyslog 无磁盘队列，Collector 需 PDB / 多副本", AC2),
+    ], fs=10.6, color=DIM, lh=1.55),
+    # Bottom: skeleton + checklist
+    R("lc-b-bg", 96, 456, 1088, 204, fill="rgba(0,229,153,0.06)", stroke="rgba(0,229,153,0.3)", radius=10),
+    T("lc-b-h", 116, 466, 1040, 20, "最小配置骨架（otelcol-contrib）＋ 上线检查", fs=13, fw=800, color=AC),
+    T("lc-b-code", 116, 492, 548, 156,
+      "<span style=\"font-family:" + MONO + "\">receivers.syslog.tcp&nbsp;&nbsp;= 0.0.0.0:10514</span><br>"
+      "<span style=\"font-family:" + MONO + "\">protocol&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= rfc5424</span><br>"
+      "<span style=\"font-family:" + MONO + "\">processors:</span><br>"
+      "<span style=\"font-family:" + MONO + "\">&nbsp;&nbsp;transform/pod_ip&nbsp;&nbsp;&nbsp;&nbsp;# net.peer.ip → k8s.pod.ip</span><br>"
+      "<span style=\"font-family:" + MONO + "\">&nbsp;&nbsp;k8sattributes&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# 按 pod IP 取 neon/project-id</span><br>"
+      "<span style=\"font-family:" + MONO + "\">pipeline.logs = syslog → [transform, k8sattributes, batch] → otlphttp</span>",
+      fs=10, color=FG, lh=1.7),
+    T("lc-b-check", 692, 492, 476, 156,
+      "• <b>RBAC</b>：pods / namespaces / nodes → <span style=\"font-family:" + MONO + "\">get,list,watch</span><br>"
+      "• <b>DNS</b>：<span style=\"font-family:" + MONO + "\">&lt;svc&gt;.&lt;ns&gt;.svc.cluster.local:10514</span><br>"
+      "• <b>验证</b>：debug exporter 确认 <span style=\"font-family:" + MONO + "\">net.peer.ip</span> 是 Pod IP，"
+      "再看 attrs 里有无 <span style=\"font-family:" + MONO + "\">project_id</span><br>"
+      "• <b>兜底</b>：若链路跨集群/过 LB，反查已不可用 → 改用 log_line_prefix 带租户",
+      fs=10.2, color=DIM, lh=1.7),
+], p, notes="本页讲 Neon 平台侧 OTel Collector（syslog receiver）应该配置/部署在哪里，配套 s-log-export、s-log-tenant。一、配置点：ComputeSpec.logs_export_host 定义在 libs/compute_api/src/spec.rs:191-194，注释即为『Hostname and the port of the otel collector. Leave empty to disable Postgres logs forwarding.』，示例 config-shy-breeze-123-collector-monitoring.neon-telemetry.svc.cluster.local:10514，说明官方 Collector 就在 compute 同集群的 neon-telemetry namespace，以 ClusterIP Service 暴露，端口 10514（rfc5424/TCP）。该字段由控制面在生成 endpoint 的 ComputeSpec 时填充，按 endpoint 下发；本仓库 control_plane/src/endpoint.rs:823（neon_local 路径）写死 logs_export_host: None，所以开源自建必须自己在这一层接通；上游 Neon 云的控制面不在本仓库。地址变化会走 configure：compute.rs:2127 重新调用 configure_postgres_logs_export，rsyslog.rs:229 写 /etc/rsyslog.d/postgres_logs.conf 并 pkill 重启 rsyslogd（无 reload）。格式要求：PostgresLogsRsyslogConfig::build 用 split_once(':') 拆分，缺少端口直接报 Invalid host format；rsyslog 模板 target 填 host、port 填端口。二、部署点：rsyslog 从 compute 内部通过 omfwd TCP 主动推送，Collector 只监听。要让 k8sattributes 能按源 IP 反查 Pod，必须满足：①Collector 与 compute 在同一 K8s 集群，因为 k8sattributes 只能访问本集群 API server，且 pod IP 跨集群不可路由；②Collector 看到的 net.peer.ip 必须是 Pod IP，中间不能有 LB、NodePort、外部代理或 NAT（rsyslog omfwd 不支持 PROXY protocol，无法透传真实源 IP）；③每个 region/集群部署一套，控制面按 region 选择地址，不能集中式跨集群汇聚；④推荐 Deployment 2+ 副本 + ClusterIP Service（简单、可滚动升级），日志量大时用 DaemonSet + internalTrafficPolicy: Local 让 rsyslog 连本机 Collector，减少跨节点跳数与故障面；⑤NetworkPolicy 只允许 compute 所在 namespace 出方向访问该 Service 的 TCP 10514，Collector 默认 syslog receiver 无认证、PG 导出通道也不走 TLS，绝不能暴露到集群外。三、Collector 配置骨架（otelcol-contrib）：syslog receiver tcp listen 0.0.0.0:10514、protocol rfc5424；transform 把 net.peer.ip 复制到 k8s.pod.ip（官方博客提到的 workaround），k8sattributes 用 serviceAccount 认证、pod_association 用 resource_attribute k8s.pod.ip，extract metadata pod.name/namespace.name/node.name 与 pod label neon/project-id、neon/endpoint-id；batch 后 export 到 OTLP 后端。RBAC 需要 pods/namespaces/nodes 的 get,list,watch。四、可靠性边界：rsyslog 模板 queue.type=linkedList、queue.size=1000、action.resumeRetryCount=3（审计通道是 10），没有 queue.filename 即无磁盘持久化，Collector 不可用超过重试窗口就丢日志；因此 Collector 侧要 PDB、反亲和、多副本，下游不可用时可在 Collector 内用 file_storage 持久队列兜底；若要求源端不丢，需要改 rsyslog 模板加磁盘队列，但模板是 include_str! 编译期嵌入，必须重编 compute_ctl 镜像。五、验证：先开 debug exporter 确认 net.peer.ip 是 compute Pod IP，再确认富化后 resource attributes 含 neon/project-id；缺失时依次排查 NetworkPolicy/Service 是否引入 SNAT、Pod 是否已销毁导致 k8sattributes 查不到、label key 是否写错。若链路不可避免跨集群或过 LB，应放弃 IP 反查，改用 log_line_prefix（见 s-log-tenant）。")
+
+
 # ─────── safekeeper 周期任务清单 ───────
 p += 1
 std("s-sk-tasks", "SAFEKEEPER", "safekeeper 周期任务清单：以 timeline_manager 为调度中枢", [
@@ -5916,8 +6068,8 @@ DECKS = [
      "tag": "日志 · 可观测 · 故障演练 · 备份恢复 · 局限 & tradeoff",
      "docId": "neon-arch-deck-C",
      "sections": [
-        {"title": "日志·可观测·故障演练", "desc": "关键数字 · 各组件周期任务/日志解读 · 裸测 · 指标 · 故障演练",
-         "pick": {"ids": ["s-numbers", "s-log-prefix", "s-sk-tasks", "s-sk-logs",
+        {"title": "日志·可观测·故障演练", "desc": "关键数字 · 日志解读与导出 · 租户归属 · Collector 部署 · 各组件周期任务 · 裸测 · 指标 · 故障演练",
+         "pick": {"ids": ["s-numbers", "s-log-prefix", "s-log-export", "s-log-tenant", "s-log-collector", "s-sk-tasks", "s-sk-logs",
                           "s-sk-notest", "s-ps-tasks", "s-ps-logs", "s-ps-notest",
                           "s-metrics", "s-failure", "s-ps-failover", "s-compute-selfheal",
                           "s-sk-rebuild"]}},
