@@ -2208,6 +2208,61 @@ std("s-cc-procs", "COMPUTE", "Compute VM 里都有哪些常驻进程", [
 ], p, notes="本页把 compute VM 内的常驻与一次性进程列全，来源是 compute/vm-image-spec-bookworm.yaml（vm-image-spec-bullseye.yaml 内容对齐）。常驻进程共 9 个，分两类：7 个由 vm-image-spec 的 sysvInitAction: respawn 拉起（pgbouncer、local_proxy、postgres-exporter、pgbouncer-exporter、sql-exporter、sql-exporter-autoscaling、rsyslogd），另 2 个不经 vm-image-spec——compute_ctl（Pod entrypoint / PID 1）和它 fork 的 postgres。逐个说：（1）compute_ctl 是 Pod entrypoint / PID 1，由 VM entrypoint 直接拉起，不在 vm-image-spec 的 commands 列表里；负责监护、状态机、HTTP 3080/3081，源码在 compute_tools/ crate，入口 bin/compute_ctl.rs。（2）postgres 是 compute_ctl fork 出来的子进程，跑 postmaster + backends + bgworkers，pgxn/neon 扩展在这里加载，监听 5432。（3）pgbouncer 监听 0.0.0.0:6432，transaction pooling，配置见 compute/etc/pgbouncer.ini，max_client_conn=10000、default_pool_size=64、auth_type=scram-sha-256，通过 unix_socket_dir=/tmp/ 也暴露 socket。（4）local_proxy 监听 0.0.0.0:10432，Neon Authorize 组件，校验客户端 JWT、维护 pg_session_jwt 扩展和 JWKS 授权，reload 通过 SIGHUP（compute_tools/src/local_proxy.rs）；只有开了 Neon Auth 的项目才实际用到，但进程本身对所有 compute 常驻。（5）postgres-exporter Prometheus PG 指标；启动参数 --no-collector.database 关掉 pg_database_size_bytes 采集（会因为坏 db 打爆日志），DATA_SOURCE_NAME 走 cloud_admin@postgres 本地 socket。（6）pgbouncer-exporter Prometheus pgbouncer 指标，通过 unix socket 连 pgbouncer。（7）sql-exporter 监听 :9399，跑通用 SQL-based 指标采集（Neon 定义的 collector 集合）。（8）sql-exporter-autoscaling 监听 :9499，给 autoscaler 拉的一份专用指标（LFC hit/miss、working set size 等）。（9）rsyslogd 用 postgres 用户跑（这样能写自己的 pid 文件），配置 /etc/compute_rsyslog.conf，Postgres 通过 /dev/log 软链到 /var/db/postgres/rsyslogpipe 写日志。4 个 sysinit（只在启动阶段跑一次，不常驻）：cgconfigparser 建 cgroup neon-postgres（vm-monitor 靠这个做资源限制），chmod-resize-swap 和 chmod-set-disk-quota 把这两个特权脚本改成 0711（compute_ctl 通过 sudoers 白名单以 root 跑它们，其他人只能执行不能读），rsyslogd-socket-symlink 建 /dev/log → rsyslogpipe 软链。compute_ctl 进程内还嵌着几个 tokio task / 后台线程，它们不是独立进程但常驻：两个 HTTP server（external 3080、internal 3081，http/server.rs），configurator 热变更循环（configurator.rs:13 configurator_main_loop 等 ConfigurationPending / RefreshConfigurationPending），compute-monitor（源码注释里叫 compute-monitor，跟踪 PG 最近活跃时间戳），vm-monitor（libs/vm_monitor，仅当 AUTOSCALING 环境变量置位时才起，只 linux 上跑，需要 cgroup v2，跟 VM autoscaling 协议协商 downscale / 请求 upscale）。数据面调用链：客户端 → proxy → 可选 local_proxy → pgbouncer → postgres（5432）；控制面：cplane → compute_ctl 3080（JWT），Pod 内 neon 扩展 / local_proxy → compute_ctl 3081（无鉴权）；观测：4 个 exporter + rsyslog；日志 stderr 走 virtio-port /dev/virtio-ports/tech.neon.log.0，PG 走 syslog 管道。")
 
 
+# ─────── restart_after_crash = off ───────
+p += 1
+std("s-restart-crash", "COMPUTE", "子进程崩了谁做恢复：restart_after_crash = off", [
+    T("rc-desc", 96, 158, 1088, 40,
+      "上游 PostgreSQL 的 <b>postmaster 级 GUC</b>，Neon 把它固定成 <b>off</b>。它只回答一个问题："
+      "子进程（backend / bgworker）崩溃后，postmaster 还要不要<b>在这份 PGDATA 上原地做本地 WAL redo</b>，然后接着对外服务。",
+      fs=12, color=DIM, lh=1.5),
+    *card("rcon", 96, 204, 530, 186,
+          "on ｜ 上游默认：原地崩溃恢复后继续服务", [
+              "• 任一 backend / bgworker 崩溃 → postmaster 杀掉全部后端",
+              "• 从最近 checkpoint 重放 <span style=\"font-family:" + MONO + "\">pg_wal</span> 到崩溃点（本地 WAL redo）",
+              "• 实例身份不变：客户端断一次，内存状态都保留",
+              ("• 前提：本地 pg_wal 完整可信，且只有这一份数据副本", FAINT),
+          ], hc=FAINT, fs=11, headfs=15),
+    *card("rcoff", 654, 204, 530, 186,
+          "off ｜ Neon 固定：直接退出，由外部重建", [
+              "• postmaster 不做任何本地 redo，整个进程树退出",
+              "• compute_ctl 等到退出 → 停子任务 → 用同一 exit code 退出",
+              "• k8s / systemd 起新 pod：prepare_pgdata → 重新 basebackup",
+              ("• 「重启」在 Neon 里 = 换一台新 compute，而非原地重来", AC),
+          ], hc=AC, fs=11, headfs=15),
+    *card("rc1", 96, 398, 346, 170,
+          "① 本地 WAL redo 在这里是错的", [
+              ("compute 的 pg_wal 只是推向 SK 的缓冲，且 fsync=off", FAINT),
+              "持久 WAL 在 safekeeper，真正的 redo 在 pageserver",
+              "拿不可信的本地 WAL 去 redo：慢，且可能与 PS 视图不一致",
+              "正道：丢掉这台，按 LSN 从 PS 重新 basebackup",
+          ], hc=AC2, fs=10, headfs=13.5),
+    *card("rc2", 467, 398, 346, 170,
+          "② 原地恢复会让监护链失明", [
+              ("compute_ctl 靠阻塞等 postmaster 退出（wait_postgres）", FAINT),
+              "postmaster 自己恢复并继续跑 → wait 永不返回",
+              "compute_ctl 不知道崩过，控制面也不知道",
+              "off 才有「PG 退出」这个可观测的边沿",
+          ], hc="#7CB3F4", fs=10, headfs=13.5),
+    *card("rc3", 838, 398, 346, 170,
+          "③ 避开无意义的重启风暴", [
+              ("basebackup 无效时 walproposer 会 panic", FAINT),
+              "on：崩溃 → 原地重启 → 又 panic → 无限循环",
+              "off：本次尝试直接失败退出，等一次干净冷启动",
+              ("endpoint.rs:485：it is pointless to restart", FAINT),
+          ], hc="#C89EFF", fs=10, headfs=13.5),
+    R("rcb-bg", 96, 574, 1088, 98, fill=PANEL, stroke=EDGE, radius=10),
+    T("rcb-h", 116, 582, 900, 20, "退出链 & 三个配置点", fs=12.5, fw=800, color=AC),
+    T("rcb-b", 116, 606, 1048, 62,
+      "• <b>退出链</b>：postmaster 退出 → <span style=\"font-family:" + MONO + "\">compute.rs:704</span> 记日志"
+      "→ 停 vm-monitor / LFC / ext-stats → <span style=\"font-family:" + MONO + "\">compute_ctl.rs:356</span> exit(code)"
+      "→ 容器退出 → k8s 起新 pod<br>"
+      "• <b>配置</b>：<span style=\"font-family:" + MONO + "\">compute/manifest.yaml:82</span>（schema 里声明为 string enum 且 <b>required</b>）"
+      "｜ neon_local <span style=\"font-family:" + MONO + "\">endpoint.rs:486</span> ｜ 镜像 <span style=\"font-family:" + MONO + "\">config.json:90</span><br>"
+      "• <b>⚠</b> compute_ctl 自己<b>不含默认值</b>：spec 漏传就退回上游 on，上面三条理由全部失效",
+      fs=10.5, color=DIM, lh=1.45),
+], p, notes="restart_after_crash 是上游 PostgreSQL 的 GUC（postmaster 崩溃恢复路径上的开关，sighup 级别生效），不是 Neon 新增。上游默认 on：任一 backend / bgworker 非正常退出时，postmaster 视为崩溃，杀掉其余后端、重放本地 WAL 到崩溃点后重新初始化并继续服务，实例身份（PITR 位点、内存状态）保持不变。设为 off 时 postmaster 在收拢其余子进程后直接 ExitPostmaster，不做本地 redo，把「重新起来」交给外部 supervisor。上游文档的说法是：集群软件（clusterware）接管时用它来让外部而不是 postmaster 决定重启策略。本仓库 vendor/postgres-v14..v17 四个子模块目录都是空的（0 个文件），所以上游 postmaster.c 的函数名与行号都无法核对、这里一律不写，上游语义按 PG 通用行为描述（文档口径，非本仓库可验证内容）。Neon 固定 off 的三个理由，前两条在仓库注释里写明：① compute/manifest.yaml:79-82 的注释 —— This is important to prevent Postgres from trying to perform a local WAL redo after backend crash. It should exit and let the systemd or k8s to do a fresh startup with compute_ctl. 存算分离下 compute 的 pg_wal 只是 walproposer 推向 safekeeper 的缓冲，且 fsync=off（manifest.yaml:14），持久 WAL 在 SK、redo 在 pageserver；拿一份不可信且可能不完整的本地 WAL 做 redo，既慢又可能与 PS 的视图不一致。正确路径是丢掉这台 compute，由 compute_ctl 重新 prepare_pgdata：create_pgdata（compute_tools/src/compute.rs:1202-1218）先 fs::remove_dir_all(pgdata) 再建空目录，所以 PGDATA 从不复用，「下次启动顺手做本地 redo」这条路也被堵死了；随后从 pageserver 按 LSN 拉 basebackup（try_get_basebackup，:1223 起）。② control_plane/src/endpoint.rs:485-486 的注释 —— walproposer panics when basebackup is invalid, it is pointless to restart in this case；basebackup 无效时 walproposer panic，若 postmaster 还 on 就会「崩溃→原地重启→又 panic」无限循环，永远起不来。③ 监护链：compute_ctl 的监督模型是阻塞等 postmaster 退出 —— wait_postgres（compute.rs:1841-1856，注释原文 Wait for the child Postgres process forever）阻塞在 pg_handle.postgres.wait()；postmaster 若自己恢复并继续跑，wait_postgres 永不返回，compute_ctl 就不知道刚崩过，控制面也收不到任何信号。off 才让「PG 退出」成为一个可观测的边沿。退出后的动作序列在 compute.rs:700-750：info!(Postgres exited with code {}, shutting down)（:704）→ terminate_extension_stats_task / terminate_lfc_offload_task → 取消 vm-monitor（linux 才跑）→ cleanup_after_postgres_exit()（:732，可能置 delay_exit）→ sleep 300ms（失败路径 30s）→ 返回 postmaster 的 exit code；compute_ctl.rs:282 let exit_code = compute_node.run()?，:286 deinit_and_exit，:356 exit(exit_code.unwrap_or(1))；容器 ENTRYPOINT 就是 compute_ctl（compute/compute-node.Dockerfile:2042），进程退出即容器退出，由 k8s / systemd 重新调度。配置点三处：compute/manifest.yaml:82 写 restart_after_crash: \"off\"（控制面据此合成进 spec 的 cluster.settings，manifest 本身不进镜像，只做 schema 校验）；compute/manifest.schema.json:102-106 声明为 type string、enum [on, off]，:155 把它列进 pg_settings.common 的 required 数组，即控制面必须下发；control_plane/src/endpoint.rs:486 是 neon_local 本地起 endpoint 时硬写；docker-compose/compute_wrapper/var/db/postgres/configs/config.json:89-92 是转成 {name, value: \"off\", vartype: \"bool\"} 的形态。注意 manifest 侧是字符串、落到 PG 里是 bool。compute_ctl 自己不补默认值（config.rs 只把 spec.cluster.settings 原样写进 postgresql.conf），所以 spec 漏传就退回上游默认 on，上面三条理由全部失效。restart_after_crash 与 s-sync-rep 里那个「✕ 别改」列表的关系：它和 fsync = off 一样属于架构前提而非数据正确性开关 —— 改成 on 不会立刻算错，但会让恢复路径走岔（回到本地 redo），所以放在「别改」但不与 synchronous_standby_names 那种改了就丢持久性的同级。相关页：s-computectl（compute_ctl 总览与启动流程）、s-comp-sm（状态机，PG 退出后走 Terminated）、s-compute-selfheal（控制面侧的自愈路径）、s-sync-rep（GUC 分组与其它架构前提）。")
+
+
 # ─────── Slide 6: Compute 状态机 ───────
 p += 1
 std("s-comp-sm", "COMPUTE", "compute_ctl 状态机 —— ComputeStatus 全 11 态", [
@@ -2550,9 +2605,109 @@ std("s-compute-spec", "COMPUTE", "ComputeSpec：一份「期望状态」文档�
       "• <b>拉（poll）</b>：<span style=\"font-family:" + MONO + "\">api_compute_spec.py</span> 直接把 spec 作为 HTTP body 返回 —— 正是 compute_ctl 轮询的那个 URL<br>"
       "• <b>推（push）</b>：<span style=\"font-family:" + MONO + "\">POST /configure</span>（全量、<b>阻塞</b>到 Running，角色/库变更立即生效）<br>&nbsp;&nbsp;vs <span style=\"font-family:" + MONO + "\">POST /refresh_configuration</span>（<b>非阻塞</b>，只比对 pageserver_conninfo，轻量 nudge）<br>"
       "• PS/SK 拓扑回调走 <span style=\"font-family:" + MONO + "\">/configure</span> 但带 <span style=\"font-family:" + MONO + "\">skip_pg_catalog_updates=true</span>：只重写 conf + reload，<b>不碰 role/database/extension/bootstrap</b><br>"
-      "• 版本：butterfly 侧 <span style=\"font-family:" + MONO + "\">spec_version/spec_changed_at</span> 注入 JSON（Rust struct 不含，serde 忽略未知字段），数据变更 bump_spec_version + 失效缓存",
+      "• 版本：butterfly 侧 <span style=\"font-family:" + MONO + "\">spec_version/spec_changed_at</span> 注入 JSON（Rust struct 不含，serde 忽略未知字段），数据变更 bump_spec_version + 失效缓存。一份 spec 最少需要哪些字段、缺了会静默失效的是哪几项，见 s-spec-required。",
       fs=11.5, color=DIM, lh=1.66),
 ], p, notes="ComputeSpec（libs/compute_api/src/spec.rs:35）是声明式期望状态文档。主要字段：cluster（Cluster spec.rs:524：roles/databases/postgresql_conf/settings GenericOption 列表）、delta_operations（DeltaOp DROP/RENAME 等命令式增量）、tenant_id/timeline_id、mode（ComputeMode Primary/Replica/Static(lsn) spec.rs:470）、pageserver_connection_info（分片连接 spec.rs:245，旧字段 pageserver_connstring）、safekeeper_connstrings + safekeepers_generation、storage_auth_token、remote_extensions（RemoteExtSpec）、pgbouncer_settings、local_proxy_config（JWT）、skip_pg_catalog_updates、reconfigure_concurrency、drop_subscriptions_before_start、audit_log_level、autoprewarm/offload_lfc_interval_seconds、suspend_timeout_seconds、bootstrap_template、format_version/operation_uuid/features。compute_ctl 消费：get_config_from_control_plane（compute_tools/src/spec.rs:77）GET {base}/compute/api/v2/computes/{compute_id}/spec。start_compute（compute.rs:793）：前置下载 remote extensions、prepare_pgdata、按需 swap resize/disk quota。prepare_pgdata（compute.rs:1601）写 postgresql.conf → sync safekeepers 取 LSN → 拉 basebackup → 更新 pg_hba/pg_ident。apply_config（compute.rs:1972）跑 apply_spec_sql（spec_apply.rs:40）驱动 ApplySpecPhase 有序枚举（CreatePrivilegedRole...CreateAndAlterRoles...CreateAndAlterDatabases...HandleNeonExtension...DropRoles...），bootstrap_template SQL 最后跑（spec_apply.rs:359 run_bootstrap_template:1381）；handle_migrations（spec_apply.rs:243）异步跑固定 append-only 迁移列表不阻塞冷启动。reconfigure（compute.rs:2089）活时改配置重跑 apply_spec_sql + pg_ctl reload 不重启。skip_pg_catalog_updates 是行为开关：置 true 时 reconfigure（compute.rs:2146）和 configure_as_primary（compute.rs:2183）两个入口都跳过整段 apply_spec_sql——即不做 CREATE/ALTER ROLE、CREATE/DROP DATABASE、extension 对账，也不跑 bootstrap_template（run_bootstrap_template 是 apply_spec_sql 内 spec_apply.rs:359 的唯一调用点，被一并跳过），只剩重写 postgresql.conf + pg_reload_conf。butterfly 的 PS/SK 拓扑回调（apply_pod_topology_configuration）正是靠置 skip_pg_catalog_updates=true 让 /configure 只热更 conf 而不误触 catalog 全量对账和 bootstrap 重放。Butterfly 生成：lib_compute_spec.py 的 get_compute_spec 先 Redis 缓存否则 _build_spec_dict 组装，_build_roles 从 SCRAM 密文、_build_settings 按 ComputeFlavor calculate_pg_settings_for_memory 算 GUC，_build_pageserver_connection_info 建分片 map。下发两路：poll = api_compute_spec.py 的 compute_spec GET spec 直接返回 body（compute_ctl 轮询该 URL）；push = lib_pod_runtime_configurator.py PodRuntimeConfigurator.configure 按 compute status 选 POST /configure（全量阻塞，port 3080，configure.rs:21，状态 ConfigurationPending 阻塞到 Running）或 POST /refresh_configuration（非阻塞，refresh_configuration.rs 只翻状态 RefreshConfigurationPending，configurator.rs 只比对 pageserver_conninfo 变才 reconfigure，port 3081）。configurator_main_loop（configurator.rs:13）监听两种 pending。角色/库变更必须 /configure 才立即生效（lib_compute_configure.py 注释 9-21）。版本：Endpoint.spec_version（models.py）emitted 为 spec_version/spec_changed_at 注入 JSON dict（lib_compute_spec.py 的 _build_spec_dict），Rust ComputeSpec 只有 format_version:f32 和 operation_uuid，serde 忽略未知字段（spec.rs:38）；bump_spec_version（lib_endpoint_core.py）数据变更时 +1 并 mark_endpoint_spec_changed 失效 Redis 缓存。")
+
+
+# ─────── spec 缺字段的四档后果 ───────
+def M(t):
+    """mono span — same shape as the inline spans used elsewhere."""
+    return '<span style="font-family:' + MONO + '">' + t + '</span>'
+
+
+p += 1
+std("s-spec-required", "COMPUTE", "spec 缺字段会怎样：四档后果清单", [
+    T("sreq-desc", 96, 164, 1088, 40,
+      "控制面到 compute 只有一份 JSON，<b>缺什么、缺了会怎样，四档完全不同</b>：一档直接起不来，"
+      "一档能起来但<b>静默失效</b>（最坑），第三档只是控制面契约，第四档是「不给就等于关功能」。",
+      fs=12, color=DIM, lh=1.5),
+
+    # ① 硬失败
+    R("t1-bg", 96, 208, 1088, 112, fill="rgba(255,80,80,0.06)", stroke="rgba(255,80,80,0.32)", radius=10),
+    T("t1-h", 116, 214, 1048, 20,
+      "① 硬失败 —— 缺一个就起不来（ParsedSpec::try_from · compute_tools/src/compute.rs:305）",
+      fs=12, fw=800, color="#FF7B72"),
+    T("t1-l", 116, 240, 504, 74,
+      "• " + M("pageserver 连接信息") + "：结构化字段 → 旧 " + M("pageserver_connstring")
+      + " → GUC " + M("neon.pageserver_connstring") + "，三级都空即拒（:337）<br>"
+      "• " + M("tenant_id") + "（:365）/ " + M("timeline_id") + "（:375）：字段缺失可回落同名 GUC，非法值也拒<br>"
+      "• " + M("safekeeper_connstrings") + "（<b>仅 Primary</b>，:346）：空列表 :281、重复项 :294 一并拒<br>"
+      "• " + M("storage_auth_token") + "（:155）：缺了 <b>不报错</b>，basebackup 连 PS 时才认证失败（:1319）",
+      fs=9.5, color=DIM, lh=1.45),
+    T("t1-r", 644, 240, 520, 74,
+      "• 另有 <b>3 个字段没有 serde default</b>，缺失连反序列化都过不去：" + M("format_version")
+      + "（spec.rs:36，<b>值从不校验</b>）/ " + M("cluster") + "（:524）/ " + M("suspend_timeout_seconds") + "（:211）<br>"
+      "• ⚠ 但 " + M("mode") + "（:151）<b>默认 Primary</b>：漏传不报错，静默按主库起 —— 副本必须显式给<br>"
+      "• " + M("project_id / branch_id / endpoint_id") + "（:132-134）→ 仅写 neon.* GUC（config.rs:167-175），"
+      "仓库内<b>只有注册没有读取方</b>（libpagestore.c:1499/1507/1515），纯观测用途",
+      fs=9.5, color=DIM, lh=1.45),
+
+    # ② 静默失效
+    R("t2-bg", 96, 328, 1088, 176, fill="rgba(255,158,138,0.055)", stroke="rgba(255,158,138,0.3)", radius=10),
+    T("t2-h", 116, 332, 1048, 20,
+      "② 静默失效 / 默认值踩坑 —— 能起来，但功能没了或行为不对：大多不在 manifest 里、compute_ctl 也不补（仅审计分支补 neon,pgaudit），只能控制面写进 settings / postgresql_conf",
+      fs=12, fw=800, color=AC2),
+    R("t2c0-bg", 116, 356, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
+    T("t2c0-h", 126, 364, 233, 14, "shared_preload_libraries", fs=10, fw=800, color="#FF9E8A", ff=MONO, lh=1.15),
+    T("t2c0-b", 126, 382, 233, 38, "含 neon。不给 → pgxn/neon 不加载，storage hook / walproposer / LFC 全失效", fs=9, color=DIM, lh=1.42),
+    R("t2c1-bg", 381, 356, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
+    T("t2c1-h", 391, 364, 233, 14, "port", fs=10, fw=800, color="#FF9E8A", ff=MONO, lh=1.15),
+    T("t2c1-b", 391, 382, 233, 38, "非 lakebase 分支完全不写，PG 落 5432；pg_isready 按 connstr 端口等，等不到就绪", fs=9, color=DIM, lh=1.42),
+    R("t2c2-bg", 646, 356, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
+    T("t2c2-h", 656, 364, 233, 14, "listen_addresses", fs=10, fw=800, color="#FF9E8A", ff=MONO, lh=1.15),
+    T("t2c2-b", 656, 382, 233, 38, "PG 默认 localhost，proxy 连不进来", fs=9, color=DIM, lh=1.42),
+    R("t2c3-bg", 911, 356, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
+    T("t2c3-h", 921, 364, 233, 14, "neon.max_cluster_size", fs=10, fw=800, color="#FF9E8A", ff=MONO, lh=1.15),
+    T("t2c3-b", 921, 382, 233, 38, "默认 -1 = 背压总闸关闭，三个 max_replication_*_lag 全白配", fs=9, color=DIM, lh=1.42),
+    R("t2c4-bg", 116, 430, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
+    T("t2c4-h", 126, 438, 233, 14, "LFC 三项", fs=10, fw=800, color="#7CB3F4", ff=MONO, lh=1.15),
+    T("t2c4-b", 126, 456, 233, 38, "max_file_cache_size / file_cache_size_limit 默认 0 = 关闭；path 默认 file.cache", fs=9, color=DIM, lh=1.42),
+    R("t2c5-bg", 381, 430, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
+    T("t2c5-h", 391, 438, 233, 14, "按 CU 算的资源 GUC", fs=10, fw=800, color="#7CB3F4", ff=MONO, lh=1.15),
+    T("t2c5-b", 391, 456, 233, 38, M("shared_buffers") + " / " + M("max_worker_processes") + " / " + M("max_connections") + " 同一套 CU 公式算出", fs=9, color=DIM, lh=1.42),
+    R("t2c6-bg", 646, 430, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
+    T("t2c6-h", 656, 438, 233, 14, "reconfigure_concurrency", fs=10, fw=800, color="#C89EFF", ff=MONO, lh=1.15),
+    T("t2c6-b", 656, 456, 233, 38, "默认 1 = reconfigure 串行；调大须同步加 superuser_reserved_connections", fs=9, color=DIM, lh=1.42),
+    R("t2c7-bg", 911, 430, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
+    T("t2c7-h", 921, 438, 233, 14, "autoprewarm + endpoint_storage", fs=10, fw=800, color="#C89EFF", ff=MONO, lh=1.15),
+    T("t2c7-b", 921, 456, 233, 38, "autoprewarm=true 但缺 addr/_token → 已 Running 才异步 bail，LFC 保温失效", fs=9, color=DIM, lh=1.42),
+
+    # ③ 契约
+    R("t3-bg", 96, 512, 534, 162, fill=PANEL, stroke=EDGE, radius=10),
+    T("t3-h", 116, 519, 494, 18,
+      "③ 契约 —— manifest 的 28 个 required", fs=11.5, fw=800, color="#7CB3F4"),
+    T("t3-b", 116, 542, 494, 124,
+      "• 控制面必须把这 28 项全合成进 spec；其中 " + M("fsync") + "=off 与 "
+      + M("synchronous_standby_names") + "=walproposer 是<b>持久性总闸</b>（另见 s-sync-rep）<br>"
+      "• 同批还有 restart_after_crash / wal_level / wal_log_hints / max_replication_*_lag / "
+      "max_wal_size / wal_sender_timeout / password_encryption / neon.protocol_version …<br>"
+      "• 但它只校验 " + M("compute/manifest.yaml") + " 自己（compute/Makefile:54），"
+      "<b>不校验下发到 compute 的 JSON</b><br>"
+      "• ⚠ " + M("shared_preload_libraries") + " 不在其中 —— 清单缺口<br>"
+      "• ⚠ " + M("neon.unstable_extensions") + " 只是白名单内容，放行开关是 "
+      + M("neon.allow_unstable_extensions") + "（默认 false）<br>"
+      "• 版本相关：io_combine_limit（PG17）/ recovery_prefetch（仅 replica）/ "
+      "hot_standby（common=off、replica=on）",
+      fs=9, color=DIM, lh=1.42),
+
+    # ④ Option = 关功能
+    R("t4-bg", 650, 512, 534, 162, fill=PANEL, stroke=EDGE, radius=10),
+    T("t4-h", 670, 519, 494, 18,
+      "④ 不下发 = 关掉某个特性（Option 字段）", fs=11.5, fw=800, color="#C89EFF"),
+    T("t4-b", 670, 542, 494, 124,
+      "• " + M("bootstrap_template") + " / " + M("remote_extensions")
+      + " → 不跑首启 SQL / 不下载远端扩展<br>"
+      "• " + M("local_proxy_config") + " / " + M("pgbouncer_settings")
+      + " → 无 JWT 路由 / 用内置 ini<br>"
+      "• " + M("logs_export_host") + " / " + M("audit_log_level")
+      + " → 日志不出 compute / 不装 pgaudit<br>"
+      "• " + M("features") + " 无 " + M("TlsExperimental")
+      + " → 不写 ssl=on；swap/disk quota 还需 CLI 开关配合<br>"
+      "• <b>反向</b>：" + M("neon.compute_mode") + " / " + M("hot_standby") + " / " + M("neon.tenant_id")
+      + " 等由 compute_ctl 重新生成，控制面给了也<b>没用</b>",
+      fs=9, color=DIM, lh=1.42),
+], p, notes="这一页回答「还有哪些配置必须由控制面放进 spec」。分四档，按缺了之后的后果严重程度排。第一档硬失败：ParsedSpec::try_from（compute_tools/src/compute.rs:305）里四个必需项，缺任一个整台 compute 起不来，各有独立报错文案：pageserver 连接信息（结构化字段 pageserver_connection_info，可回落旧字段 pageserver_connstring，再回落到 cluster.settings 里的 neon.pageserver_connstring GUC，否则 compute.rs:337 报 pageserver connection information should be provided）、tenant_id（回落 GUC neon.tenant_id，:365；再经 TenantId::from_str 校验，非法则 :366 invalid tenant id）、timeline_id（回落 GUC neon.timeline_id，:375 / :376）、safekeeper_connstrings（回落 GUC neon.safekeepers，:346；validate() 对 Primary 额外要求非空 :281 与不重复 :294，重复项测试见 compute.rs:2957-2976 的 duplicate_safekeeper_connstring）。storage_auth_token（libs/compute_api/src/spec.rs:155）是第五个『缺了起不来、但不归 try_from 管』的字段：try_from 里它只是 Option<String> 原样搬运（compute_tools/src/compute.rs:357），validate() 也不看它；真正用到是在 try_get_basebackup_libpq 里 config.password(storage_auth_token)（:1319-1321，注释 this overrides any password set in the connection string），以及 sync_safekeepers 作为 NEON_AUTH_TOKEN 环境变量传给 safekeeper 客户端（:1513-1514）、start_postgres 传给 postgres 进程（:1810-1813）。所以缺了不会在启动早期报错，而是在 basebackup 拉取阶段被 pageserver 以认证失败拒掉，报错文案是连接层的（password authentication failed 之类），很难反推到『spec 少了一个 token』。另外 JSON 层面有 3 个字段没有 #[serde(default)]，缺失会让反序列化直接失败：format_version（libs/compute_api/src/spec.rs:36，注意它只被 serde 要求存在、全仓库没有任何地方校验它的取值 —— grep format_version 全仓库只命中这一行声明与 control_plane/src/endpoint.rs:771 构造 spec 时的 format_version: 1.0，所以控制面哪天传个 2.0 也是静默接受，没有版本协商）、cluster（:524，其内部 roles :528 与 databases :529 也是必填，settings :536 为 GenericOptions）、suspend_timeout_seconds（:211，用来推导 installed extensions 采集间隔）。特别提醒 mode（spec.rs:151）带 #[serde(default)]，ComputeMode 的 #[default] 是 Primary（spec.rs:470-473），控制面漏传不会报错，会静默按主库启动 —— 副本/静态节点必须显式给。project_id / branch_id / endpoint_id（spec.rs:132-134，注释 More neon ids that we expose to the compute_ctl and to postgres as neon extension GUCs）写入 postgresql.conf 的 neon.project_id / neon.branch_id / neon.endpoint_id（compute_tools/src/config.rs:167-175），GUC 定义在 pgxn/neon/libpagestore.c:1499/1507/1515。注意本仓库里这三个变量只有 DefineCustomStringVariable 注册、grep neon_project_id 找不到任何读取方，属于纯观测用途（给客户在 SQL 侧看自己在哪条分支/端点），缺了不影响功能，属于『给了有用、不给也不坏』的一类，与反向清单不同。第二档静默失效，是最容易踩的坑：这些项既不在 compute/manifest.yaml 里，compute_ctl 也不补默认值，只能由控制面写进 cluster.settings 或 cluster.postgresql_conf。（a）shared_preload_libraries 含 neon：manifest.yaml 与 manifest.schema.json 里 grep preload 均零命中，RFC 038 的示例本来有它，实际 manifest 已移除；compute_ctl 侧 config.rs 的常规路径只做两件事 —— :64 把 spec.cluster.postgresql_conf 原样写入，:247-250 把 spec.cluster.settings 原样追加；只有审计分支会补这一项：:268-282（Base/Log）与 :317-335（Hipaa 及以上）在 spec 未给时写 shared_preload_libraries='neon,pgaudit'，给了则在后面追加 pgaudit —— 这也是 :279/:331 注释里那句话的由来（we always set at least some shared_preload_libraries in the spec），反过来说明非审计路径确实不作保证。其余出现 'neon' 的地方都不写这份配置：compute.rs:1758 是 prewarm_postgres_vm_memory（:1728）为预热 VM 内存建的临时 PGDATA，写完就删；compute.rs:2618-2645 与 spec_apply.rs:1153-1160 只是『读』它，用于下载远端扩展、决定要不要 CREATE EXTENSION pg_stat_statements；neon.c 的 _PG_init 也没有任何自检，所以不给就是静默不加载，pgxn/neon 的 storage hook / walproposer / LFC 全都不生效；file_cache.c:536-537 那句 Neon module should be loaded via shared_preload_libraries 的 ERROR 只在模块已被 preload 的分支里才可能触发，属于自相矛盾的守卫。（b）port：config.rs:360-364 只在 lakebase_mode 分支写 port（:363 let port = postgres_port.expect(...)，:364 writeln port = {port}），非 lakebase 完全不写，PG 落到 5432；而 compute_ctl 的 pg_isready 用的是 connstr 的端口（pg_isready.rs:10-13 直接 -p {port}）；生产上 port 来自控制面 settings（docker-compose 参考 spec config.json:43-48 配了 55433）。（c）listen_addresses：manifest.yaml 是 *，但那是控制面照抄的清单，不是 compute 默认值。（d）neon.max_cluster_size：libpagestore.c:1533-1538 默认 -1（bootValue -1，min -1），walproposer_pg.c:435-442 的 hadron_backpressure_lag_impl 开头 if (max_cluster_size < 0) return 0，即背压总闸；RFC 001:26 明写 console 负责 set and update；neon_local 从不设它（grep max_cluster_size -- control_plane/ 零命中），所以本地默认无背压。（e）LFC 三项：file_cache.c:562-572 max_file_cache_size 默认 0（:566 注释 disabled by default）、:575-585 file_cache_size_limit 默认 0、:588-599 file_cache_path 默认相对路径 file.cache（PGC_POSTMASTER，改需重启）。（f）shared_buffers：manifest 里没有，控制面按 CU 计算（test_runner/fixtures/utils.py:729 shared_buffers_for_max_cu 是照生产写的）；dynamic_shared_memory_type=mmap 在 compute.rs:1709-1711 注释里明确让控制面决定（We don't set dynamic_shared_memory_type = mmap here, we let the control plane control that option），config.rs:218-237 读到 /proc/sys/vm/overcommit_memory == 2（:228）时 compute_ctl 才代写一份。（g）按 CU 算的一组：shared_buffers 不在 manifest 里，控制面按 CU 算 —— test_runner/fixtures/utils.py:729-747 的 shared_buffers_for_max_cu 就是照抄生产的公式（docstring 注明 Use shared_buffers size like in production，并链到 cloud 仓库 pg_settings.go:405）：ramBytes = 4096 MB × max_cu，maxConnections = max(100, min(ramBytes/9531392, 4000))，maxWorkerProcesses = 12 + 2×max_cu，再由 maxBackends = 1 + maxConnections + maxWorkerProcesses 推 shared_buffers —— 也就是说 max_connections 与 max_worker_processes 在生产里同样是按内存/CU 算出来的，manifest.yaml:30 里那个 max_connections: 100 只是下限口径。max_worker_processes 对 Neon 不是可选调优项：neon 自己注册 3 个静态 bgworker（communicator_process.c:62 RegisterBackgroundWorker、logical_replication_monitor.c:213、walproposer_pg.c:704，三者都在 neon.c 的 _PG_init 里初始化 :515/:518/:524），LFC 预热还会动态注册最多 8 个（file_cache.c:140 MAX_PREWARM_WORKERS，:814 RegisterDynamicBackgroundWorker）；注册失败时 :816-820 直接报错并给出 errhint Consider increasing the configuration parameter \"max_worker_processes\"。这些 worker 都要占 PostgreSQL 的 max_worker_processes 预算，上游默认 8（PG 文档值，vendor/postgres-* 本机未 checkout 所以不给行号），所以生产必须按 CU 抬高。maintenance_work_mem / work_mem / max_parallel_workers / max_parallel_workers_per_gather / max_parallel_maintenance_workers 在 compute_tools/src/config.rs、compute/manifest.yaml、control_plane/src/endpoint.rs 三处都是零命中（grep -c 全为 0），也就是说控制面不下发、compute_ctl 也不补默认值，落到上游默认。它们只在这几处出现且都不是生产配置路径：compute_tools/tests/cluster_spec.json:144 与 libs/compute_api/tests/cluster_spec.json:149 是测试样例，test_runner/ 下的性能用例是临时 SET，compute_tools/src/bin/fast_import.rs:223-231 是独立的导入工具（自带 -c max_worker_processes={nproc} 等一套参数，按 CLI 的 --num-cpus / --memory-mb 算，不读 spec）。（h）reconfigure_concurrency（spec.rs:176-179，#[serde(default = \"default_reconfigure_concurrency\")]，该函数在 :28-30 返回 1）：它不是 GUC，而是 compute_ctl 执行 apply_spec_sql 时的并发上限 —— reconfigure 里 let max_concurrent_connections = spec.reconfigure_concurrency（compute.rs:2147），传给 apply_spec_sql(spec, conf, max_concurrent_connections)（spec_apply.rs:40-45），最终成为按 DB 并发的 semaphore（spec_apply.rs:380 concurrency_token）。字段自己的 doc comment（spec.rs:168-175）写得很清楚：多 DB 项目要调大，但实例已经在服务客户端、很容易撞 max_connections，所以『It's also recommended to bump superuser_reserved_connections += reconfigure_concurrency』—— 两者必须成对下发，只调前者会导致 reconfigure 自己的连接被拒，表现为变更卡住而不是报配置错。默认 1 意味着串行。（i）autoprewarm + endpoint_storage_addr / endpoint_storage_token（spec.rs:202 / :196 / :198）：这是四档之外的一种失败模式 —— 字段下发了一半，compute 照样进 Running，然后异步任务里静默失败。compute.rs:1039 set_status(Running)，:1046-1048 if pspec.spec.autoprewarm { self.prewarm_lfc(None) }，而 prewarm_lfc 内部是 spawn 出去的任务（compute_prewarm.rs:73），失败只走到 :77-80 的 LFC_PREWARM_ERRORS.inc() + error!(%err, \"could not prewarm LFC\") + LfcPrewarmState::Failed，不会把 compute 打回失败态。缺字段时的报错来自 EndpointStoragePair::from_spec_and_endpoint（compute_prewarm.rs:25-41）：pspec.endpoint_id missing / pspec.endpoint_storage_addr missing / pspec.endpoint_storage_token missing 三条 bail。结果是跨 suspend 的 LFC 保温悄悄不生效 —— 只能靠一条 error 日志和指标发现。第三档是 manifest.schema.json:133-161 的 28 个 required，含义是控制面必须全部合成进 spec，包括 fsync / restart_after_crash / wal_level / wal_log_hints / synchronous_standby_names / wal_keep_size / wal_sender_timeout / max_wal_size / max_wal_senders / max_replication_slots / max_replication_write_lag / max_replication_flush_lag / max_connections / superuser_reserved_connections / password_encryption / neon.protocol_version / neon.unstable_extensions / listen_addresses / log_connections / log_disconnections / log_temp_files / log_error_verbosity / log_min_error_statement / effective_io_concurrency / maintenance_io_concurrency / idle_in_transaction_session_timeout / client_connection_check_interval / hot_standby；但它只被 compute/Makefile:54 的 jsonschema 用来校验 manifest.yaml 本身，不校验最终下发到 compute 的 JSON，所以两个提醒成立：shared_preload_libraries 不在 required 里（清单缺口），neon.unstable_extensions 只是『哪些算不稳定』的白名单内容，真正放行开关是 neon.allow_unstable_extensions（pgxn/neon/unstable_extensions.c:107-117，PGC_USERSET，bootValue false，:15）。版本相关项：io_combine_limit 只在 manifest.yaml:102 的 PG17 段出现（schema :184），recovery_prefetch 在 14-17 的 replica 段（:106/:112/:118，schema :193），hot_standby 是 common=off（manifest.yaml:15）、replica=on（:93）两处，schema 里 common 与 replica 各有一份。第四档 Option 字段，不下发等于关特性：bootstrap_template（spec.rs:222，None 则不跑 /usr/local/share/compute-bootstrap 下的脚本）、remote_extensions（compute.rs:863 仅在 is_some 时才去下载，且内容必须与 shared_preload_libraries 一致否则 load_file 失败）、local_proxy_config / pgbouncer_settings（config.rs 用到才写）、logs_export_host（config.rs:356-358 仅 is_some 时写 log_destination='stderr,syslog'）、audit_log_level（spec.rs:189，ComputeAudit 的 #[default] 是 Disabled（spec.rs:503-505），不装 pgaudit；注意 config.rs:268-282 在开启审计时会覆盖或追加 shared_preload_libraries）、features 不含 ComputeFeature::TlsExperimental 时 tls_config 返回 None 从而不写 ssl=on（compute.rs:2265-2271）、swap_size_bytes / disk_quota_bytes 还需 CLI 的 --resize-swap-on-bind / --set-disk-quota-for-fs 同时置位（libs/compute_api/src/spec.rs:52-74 注释写明两个都要）、autoprewarm（spec.rs:202，默认 false）/ offload_lfc_interval_seconds（spec.rs:204-206，注释 None 表示 don't upload）、safekeepers_generation（不给就不写 g#N 前缀，config.rs:141-155）、drop_subscriptions_before_start（config.rs:348-352，不给则显式写 neon.disable_logical_replication_subscribers=false）。最后是反向清单：neon.compute_mode（config.rs:204 从 spec.mode 重新生成）、hot_standby（Replica/Static 无条件写 on，:209/:214）、neon.tenant_id / timeline_id / pageserver_connstring / safekeepers / stripe_size（config.rs:74-176 从结构化字段重新生成）、neon.privileged_role_name（CLI 参数）、neon.extension_server_port（:345 运行时端口）、以及 audit 的 pgaudit.log 等（:255-258 注释明确覆盖 spec 里的值，不允许用户或控制面管理员修改）—— 这些即使写进 settings 也会被覆盖或忽略。相关页：s-compute-spec（ComputeSpec 字段与消费顺序）、s-restart-crash（restart_after_crash 单列）、s-bp-guc（三个背压 GUC 与 max_cluster_size 门闸）、s-lfc（LFC 参数）、s-computectl（compute_ctl 启动流程）。")
 
 
 # ─────── synchronous_standby_names + 哪些 GUC 能改 ───────
@@ -2590,41 +2745,44 @@ std("s-sync-rep", "COMPUTE", "synchronous_standby_names：Neon 持久性的总�
               "• 副本提升主库：ALTER SYSTEM 再设一次（promote:97）",
               ("  └ 写的是 auto.conf，冷启动 PGDATA 重建后会丢", AC2, 700),
           ], hc=AC2, fs=11.5, headfs=16),
-    R("sr3-bg", 96, 484, 1088, 182, fill=PANEL, stroke=EDGE, radius=10),
-    T("sr3-h", 116, 494, 900, 20,
-      "③ manifest 里这些 GUC，哪些能改 —— 本仓库没有 allow/deny 名单，拦不拦在控制面",
+    R("sr3-bg", 96, 480, 1088, 196, fill=PANEL, stroke=EDGE, radius=10),
+    T("sr3-h", 116, 490, 1048, 20,
+      "③ manifest 里这 28 个 GUC，哪些能改 —— 本仓库没有 allow/deny 名单，拦不拦在控制面"
+      "（restart_after_crash 见「子进程崩了谁做恢复」）",
       fs=13, fw=800, color=AC),
-    *[R(f"sr3-{i}-bg", 116 + i * 350, 518, 330 + (18 if i == 2 else 0), 134,
+    *[R(f"sr3-{i}-bg", x, 516, w, 150,
         fill="rgba(255,255,255,0.028)", stroke=EDGE, radius=8)
-      for i in range(3)],
-    T("sr3-c0", 132, 527, 300, 21, "✓ 可以改", fs=12.5, fw=800, color=AC),
-    T("sr3-c1", 482, 527, 300, 21, "! 懂代价再改", fs=12.5, fw=800, color=AC2),
-    T("sr3-c2", 832, 527, 315, 21, "✕ 别改（破坏正确性）", fs=12.5, fw=800, color="#FF7B72"),
-    T("sr3-b0", 132, 552, 300, 96,
-      "idle_in_transaction_session_timeout<br>"
-      "client_connection_check_interval<br>"
-      "log_temp_files / log_min_error_statement<br>"
-      "effective_io_concurrency<br>"
-      "maintenance_io_concurrency<br>"
-      "hot_standby（副本固定 on）",
-      fs=11, color=DIM, lh=1.45, ff=MONO),
-    T("sr3-b1", 482, 552, 300, 96,
+      for i, (x, w) in enumerate(((116, 430), (562, 290), (868, 296)))],
+    T("sr3-c0", 132, 523, 400, 21, "✓ 可以改", fs=12.5, fw=800, color=AC),
+    T("sr3-c1", 578, 523, 260, 21, "! 懂代价再改", fs=12.5, fw=800, color=AC2),
+    T("sr3-c2", 884, 523, 266, 21, "✕ 别改（破坏正确性）", fs=12.5, fw=800, color="#FF7B72"),
+    T("sr3-b0", 132, 548, 410, 112,
+      "hot_standby（副本固定 on）/ listen_addresses<br>"
+      "log_connections / log_disconnections<br>"
+      "log_error_verbosity / log_min_error_statement / log_temp_files<br>"
+      "effective_io_concurrency / maintenance_io_concurrency<br>"
+      "idle_in_transaction_session_timeout / client_connection_check_interval<br>"
+      "max_wal_senders / max_replication_slots（各 10）<br>"
+      "neon.unstable_extensions（放行另有开关）",
+      fs=10.5, color=DIM, lh=1.42, ff=MONO),
+    T("sr3-b1", 578, 548, 270, 112,
       "max_replication_write_lag 500MB<br>"
       "max_replication_flush_lag 10GB<br>"
       "&nbsp;&nbsp;└ 小于 PS checkpoint 会硬死锁<br>"
       "max_wal_size 1024 / wal_keep_size 0<br>"
       "max_connections 100（受内存约束）<br>"
       "superuser_reserved_connections 7",
-      fs=11, color=DIM, lh=1.45, ff=MONO),
-    T("sr3-b2", 832, 552, 315, 96,
+      fs=10.5, color=DIM, lh=1.42, ff=MONO),
+    T("sr3-b2", 884, 548, 276, 112,
       "synchronous_standby_names<br>"
       "restart_after_crash = off<br>"
       "wal_level = replica<br>"
+      "wal_log_hints / wal_sender_timeout<br>"
       "password_encryption = scram-sha-256<br>"
       "neon.protocol_version = 3<br>"
       "fsync = off（架构前提，非开关）",
-      fs=11, color=DIM, lh=1.45, ff=MONO),
-], p, notes="synchronous_standby_names 在 Neon 里点名的是 walproposer 这个伪 walsender，不是真实备库。walproposer 注册为 bgworker（名字 WAL proposer，BgWorkerStart_RecoveryFinished，walproposer_pg.c:689-704），init 时把 application_name 直接设成 \"walproposer\"，注释写明 for synchronous_standby_names（walproposer_pg.c:911）。注意 SyncRepInitConfig()（:1532，实现见 syncrep.c:445-464）只做一件事：把 MyWalSnd->sync_standby_priority 设成匹配到的优先级 —— walsender 侧是「有权解锁等待者」，不是「排队等待者」。真正入队的是提交事务的 backend，在 SyncRepWaitForLSN 里调 SyncRepQueueInsert()（syncrep.c:252）。walproposer 自己的 WalSndLoop 注释也说 Synchronous replication sets latch in WalSndWakeup at walsender.c（walproposer_pg.c:1543-1546）。等待者被唤醒的路径是 walprop_pg_process_safekeeper_feedback（walproposer_pg.c:2127-2201）：当 wp->commitLsn 推进时调 ProcessStandbyReply(standby_flush_lsn, standby_flush_lsn, standby_apply_lsn, ...)（:2186-2200），write_lsn 和 flush_lsn 都填 safekeeper quorum 已持久化的 LSN，注释明确 Also wakes up syncrep waiters；ProcessStandbyReply 末尾调 SyncRepReleaseWaiters（walsender.c:2510，同上以 @1e01fcea2 为准）。所以 synchronous_commit=on 的 commit 等到的 ack 就是 quorum 落盘。取值来源：上游 PG 默认空串，同步复制关闭；生产默认由 compute/manifest.yaml:90 的 pg_settings.common 提供，但该文件在本仓库只用于 schema 校验（compute/Makefile:54 npx jsonschema validate），不进 compute 镜像（compute-node.Dockerfile 无 COPY manifest），实际是控制面按 RFC 038 优先级（pg_settings.common → per-version common → per-version replica → 用户/项目/endpoint 覆盖 → 按 CU 计算）合成进 spec 的 cluster.settings。compute_ctl 侧 config.rs 只是把 spec.cluster.settings 原样写进 postgresql.conf（:246-250），没有这个 GUC 的兜底默认值，compute.rs 的必填校验也只管 pageserver conninfo / safekeeper connstrings / tenant_id / timeline_id（:337,346,365,375），所以漏传就是整行缺失。neon_local 兜底在 control_plane/src/endpoint.rs:514（Primary 且有 safekeeper 时写 walproposer），无 safekeeper 的测试路径写 pageserver（:533）并配 synchronous_commit=remote_write（:528）。promote 时 compute_tools/src/compute_promote.rs:97 ALTER SYSTEM SET synchronous_standby_names=walproposer 再 pg_reload_conf，写的是 postgresql.auto.conf，而冷启动 create_pgdata（compute.rs:1202-1218）会删掉整个 PGDATA 从 basebackup 重建，auto.conf 不保留，所以重启后仍取决于 spec。两种失效模式方向相反，别混：①漏传/留空 → SyncStandbysDefined() 为 false（syncrep.c:92），SyncRepWaitForLSN 快速返回（:159-181）→ 静默退化成异步，丢持久性；②名字写错 → 非空串使 SyncStandbysDefined() 仍为 true，backend 照常入队并 WaitLatch(..., -1) 无限等（:331），而 walproposer 侧 SyncRepGetStandbyPriority() 匹配不到返回 0（:860-895），SyncRepReleaseWaiters 见 priority==0 直接 return（:493）→ 永远等不到 ack，写永久挂死、不报错。可改/不可改的判断依据：manifest 注释只在 idle_in_transaction_session_timeout 上写了 We allow users to change this if needed（:18），client_connection_check_interval 写了 If anyone will complain, we can allow editing it（:8），其余没有显式声明；本仓库不存在 GUC allow/deny 名单（grep allow_list/deny_list/restricted_settings/forbidden_settings 无结果），真正的拦截在控制面 cloud 仓库。hot_standby 单列说明：manifest:15 是 off（common），manifest:93 是 on（replica），而 compute_ctl 对 ComputeMode::Static / Replica 无条件写 hot_standby=on（compute_tools/src/config.rs:209、:214）；它写在 spec.cluster.settings 之前（:246-250），所以 settings 能覆盖，但它是 PGC_POSTMASTER（guc_tables.c:1819），改了要重启。fsync=off（manifest:14）不是「改了就错」而是「和架构假设冲突」：打开 fsync 不会破坏正确性，只是白付 IO 并把持久性职责挪回本地盘；真正的持久层是 SK quorum。背压三项的硬死锁风险来自 manifest:32-40 的注释（flush lag 必须大于 pageserver checkpoint 间隔，目前 1GB）。注意 shared_buffers 不在 manifest 里，由控制面按 CU 计算（test_runner/fixtures/utils.py:729 shared_buffers_for_max_cu），本地 fast_import 另有硬编码。只读副本的 hot_standby_feedback 如何经 SK 中转回主库，见 s-hs-feedback。")
+      fs=10.5, color=DIM, lh=1.42, ff=MONO),
+], p, notes="synchronous_standby_names 在 Neon 里点名的是 walproposer 这个伪 walsender，不是真实备库。walproposer 注册为 bgworker（名字 WAL proposer，BgWorkerStart_RecoveryFinished，walproposer_pg.c:689-704），init 时把 application_name 直接设成 \"walproposer\"，注释写明 for synchronous_standby_names（walproposer_pg.c:911）。注意 SyncRepInitConfig()（:1532，实现见 syncrep.c:445-464）只做一件事：把 MyWalSnd->sync_standby_priority 设成匹配到的优先级 —— walsender 侧是「有权解锁等待者」，不是「排队等待者」。真正入队的是提交事务的 backend，在 SyncRepWaitForLSN 里调 SyncRepQueueInsert()（syncrep.c:252）。walproposer 自己的 WalSndLoop 注释也说 Synchronous replication sets latch in WalSndWakeup at walsender.c（walproposer_pg.c:1543-1546）。等待者被唤醒的路径是 walprop_pg_process_safekeeper_feedback（walproposer_pg.c:2127-2201）：当 wp->commitLsn 推进时调 ProcessStandbyReply(standby_flush_lsn, standby_flush_lsn, standby_apply_lsn, ...)（:2186-2200），write_lsn 和 flush_lsn 都填 safekeeper quorum 已持久化的 LSN，注释明确 Also wakes up syncrep waiters；ProcessStandbyReply 末尾调 SyncRepReleaseWaiters（walsender.c:2510，同上以 @1e01fcea2 为准）。所以 synchronous_commit=on 的 commit 等到的 ack 就是 quorum 落盘。取值来源：上游 PG 默认空串，同步复制关闭；生产默认由 compute/manifest.yaml:90 的 pg_settings.common 提供，但该文件在本仓库只用于 schema 校验（compute/Makefile:54 npx jsonschema validate），不进 compute 镜像（compute-node.Dockerfile 无 COPY manifest），实际是控制面按 RFC 038 优先级（pg_settings.common → per-version common → per-version replica → 用户/项目/endpoint 覆盖 → 按 CU 计算）合成进 spec 的 cluster.settings。compute_ctl 侧 config.rs 只是把 spec.cluster.settings 原样写进 postgresql.conf（:246-250），没有这个 GUC 的兜底默认值，compute.rs 的必填校验也只管 pageserver conninfo / safekeeper connstrings / tenant_id / timeline_id（:337,346,365,375），所以漏传就是整行缺失。neon_local 兜底在 control_plane/src/endpoint.rs:514（Primary 且有 safekeeper 时写 walproposer），无 safekeeper 的测试路径写 pageserver（:533）并配 synchronous_commit=remote_write（:528）。promote 时 compute_tools/src/compute_promote.rs:97 ALTER SYSTEM SET synchronous_standby_names=walproposer 再 pg_reload_conf，写的是 postgresql.auto.conf，而冷启动 create_pgdata（compute.rs:1202-1218）会删掉整个 PGDATA 从 basebackup 重建，auto.conf 不保留，所以重启后仍取决于 spec。两种失效模式方向相反，别混：①漏传/留空 → SyncStandbysDefined() 为 false（syncrep.c:92），SyncRepWaitForLSN 快速返回（:159-181）→ 静默退化成异步，丢持久性；②名字写错 → 非空串使 SyncStandbysDefined() 仍为 true，backend 照常入队并 WaitLatch(..., -1) 无限等（:331），而 walproposer 侧 SyncRepGetStandbyPriority() 匹配不到返回 0（:860-895），SyncRepReleaseWaiters 见 priority==0 直接 return（:493）→ 永远等不到 ack，写永久挂死、不报错。可改/不可改的判断依据：manifest 注释只在 idle_in_transaction_session_timeout 上写了 We allow users to change this if needed（:18），client_connection_check_interval 写了 If anyone will complain, we can allow editing it（:8），其余没有显式声明；本仓库不存在 GUC allow/deny 名单（grep allow_list/deny_list/restricted_settings/forbidden_settings 无结果），真正的拦截在控制面 cloud 仓库。hot_standby 单列说明：manifest:15 是 off（common），manifest:93 是 on（replica），而 compute_ctl 对 ComputeMode::Static / Replica 无条件写 hot_standby=on（compute_tools/src/config.rs:209、:214）；它写在 spec.cluster.settings 之前（:246-250），所以 settings 能覆盖，但它是 PGC_POSTMASTER（guc_tables.c:1819），改了要重启。fsync=off（manifest:14）不是「改了就错」而是「和架构假设冲突」：打开 fsync 不会破坏正确性，只是白付 IO 并把持久性职责挪回本地盘；真正的持久层是 SK quorum。背压三项的硬死锁风险来自 manifest:32-40 的注释（flush lag 必须大于 pageserver checkpoint 间隔，目前 1GB）。注意 shared_buffers 不在 manifest 里，由控制面按 CU 计算（test_runner/fixtures/utils.py:729 shared_buffers_for_max_cu），本地 fast_import 另有硬编码。只读副本的 hot_standby_feedback 如何经 SK 中转回主库，见 s-hs-feedback。restart_after_crash = off 为什么是架构前提而不是数据正确性开关，见 s-restart-crash。")
 
 
 # ─────── quorum commit 全流程 ───────
@@ -7020,7 +7178,7 @@ DECKS = [
      "sections": [
         {"title": "接入层 Proxy & TLS", "desc": "连接代理 · 路由认证 · Serverless 网关 · 两跳 TLS 与证书",
          "pick": {"chapter": 5, "kickers": ["PROXY", "PROXY · TLS", "COMPUTE · TLS"]}},
-        {"title": "Compute", "desc": "patched PostgreSQL · compute_ctl · 状态机 · bootstrap · LFC · DDL 转发",
+        {"title": "Compute", "desc": "patched PostgreSQL · compute_ctl · 状态机 · 崩溃恢复 · spec 必填 · bootstrap · LFC · DDL 转发",
          "pick": {"chapter": 5, "kickers": ["COMPUTE", "COMPUTE · 本地改造"]}},
         {"title": "Safekeeper", "desc": "WAL 服务 · Paxos-like 复制 · 关键 LSN · 成员迁移 · interpreted WAL",
          "pick": {"chapter": 5, "kickers": ["SAFEKEEPER"]}},
