@@ -2610,6 +2610,90 @@ std("s-compute-spec", "COMPUTE", "ComputeSpec：一份「期望状态」文档�
 ], p, notes="ComputeSpec（libs/compute_api/src/spec.rs:35）是声明式期望状态文档。主要字段：cluster（Cluster spec.rs:524：roles/databases/postgresql_conf/settings GenericOption 列表）、delta_operations（DeltaOp DROP/RENAME 等命令式增量）、tenant_id/timeline_id、mode（ComputeMode Primary/Replica/Static(lsn) spec.rs:470）、pageserver_connection_info（分片连接 spec.rs:245，旧字段 pageserver_connstring）、safekeeper_connstrings + safekeepers_generation、storage_auth_token、remote_extensions（RemoteExtSpec）、pgbouncer_settings、local_proxy_config（JWT）、skip_pg_catalog_updates、reconfigure_concurrency、drop_subscriptions_before_start、audit_log_level、autoprewarm/offload_lfc_interval_seconds、suspend_timeout_seconds、bootstrap_template、format_version/operation_uuid/features。compute_ctl 消费：get_config_from_control_plane（compute_tools/src/spec.rs:77）GET {base}/compute/api/v2/computes/{compute_id}/spec。start_compute（compute.rs:793）：前置下载 remote extensions、prepare_pgdata、按需 swap resize/disk quota。prepare_pgdata（compute.rs:1601）写 postgresql.conf → sync safekeepers 取 LSN → 拉 basebackup → 更新 pg_hba/pg_ident。apply_config（compute.rs:1972）跑 apply_spec_sql（spec_apply.rs:40）驱动 ApplySpecPhase 有序枚举（CreatePrivilegedRole...CreateAndAlterRoles...CreateAndAlterDatabases...HandleNeonExtension...DropRoles...），bootstrap_template SQL 最后跑（spec_apply.rs:359 run_bootstrap_template:1381）；handle_migrations（spec_apply.rs:243）异步跑固定 append-only 迁移列表不阻塞冷启动。reconfigure（compute.rs:2089）活时改配置重跑 apply_spec_sql + pg_ctl reload 不重启。skip_pg_catalog_updates 是行为开关：置 true 时 reconfigure（compute.rs:2146）和 configure_as_primary（compute.rs:2183）两个入口都跳过整段 apply_spec_sql——即不做 CREATE/ALTER ROLE、CREATE/DROP DATABASE、extension 对账，也不跑 bootstrap_template（run_bootstrap_template 是 apply_spec_sql 内 spec_apply.rs:359 的唯一调用点，被一并跳过），只剩重写 postgresql.conf + pg_reload_conf。butterfly 的 PS/SK 拓扑回调（apply_pod_topology_configuration）正是靠置 skip_pg_catalog_updates=true 让 /configure 只热更 conf 而不误触 catalog 全量对账和 bootstrap 重放。Butterfly 生成：lib_compute_spec.py 的 get_compute_spec 先 Redis 缓存否则 _build_spec_dict 组装，_build_roles 从 SCRAM 密文、_build_settings 按 ComputeFlavor calculate_pg_settings_for_memory 算 GUC，_build_pageserver_connection_info 建分片 map。下发两路：poll = api_compute_spec.py 的 compute_spec GET spec 直接返回 body（compute_ctl 轮询该 URL）；push = lib_pod_runtime_configurator.py PodRuntimeConfigurator.configure 按 compute status 选 POST /configure（全量阻塞，port 3080，configure.rs:21，状态 ConfigurationPending 阻塞到 Running）或 POST /refresh_configuration（非阻塞，refresh_configuration.rs 只翻状态 RefreshConfigurationPending，configurator.rs 只比对 pageserver_conninfo 变才 reconfigure，port 3081）。configurator_main_loop（configurator.rs:13）监听两种 pending。角色/库变更必须 /configure 才立即生效（lib_compute_configure.py 注释 9-21）。版本：Endpoint.spec_version（models.py）emitted 为 spec_version/spec_changed_at 注入 JSON dict（lib_compute_spec.py 的 _build_spec_dict），Rust ComputeSpec 只有 format_version:f32 和 operation_uuid，serde 忽略未知字段（spec.rs:38）；bump_spec_version（lib_endpoint_core.py）数据变更时 +1 并 mark_endpoint_spec_changed 失效 Redis 缓存。")
 
 
+# ─────── Compute 三种模式 ───────
+p += 1
+std("s-compute-mode", "COMPUTE", "三种 Compute 模式：Primary / Replica / Static(LSN)", [
+    T("cm-desc", 96, 160, 1088, 44,
+      "同一个 compute_ctl 二进制，靠 spec.mode 分成三种形态。"
+      "<b>区别不在「能不能读」，而在 WAL 从哪来、读哪个位点、能不能被提升</b>。"
+      "mode 带 <b>#[serde(default)]</b>，控制面漏传就是 Primary —— 要副本必须显式给（见 s-spec-required）。",
+      fs=12, color=DIM, lh=1.4),
+    *card("cm1", 96, 210, 346, 300,
+          "Primary —— 读写主库", [
+              ("#[default]，漏传就是它", FAINT),
+              "• 自己产 WAL，walproposer bgworker",
+              "　 把 WAL 推给 SK",
+              "• safekeeper_connstrings <b>必填唯一</b>",
+              "　 （ParsedSpec::validate 只对 Primary 跑）",
+              "• 起来后 configure_as_primary()：",
+              "　 建 role / db / extension，再跑 bootstrap",
+              "• 读页 request_lsn = UINT64_MAX",
+              "　 永远要最新页，不会被 GC 卡住",
+              "• 关停时 sync_safekeepers() 取 flush LSN，",
+              "　 下次冷启动直接从这里接",
+              "",
+              ("→ 唯一能写的一种", AC),
+          ], hc=AC, fs=10.5, headfs=16),
+    *card("cm2", 467, 210, 346, 300,
+          "Replica —— 热备只读", [
+              ("ComputeMode::Replica", FAINT),
+              "• 只读，跟着分支 tip 持续前进",
+              "• WAL 从 <b>SK</b> 拉，不是从主库：",
+              "　 primary_conninfo 指向 SK，主库压根",
+              "　 不知道有这个备库（RFC 036:53-56）",
+              "• hot_standby=on + standby.signal；",
+              "　 PG15+ 另写 recovery_prefetch=off",
+              "• basebackup 带 --replica：跳过",
+              "　 pg_replslot，防止槽挡住 WAL 截断",
+              "• 读页 request_lsn = max(lwlsn, replay_lsn)",
+              "　 → 读到与回放点一致的快照",
+              "",
+              ("→ 可 POST /promote 升主", AC2),
+          ], hc=AC2, fs=10.5, headfs=16),
+    *card("cm3", 838, 210, 346, 300,
+          "Static(LSN) —— 钉在某一刻", [
+              ("ComputeMode::Static(lsn)", FAINT),
+              "• 只读，<b>钉死在 Static(lsn)</b> 这一点",
+              "• <b>不连 SK、不摄入 WAL</b>：没有",
+              "　 primary_conninfo，数据全靠 GetPage",
+              "　 按这个 LSN 去 PS 拉",
+              "• recovery_target_lsn='{lsn}'，回放到点",
+              "　 即停（仓库未设 recovery_target_action，",
+              "　 落回上游默认 pause，保持只读可查）",
+              "• basebackup 同样带 --replica",
+              "• GC 保护只能靠 <b>LSN Lease</b> 直连 PS 租",
+              "　 （拿不到 standby_horizon，RFC 036:247-249）",
+              "",
+              ("→ 不可 promote，promote_impl 直接 bail", "#7CB3F4"),
+          ], hc="#7CB3F4", fs=10.5, headfs=16),
+    R("cm4-bg", 96, 526, 1088, 148, fill=PANEL, stroke=EDGE, radius=10),
+    T("cm4-h", 116, 536, 900, 20, "怎么选 & 三处分支点", fs=13, fw=800, color=AC),
+    T("cm4-b", 116, 562, 1048, 104,
+      "• <b>怎么选</b>：要写 → Primary；要水平扩展读、接受滞后、还要能接管 → Replica"
+      "（有 standby_horizon 保护，可 promote）；要冻结在某一时刻反复查 → Static"
+      "（不追新、不受主库写入影响，但要自己向 PS 租 LSN）。<br>"
+      "• <b>三处分支点</b>：① <span style=\"font-family:" + MONO + "\">compute.rs:1627-1646</span> 决定 "
+      "basebackup 从哪个 LSN 起（Primary 先 sync SK、Static 用 spec 里的 lsn、Replica 传 0 让 PS 给最新）；"
+      "② <span style=\"font-family:" + MONO + "\">config.rs:206-216</span> 决定写不写 hot_standby / recovery_target_lsn；"
+      "③ <span style=\"font-family:" + MONO + "\">compute.rs:1717-1721</span> 决定挂不挂 standby.signal。<br>"
+      "• <b>最容易混的一点</b>：Replica 的「上游」是 SK 里的 WAL 流，不是另一台 compute —— promote 只是换掉 "
+      "<span style=\"font-family:" + MONO + "\">primary_conninfo</span> 并启动 walproposer，"
+      "全程没有传统 PG 的流复制连接；Static 连 WAL 流都没有，它是「用 basebackup 起在某个 LSN 上的只读实例」。",
+      fs=11, color=DIM, lh=1.55),
+], p, notes="""这页补 ComputeMode 的三态。定义在 libs/compute_api/src/spec.rs:470-481：enum ComputeMode { #[default] Primary, Static(Lsn), Replica }，注释分别是 A read-write node / A read-only node, pinned at a particular LSN / A read-only node that follows the tip of the branch in hot standby mode；to_type_str()（:486-492）映射成 primary / static / replica，Display 也走它，写在 postgresql.conf 的 neon.compute_mode 与端点类型字符串里。
+
+【Primary】默认态。try_from 里 spec.mode 有 #[serde(default)]（spec.rs:147-148），ComputeMode 的 #[default] 是 Primary（:472-473），所以控制面漏传就静默按主库起 —— 要副本必须显式给。ParsedSpec::validate()（compute.rs:266-270）第一件事就是 if self.spec.mode != ComputeMode::Primary { return Ok(()) }，意思是只有 Primary 才校验 safekeeper_connstrings（非空 :281 + 唯一 :294）。冷启动路径 configure_as_primary()：compute.rs:1627-1639 的 match 里 Primary 分支先 check_safekeepers_synced()、再 sync_safekeepers_with_retries() 拿起点 LSN，然后 get_basebackup(lsn)。start_postgres 之后 compute.rs:1008-1015 if pspec.spec.mode == ComputeMode::Primary { self.configure_as_primary()? } 建 role/db/extension。读路径见 s-read-lsn：neon_get_request_lsns() 对 Primary 发 request_lsn = UINT64_MAX（要最新页，避免与 GC horizon 竞态）。关停时 cleanup_after_postgres_exit()（compute.rs:1129-1140）只在 Primary 分支 sync_safekeepers() 并把结果存进 state.terminate_flush_lsn。
+
+【Replica】热备只读。WAL 不从主库拉，而是从 safekeeper 拉（RFC 036:53-56 四条 Impacted components：Control plane launches the replica / Replica Postgres instance connects to the safekeepers, to stream the WAL / The primary does not know about the standby, except for the hot standby feedback / The primary and replicas all connect to the same pageservers）。本地开发里 primary_conninfo 的构造在 control_plane/src/endpoint.rs:552-570：host=localhost、port=各 SK 的 compute port、options 里带 timeline_id 与 tenant_id、application_name=replica replication=true、primary_slot_name=repl_{timeline}_，再写 hot_standby=on 与 PG15+ 的 recovery_prefetch=off（注释说 Neon hot standby 忽略不在 shared_buffers 里的页，预取没意义）。生产上这段配置由控制面写进 spec.cluster.postgresql_conf，compute_ctl 在 config.rs:212-215 只负责 hot_standby=on 这一条。standby.signal 由 compute.rs:1717-1721 对 Replica 与 Static 一起 add_standby_signal()（spec.rs:220-231 只是 File::create）。basebackup 参数：compute.rs:1290 get_base_backup 请求里 replica: spec.spec.mode != ComputeMode::Primary，另有一条内部 basebackup 命令路径 compute.rs:1336-1356 拼 --replica；pageserver/src/basebackup.rs:486-490 收到 replica=true 就跳过 pg_replslot 下的复制槽（注释 Do not create LR slots at standby because they are not used but prevent WAL truncation）。冷启动的起点：compute.rs:1643-1646 Replica 分支直接 Lsn(0)，注释 Initializing standby from latest Pageserver LSN —— 传 0 让 PS 给最新。读路径 request_lsn = max(last_written_lsn, replay_lsn)，保证读到与回放点一致的快照（见 s-read-lsn）。晋升：compute_promote.rs:12-28 的 promote() 是 HTTP POST /promote 的实现（http/server.rs:109），promote_impl（:40-60）第一件事就是 if *mode != ComputeMode::Replica { bail!(\"compute mode \\\"{}\\\" is not replica\") }，然后等 replay 追上 cfg.wal_flush_lsn（:66-83，20 次 1 秒重试，SELECT pg_last_wal_replay_lsn()）、ALTER SYSTEM SET neon.safekeepers 与 synchronous_standby_names=walproposer + pg_reload_conf（:90-108）、pg_promote()（:113-119）、检查 transaction_read_only 必须为 off（:121-129）、把新 spec 装进 state（:135-155）、最后 reconfigure()（:157-161）。
+
+【Static(LSN)】钉在某一刻的只读。RFC 036:43-46 的描述：Neon also has the capability to launch \"static\" read-only nodes which do not follow the primary, but are pinned to a particular LSN. They can be used for long-running one-off queries, or for Point-in-time queries. 它们不连 SK（所以没有 primary_conninfo），数据全部通过 GetPage@LSN 从 pageserver 拉。冷启动起点：compute.rs:1639-1642 的 Static 分支直接用 spec 里的 lsn，日志是 Starting read-only node at static LSN {}。配置：config.rs:207-211 写 hot_standby=on 与 recovery_target_lsn='{lsn}'；仓库里 grep recovery_target_action 零命中，所以落回上游 PG 默认 pause —— 回放到目标 LSN 后停下、保持只读可查（这也是『静态』的由来：它就是一个永远停在 PITR 某一点的 hot standby）。basebackup 同样带 --replica。GC 保护：因为不连 SK，拿不到 standby_horizon 这条反馈链路（RFC 036:247-249 原话 A static read-only node is not connected to safekeepers, so it cannot use the standby_horizon mechanism），只能走 LSN Lease 直连 pageserver 租 —— compute_ctl 侧是 lsn_lease.rs:19 launch_lsn_lease_bg_task_for_static，只在 ComputeMode::Static 时启动，调用点在 compute.rs:673，细节见 s-lsn-lease。不可 promote：compute_promote.rs:45 的 bail 对 Static 同样生效。
+
+【三处分支点·表格里的核对点】① compute.rs:1627-1646 的 match spec.mode 决定 basebackup 起点 LSN：Primary 先 sync SK、Static 用 spec 里的 lsn、Replica 传 Lsn(0)。② compute_tools/src/config.rs:204-216 的 match spec.mode 决定写哪几条 GUC：Primary 什么都不加，Static 加 hot_standby=on + recovery_target_lsn，Replica 只加 hot_standby=on。③ compute.rs:1717-1721 决定挂不挂 standby.signal（Replica | Static 挂，Primary 不挂）。另外 neon_local 侧的三态映射在 control_plane/src/bin/neon_local.rs:1396-1401：match (args.lsn, args.hot_standby) 里 (Some(lsn), false) → Static(lsn)、(None, true) → Replica、(None, false) → Primary、(Some(_), true) 直接 bail can't specify both lsn and hot-standby；:1403-1414 还有两组额外校验（Static 已配置后又加 hot-standby、Primary 已配置后又加 hot-standby）。
+
+【内核侧也要知道自己是哪种】neon.compute_mode 是个 PGC_POSTMASTER 枚举 GUC（libpagestore.c:1620-1630，可选 primary / replica / static，default CP_MODE_PRIMARY，enum 定义在 :54-65），libpagestore.c:540-556 在启动 walredo 子进程时把它拼成 -c neon.compute_mode=<type> 放进 options 传给 redo 进程。
+
+【易混点】Replica 的『上游』是 SK 里的 WAL 流，不是另一台 compute —— 所以 promote 全程没有传统 PG 的流复制连接，只是换 primary_conninfo 并启动本地的 walproposer bgworker。Static 连 WAL 流都没有，它是『用 basebackup 起在某个 LSN 上的只读实例』，本质上更接近一个带 PG 实例的 PITR 快照。相关页：s-compute-spec（spec 字段）、s-spec-required（mode 默认 Primary 的坑）、s-read-lsn（三种模式各自发什么 LSN）、s-lsn-lease（Static 的 GC 保护）、s-hs-feedback（Replica 的反向反馈）、s-sync-rep（Primary 的同步复制）。""")
+
 # ─────── spec 缺字段的四档后果 ───────
 def M(t):
     """mono span — same shape as the inline spans used elsewhere."""
@@ -2659,7 +2743,7 @@ std("s-spec-required", "COMPUTE", "spec 缺字段会怎样：四档后果清单"
     T("t2c2-b", 656, 382, 233, 38, "PG 默认 localhost，proxy 连不进来", fs=9, color=DIM, lh=1.42),
     R("t2c3-bg", 911, 356, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
     T("t2c3-h", 921, 364, 233, 14, "neon.max_cluster_size", fs=10, fw=800, color="#FF9E8A", ff=MONO, lh=1.15),
-    T("t2c3-b", 921, 382, 233, 38, "默认 -1 = 背压总闸关闭，三个 max_replication_*_lag 全白配", fs=9, color=DIM, lh=1.42),
+    T("t2c3-b", 921, 382, 233, 38, "默认 -1 = 背压闸关；&gt;0 还是 DISK_FULL 硬配额：超了写入直接报错", fs=9, color=DIM, lh=1.42),
     R("t2c4-bg", 116, 430, 253, 66, fill="rgba(255,255,255,0.035)", stroke=EDGE, radius=8),
     T("t2c4-h", 126, 438, 233, 14, "LFC 三项", fs=10, fw=800, color="#7CB3F4", ff=MONO, lh=1.15),
     T("t2c4-b", 126, 456, 233, 38, "max_file_cache_size / file_cache_size_limit 默认 0 = 关闭；path 默认 file.cache", fs=9, color=DIM, lh=1.42),
@@ -5331,20 +5415,20 @@ std("s-bp", "全链路", "背压：三层限速把写入速度钉在存储能力
 # ─────── 背压三个 GUC 详解 ───────
 p += 1
 std("s-bp-guc", "全链路", "背压三兄弟：write / flush / apply 各管哪一段", [
-    T("bg-desc", 96, 156, 1088, 50,
+    T("bg-desc", 96, 154, 1088, 44,
       "三个 GUC 都是 <b>Neon 加进 PostgreSQL 内核</b>的写入限速（上游 PG 没有）："
       "compute 的 WAL 进度最多能超前 Pageserver 的「已收 / 已落盘 / 已上云」三个位点各多少。"
       "<b>单位 MB，0 = 该项关闭</b>；<b>默认值在内核里，不在 compute_ctl</b>。",
       fs=12, color=DIM, lh=1.4),
-    *card("bg1", 96, 210, 346, 218,
+    *card("bg1", 96, 202, 346, 154,
           "write_lag ＝ 500 MB", [
               ("PS 位点：last_received_lsn", AC),
               "＝ Pageserver 已收到、尚未成 L0 的 WAL",
               "调小 → 最近改过的页 GetPage 等待上限更低",
               "调大 → PS / 网络抖动时不易误刹车",
-              ("默认 500 MB：内核 bootValue，manifest.yaml:52 又写一遍", FAINT),
+              ("默认 500 MB（内核 bootValue；manifest:52 重复）", FAINT),
           ], hc=AC, fs=11, headfs=15),
-    *card("bg2", 467, 210, 346, 218,
+    *card("bg2", 467, 202, 346, 154,
           "flush_lag ＝ 10 GB", [
               ("PS 位点：disk_consistent_lsn", AC2),
               "＝ 已落本地盘、delta/image layer 已生成",
@@ -5352,7 +5436,7 @@ std("s-bp-guc", "全链路", "背压三兄弟：write / flush / apply 各管哪�
               "必须 &gt; PS checkpoint 间隔（1 GB），否则硬死锁",
               ("默认 10 GB：内核 bootValue，manifest.yaml:40 又写一遍", FAINT),
           ], hc=AC2, fs=11, headfs=15),
-    *card("bg3", 838, 210, 346, 218,
+    *card("bg3", 838, 202, 346, 154,
           "apply_lag ＝ 0（关）", [
               ("PS 位点：remote_consistent_lsn", "#7CB3F4"),
               "＝ 已 checkpoint 并上传 S3 的 WAL",
@@ -5360,15 +5444,15 @@ std("s-bp-guc", "全链路", "背压三兄弟：write / flush / apply 各管哪�
               "钳制崩溃 / 灾难恢复的丢失窗口；不卡读",
               ("默认 0：spec 不下发这一项就等于没开", FAINT),
           ], hc="#7CB3F4", fs=11, headfs=15),
-    R("bgf-bg", 96, 442, 1088, 56, fill="rgba(255,213,74,0.06)", stroke="rgba(255,213,74,0.3)", radius=10),
-    T("bgf-h", 112, 450, 96, 40, "判定式", fs=11, fw=800, color=ARROW, ff=MONO, lh=1.3),
-    T("bgf-b", 200, 448, 968, 44,
+    R("bgf-bg", 96, 366, 1088, 56, fill="rgba(255,213,74,0.06)", stroke="rgba(255,213,74,0.3)", radius=10),
+    T("bgf-h", 112, 374, 96, 40, "判定式", fs=11, fw=800, color=ARROW, ff=MONO, lh=1.3),
+    T("bgf-b", 200, 372, 968, 44,
       "<b>lag = pg_current_wal_flush_lsn() − min_ps_feedback.&lt;位点&gt; − 阈值 × 1 MB</b>，&nbsp;lag &gt; 0 才节流（不是等追平）<br>"
       "多 shard 取各 shard 反馈的<b>最小值</b>；lakebase_mode 下三个阈值 × Max(1, num_shards)；实现 pgxn/neon/walproposer_pg.c:489-553",
       fs=11, color=DIM, lh=1.45),
-    R("bgx1-bg", 96, 510, 346, 162),
-    T("bgx1-h", 116, 518, 306, 20, "配置从哪来（四层）", fs=12, fw=800, color=AC),
-    T("bgx1-b", 116, 542, 306, 124,
+    R("bgx1-bg", 96, 430, 346, 242),
+    T("bgx1-h", 116, 438, 306, 20, "配置从哪来（四层）", fs=12, fw=800, color=AC),
+    T("bgx1-b", 116, 462, 306, 208,
       "① 内核 bootValue：write 500 MB、flush 10 GB<br>"
       "　 apply 仓库内无默认值表述（&gt;0 才启用）<br>"
       "　 定义在 vendor/postgres-*（本机未 checkout）<br>"
@@ -5377,31 +5461,40 @@ std("s-bp-guc", "全链路", "背压三兄弟：write / flush / apply 各管哪�
       "　 <b>不进 compute 镜像</b>（RFC 038）<br>"
       "③ spec 的 postgresql_conf / settings<br>"
       "　 compute_ctl 只搬运，自己不含默认值<br>"
-      "④ neon_local：write 15 MB / flush 10 GB",
-      fs=10, color=DIM, lh=1.45),
-    R("bgx2-bg", 467, 510, 346, 162),
-    T("bgx2-h", 487, 518, 306, 20, "生效门闸：max_cluster_size", fs=12, fw=800, color=AC2),
-    T("bgx2-b", 487, 542, 306, 124,
-      "• <b>neon.max_cluster_size &lt; 0</b>（默认 -1）<br>"
-      "　 → 直接 return 0，阈值配了也无效<br>"
-      "• 生产：控制面按项目容量上限下发；<br>"
-      "　 neon_local 从不设 → 本地默认无背压<br>"
-      "• 故 spec 若连它都不下发，确实等于没背压<br>"
-      "　 ——但闸住的是它，不是那三个阈值<br>"
-      "• postmaster / startup 进程不节流",
-      fs=10, color=DIM, lh=1.45),
-    R("bgx3-bg", 838, 510, 346, 162),
-    T("bgx3-h", 858, 518, 306, 20, "触发后 &amp; 观测", fs=12, fw=800, color="#7CB3F4"),
-    T("bgx3-b", 858, 542, 306, 124,
+      "④ neon_local：write 15 MB / flush 10 GB<br>"
+      "　 且<b>从不设 max_cluster_size</b> → 本地无背压",
+      fs=10.5, color=DIM, lh=1.45),
+    R("bgx2-bg", 467, 430, 346, 242),
+    T("bgx2-h", 487, 438, 306, 20, "max_cluster_size：配额 + 背压门闸", fs=12, fw=800, color=AC2),
+    T("bgx2-b", 487, 462, 306, 208,
+      "• <b>身份① 容量硬配额</b>：" + M(">0") + " 时 extend 超限报<br>"
+      "　 DISK_FULL（pagestore_smgr.c:934）；TEMP/UNLOGGED、<br>"
+      "　 autovacuum 两类豁免<br>"
+      "• <b>身份② 背压总闸</b>：" + M("&lt;0") + " 直接 return 0<br>"
+      "　 （walproposer_pg.c:440），三个阈值配了也失效<br>"
+      "• <b>三态不对称</b>：配额要 " + M(">0") + "，闸放行要 " + M(">=0") + "<br>"
+      "　 → " + M("0") + " = 配额关、背压开；" + M("-1") + " = 两者都关<br>"
+      "• 数值由 PS 算（<b>仅 shard 0</b>，含 SLRU 不含 WAL）<br>"
+      "　 → SK 反馈 → compute；SQL 侧 " + M("pg_cluster_size()") + " 可查<br>"
+      "• 生产由控制面按项目上限下发<br>"
+      "• reconfigure / 建主库期间 compute_ctl 强写 " + M("-1") + "<br>"
+      "　 （临时关配额，否则建 role / extension 可能撞限）",
+      fs=10.5, color=DIM, lh=1.45),
+    R("bgx3-bg", 838, 430, 346, 242),
+    T("bgx3-h", 858, 438, 306, 20, "触发后 &amp; 观测", fs=12, fw=800, color="#7CB3F4"),
+    T("bgx3-b", 858, 462, 306, 208,
       "• ProcessInterrupts 回调：lag&gt;0 就<br>"
       "　 <b>pg_usleep(10 ms)</b> 再返回 true，反复重入<br>"
       "• 只卡写事务；walsender、只读事务豁免<br>"
       "　 CREATE INDEX CONCURRENTLY 仍节流<br>"
       "• <b>无超时上限</b>：PS 追不上就一直等<br>"
+      "• postmaster / startup 进程不节流<br>"
       "• backpressure_lsns() 看三个位点<br>"
-      "• backpressure_throttling_time() 累计 μs",
-      fs=10, color=DIM, lh=1.45),
-], p, notes="这一页把 s-bp ① 卡片里的三个 GUC 摊开讲清楚。它们不是上游 PostgreSQL 的 GUC，而是 Neon 打进 PG 内核的补丁（引用点全在 pgxn/neon/walproposer_pg.c，GUC 的 DefineCustom 在打过补丁的 PG 内核里，即 vendor/postgres-* 子模块；本仓库该子模块未 checkout，所以不给内核行号）。语义：让 compute 的 WAL 进度最多超前 Pageserver 反馈的三个位点各 N MB。判定在 backpressure_lag_impl()（walproposer_pg.c:489-553）：myFlushLsn = GetFlushRecPtr()（:499/:501 分 PG15 前后），三个位点来自 replication_feedback_get_lsns()（:786-793）——writePtr = min_ps_feedback.last_received_lsn（:789，PS 已收到）、flushPtr = min_ps_feedback.disk_consistent_lsn（:790，已落盘、layer 已生成）、applyPtr = min_ps_feedback.remote_consistent_lsn（:791，已 checkpoint 并上传 S3）；min_ps_feedback 是各 shard 反馈的最小值，由 record_pageserver_feedback() 求出（:736-783，比较逻辑 :759-778）。条件是 myFlushLsn > ptr + 阈值*MB 才返回超出量（:536-548），即『限制超前量』而不是『等追平』；任一阈值为 0 时该条检查跳过（:493 的总开关 + 分支内的 >0 判断），所以 apply_lag=0 就是彻底关闭。lakebase_mode 下三个阈值各乘 Max(1, get_num_shards())（:511-533），分片越多聚合吞吐越高，固定阈值会误刹车。默认值：生产 compute/manifest.yaml:40 flush=10GB、:52 write=500MB；manifest 里 500MB 那段的注释说『以前是 500MB，导致高负载下 compute 无响应 issue #2028』，但值本身仍是 500MB（git blame 自 838622c59 引入 manifest 起就未再改，注释与取值对不上，属上游遗留文案，读文档时别被绕进去）；apply_lag 在 manifest 与 neon_local 里都没配，默认 0。manifest.yaml:32-40 明确警告 flush_lag 必须大于 PS checkpoint 间隔（当前 1 GB），否则死锁：compute 等上传不产 WAL、PS 等新 WAL 才上传。本地开发 control_plane/src/endpoint.rs:509-510 用 write=15MB、flush=10GB；test_runner/fixtures/neon_fixtures.py:4792-4794 也给每个 endpoint 预设 max_replication_write_lag=15MB 让测试稳定。触发后的行为在 backpressure_throttling_impl()（:625-674）：先跑上一个回调（:636-637），再放过 am_walsender 与无事务 ID 的只读语句、但 PROC_IN_SAFE_IC 的 CREATE INDEX CONCURRENTLY 仍节流（:645-648），lag=hadron_backpressure_lag_impl()（:651，注意是 hadron 包装版），非 0 则改 ps display 为 backpressure throttling: lag N（:655-659）、pg_usleep(BACK_PRESSURE_DELAY=10000us，:623/:665)、把耗时累加进 backpressureThrottlingTime（:667）、返回 true 让 ProcessInterrupts 反复重入——所以没有超时上限。门闸在 hadron_backpressure_lag_impl()（:435-486）：max_cluster_size &lt; 0 直接返回 0（:440-443，此时 PG 正在被重配）；test_pg_regress.py:374 的注释也印证『默认 max_cluster_size &lt; 0 会完全关掉节流』。startup_backpressure_wrap()（:560-569）让 postmaster / startup process 不节流。可观测：SQL 函数 neon.backpressure_lsns() 返回 received_lsn / disk_consistent_lsn / remote_consistent_lsn 三列（neon.c:686-710，调用同一个 getter），neon.backpressure_throttling_time() 返回累计微秒（neon.c:712-716），sql_exporter 的 compute_backpressure_throttling_seconds_total.sql 把它 /1000000 成秒；test_runner/regress/test_backpressure.py 就是用前两个加的断言。【默认值的三层来源·本页下半部分】① 内核 bootValue：GUC 的 DefineCustom 在打过补丁的 PostgreSQL 内核（vendor/postgres-* 子模块），本仓库未 checkout，因此不给行号；仓库内可核对的口径是文档：docs/pageserver-compaction.md:95-96 明写 write_lag default 500 MB、flush_lag default 10 GB，apply_lag 在仓库内任何源码/文档/配置里都没有默认值表述，只能从代码的 >0 才启用推断「不设=关」，所有需要关闭的测试都显式写 0（test_ingest_insert_bulk.py:64、test_ingest_logical_message.py:41、test_sharding.py:1751）。② compute/manifest.yaml：控制面侧的默认配置清单，按 docs/rfcs/038-independent-compute-release.md:83-123 的 common → per_version.common → per_version.replica 分层合成，再叠加 per-project/endpoint 覆盖与按 CU 计算的值；关键点是它不随镜像走——compute/compute-node.Dockerfile 里搜 manifest.yaml 零命中，仓库里唯一引用它的是 compute/Makefile:54 的 jsonschema 校验，所以它是「控制面读的清单」而不是「compute_ctl 的默认值」。③ spec：compute_ctl 收到 ComputeSpec 后，compute_tools/src/config.rs:64-66 把 cluster.postgresql_conf 原样写入 postgresql.conf，:246-250 把 cluster.settings 追加进 Managed by compute_ctl 块；git grep max_replication compute_tools/src/ 零命中，证明 compute_ctl 自己完全不含这三个 GUC 的默认值，它写死的只有 neon.stripe_size（:78/:132）、neon.pageserver_connstring（:136）、neon.tenant_id（:158）、neon.project_id/branch_id/endpoint_id（:168/:171/:174）、neon.compute_mode（:204）、neon.extension_server_port（:345）这类运行时事实。④ neon_local：control_plane/src/endpoint.rs:509-510 直接 append write=15MB/flush=10GB 到 postgresql_conf（没有再设 apply_lag）。【关键结论·回答「spec 不下发是不是就没有背压」】不是简单的是/否，要分两层：(a) 三个阈值本身有内核 bootValue（文档口径 500MB/10GB/0），spec 不下发它们，write 与 flush 的限速仍然在；只有 apply_lag 是真的「不下发=关」。(b) 但在本 fork 里真正的一票否决权在 neon.max_cluster_size：hadron_backpressure_lag_impl() 开头 if (max_cluster_size < 0) return 0（:440-443），而该 GUC 在 pgxn/neon/libpagestore.c:1533-1540 注册、默认 -1（bootValue -1，min -1，单位 MB），消费侧 pagestore_smgr.c:934/1022 用它做写入上限，背压侧直接当总开关。所以 spec 若连 max_cluster_size 都不下发，三个阈值再大也确实完全不起作用——这也正是 neon_local 的处境：git grep max_cluster_size -- control_plane/ 零命中，neon_local 从不设它，所以本地开发默认压根没有背压，test_runner/fixtures/neon_fixtures.py:4792-4794 虽然给每个 endpoint 预置了 write_lag=15MB，但没配 max_cluster_size 时也只是配了个空阈值；需要真正生效的测试都自己补 neon.max_cluster_size（test_pg_regress.py:374-375 的注释直接写明「default max_cluster_size < 0 will disable throttling completely」、test_sharding.py:1575/1753/1861、test_timeline_size.py:167/253）。生产环境则由控制面按项目容量上限下发 neon.max_cluster_size（docs/rfcs/001-cluster-size-limits.md:25-26 写明 console 负责 set/update 它），所以生产上背压是生效的。呼应 s-bp（三层背压全景）与 s-numbers（关键参数一览）。")
+      "• backpressure_throttling_time() 累计 μs<br>"
+      "• 配额超限是 <b>ERROR 不是 FATAL</b>：事务回滚，<br>"
+      "　 连接还在，应用侧看到 disk full",
+      fs=10.5, color=DIM, lh=1.45),
+], p, notes="这一页把 s-bp ① 卡片里的三个 GUC 摊开讲清楚。它们不是上游 PostgreSQL 的 GUC，而是 Neon 打进 PG 内核的补丁（引用点全在 pgxn/neon/walproposer_pg.c，GUC 的 DefineCustom 在打过补丁的 PG 内核里，即 vendor/postgres-* 子模块；本仓库该子模块未 checkout，所以不给内核行号）。语义：让 compute 的 WAL 进度最多超前 Pageserver 反馈的三个位点各 N MB。判定在 backpressure_lag_impl()（walproposer_pg.c:489-553）：myFlushLsn = GetFlushRecPtr()（:499/:501 分 PG15 前后），三个位点来自 replication_feedback_get_lsns()（:786-793）——writePtr = min_ps_feedback.last_received_lsn（:789，PS 已收到）、flushPtr = min_ps_feedback.disk_consistent_lsn（:790，已落盘、layer 已生成）、applyPtr = min_ps_feedback.remote_consistent_lsn（:791，已 checkpoint 并上传 S3）；min_ps_feedback 是各 shard 反馈的最小值，由 record_pageserver_feedback() 求出（:736-783，比较逻辑 :759-778）。条件是 myFlushLsn > ptr + 阈值*MB 才返回超出量（:536-548），即『限制超前量』而不是『等追平』；任一阈值为 0 时该条检查跳过（:493 的总开关 + 分支内的 >0 判断），所以 apply_lag=0 就是彻底关闭。lakebase_mode 下三个阈值各乘 Max(1, get_num_shards())（:511-533），分片越多聚合吞吐越高，固定阈值会误刹车。默认值：生产 compute/manifest.yaml:40 flush=10GB、:52 write=500MB；manifest 里 500MB 那段的注释说『以前是 500MB，导致高负载下 compute 无响应 issue #2028』，但值本身仍是 500MB（git blame 自 838622c59 引入 manifest 起就未再改，注释与取值对不上，属上游遗留文案，读文档时别被绕进去）；apply_lag 在 manifest 与 neon_local 里都没配，默认 0。manifest.yaml:32-40 明确警告 flush_lag 必须大于 PS checkpoint 间隔（当前 1 GB），否则死锁：compute 等上传不产 WAL、PS 等新 WAL 才上传。本地开发 control_plane/src/endpoint.rs:509-510 用 write=15MB、flush=10GB；test_runner/fixtures/neon_fixtures.py:4792-4794 也给每个 endpoint 预设 max_replication_write_lag=15MB 让测试稳定。触发后的行为在 backpressure_throttling_impl()（:625-674）：先跑上一个回调（:636-637），再放过 am_walsender 与无事务 ID 的只读语句、但 PROC_IN_SAFE_IC 的 CREATE INDEX CONCURRENTLY 仍节流（:645-648），lag=hadron_backpressure_lag_impl()（:651，注意是 hadron 包装版），非 0 则改 ps display 为 backpressure throttling: lag N（:655-659）、pg_usleep(BACK_PRESSURE_DELAY=10000us，:623/:665)、把耗时累加进 backpressureThrottlingTime（:667）、返回 true 让 ProcessInterrupts 反复重入——所以没有超时上限。门闸在 hadron_backpressure_lag_impl()（:435-486）：max_cluster_size &lt; 0 直接返回 0（:440-443，此时 PG 正在被重配）；test_pg_regress.py:374 的注释也印证『默认 max_cluster_size &lt; 0 会完全关掉节流』。startup_backpressure_wrap()（:560-569）让 postmaster / startup process 不节流。可观测：SQL 函数 neon.backpressure_lsns() 返回 received_lsn / disk_consistent_lsn / remote_consistent_lsn 三列（neon.c:686-710，调用同一个 getter），neon.backpressure_throttling_time() 返回累计微秒（neon.c:712-716），sql_exporter 的 compute_backpressure_throttling_seconds_total.sql 把它 /1000000 成秒；test_runner/regress/test_backpressure.py 就是用前两个加的断言。【默认值的三层来源·本页下半部分】① 内核 bootValue：GUC 的 DefineCustom 在打过补丁的 PostgreSQL 内核（vendor/postgres-* 子模块），本仓库未 checkout，因此不给行号；仓库内可核对的口径是文档：docs/pageserver-compaction.md:95-96 明写 write_lag default 500 MB、flush_lag default 10 GB，apply_lag 在仓库内任何源码/文档/配置里都没有默认值表述，只能从代码的 >0 才启用推断「不设=关」，所有需要关闭的测试都显式写 0（test_ingest_insert_bulk.py:64、test_ingest_logical_message.py:41、test_sharding.py:1751）。② compute/manifest.yaml：控制面侧的默认配置清单，按 docs/rfcs/038-independent-compute-release.md:83-123 的 common → per_version.common → per_version.replica 分层合成，再叠加 per-project/endpoint 覆盖与按 CU 计算的值；关键点是它不随镜像走——compute/compute-node.Dockerfile 里搜 manifest.yaml 零命中，仓库里唯一引用它的是 compute/Makefile:54 的 jsonschema 校验，所以它是「控制面读的清单」而不是「compute_ctl 的默认值」。③ spec：compute_ctl 收到 ComputeSpec 后，compute_tools/src/config.rs:64-66 把 cluster.postgresql_conf 原样写入 postgresql.conf，:246-250 把 cluster.settings 追加进 Managed by compute_ctl 块；git grep max_replication compute_tools/src/ 零命中，证明 compute_ctl 自己完全不含这三个 GUC 的默认值，它写死的只有 neon.stripe_size（:78/:132）、neon.pageserver_connstring（:136）、neon.tenant_id（:158）、neon.project_id/branch_id/endpoint_id（:168/:171/:174）、neon.compute_mode（:204）、neon.extension_server_port（:345）这类运行时事实。④ neon_local：control_plane/src/endpoint.rs:509-510 直接 append write=15MB/flush=10GB 到 postgresql_conf（没有再设 apply_lag）。【关键结论·回答「spec 不下发是不是就没有背压」】不是简单的是/否，要分两层：(a) 三个阈值本身有内核 bootValue（文档口径 500MB/10GB/0），spec 不下发它们，write 与 flush 的限速仍然在；只有 apply_lag 是真的「不下发=关」。(b) 但在本 fork 里真正的一票否决权在 neon.max_cluster_size：hadron_backpressure_lag_impl() 开头 if (max_cluster_size < 0) return 0（:440-443），而该 GUC 在 pgxn/neon/libpagestore.c:1533-1540 注册、默认 -1（bootValue -1，min -1，单位 MB），消费侧 pagestore_smgr.c:934/1022 用它做写入上限，背压侧直接当总开关。所以 spec 若连 max_cluster_size 都不下发，三个阈值再大也确实完全不起作用——这也正是 neon_local 的处境：git grep max_cluster_size -- control_plane/ 零命中，neon_local 从不设它，所以本地开发默认压根没有背压，test_runner/fixtures/neon_fixtures.py:4792-4794 虽然给每个 endpoint 预置了 write_lag=15MB，但没配 max_cluster_size 时也只是配了个空阈值；需要真正生效的测试都自己补 neon.max_cluster_size（test_pg_regress.py:374-375 的注释直接写明「default max_cluster_size < 0 will disable throttling completely」、test_sharding.py:1575/1753/1861、test_timeline_size.py:167/253）。生产环境则由控制面按项目容量上限下发 neon.max_cluster_size（docs/rfcs/001-cluster-size-limits.md:25-26 写明 console 负责 set/update 它），所以生产上背压是生效的。【max_cluster_size 的两副面孔】多数人读 walproposer_pg.c:440 只看到它是背压总闸，其实它同时是容量硬配额，而且两个用途的开关条件不一样。（1）硬配额：pagestore_smgr.c:934-946（neon_extend）与 :1022-1034（neon_zeroextend）在每次扩文件前检查 if (max_cluster_size > 0 && reln->smgr_relpersistence == RELPERSISTENCE_PERMANENT && !AmAutoVacuumWorkerProcess())，用 GetNeonCurrentClusterSize() 与 max_cluster_size * 1024 * 1024 比，超了 ereport(ERROR, ERRCODE_DISK_FULL, could not extend file because project size limit (%d MB) has been exceeded)，errhint 明写 This limit is defined externally by the project size limit, and internally by neon.max_cluster_size GUC。三个豁免条件就在这句 if 里：max_cluster_size <= 0（关）、TEMP/UNLOGGED 关系（PS 不计量）、autovacuum worker（防止 VACUUM 自己把项目顶爆）。这是 ERROR 不是 FATAL：事务回滚、连接保留，应用侧表现为 disk full。（2）背压总闸：walproposer_pg.c:435-443 的 hadron_backpressure_lag_impl() 开头 if (max_cluster_size < 0) return 0，注释给的理由是 if max cluster size is not set, then we don't apply backpressure because we're reconfiguring PG —— 这个 <0 判断本来是为 compute_ctl 重配期间临时关背压设计的。所以 -1 / 0 / >0 三态不对称：配额要求 > 0，背压闸要求 >= 0；0 的含义是『配额关掉、背压照常』，-1（默认）才是两者都关。测试里能看到两种用法（test_pg_regress.py:374、test_sharding.py:1575/1753/1861、test_timeline_size.py:167/253）。（3）数值从哪来：GUC 定义在 libpagestore.c:1533-1540（bootValue -1、min -1、max INT_MAX、GUC_UNIT_MB、PGC_SIGHUP，发 SIGHUP reload 即可改，但 -1 是 bootValue，reload 不会自己回到 -1 除非显式写）。值本身是 pageserver 算的：walreceiver_connection.rs:570-582 里只有 is_shard_zero() 的 shard 才调 get_current_logical_size（含 SLRU、不含 WAL，口径见 RFC 001:30-34），非 0 分片直接发 0；safekeeper 把 PageserverFeedback.currentClusterSize 转发给 compute，walproposer_pg.c:2157-2159 只在 > 0 时 SetNeonCurrentClusterSize，neon.c:674-680 的 SQL 函数 pg_cluster_size() 读同一个原子变量，值为 0 时返回 NULL（所以非主 shard、或还没收到首个反馈时查到的是 NULL 而不是 0）。（4）谁负责设：RFC 001:26 明写 console 负责 set and update；neon_local 从不设（control_plane/ 里 grep max_cluster_size 零命中），所以本地默认 -1，配额与背压全关。（5）运维坑：compute_tools/src/compute.rs:2144-2155 与 :2181-2192 在 reconfigure 与 configure_as_primary 期间用 with_compute_ctl_tmp_override(pgdata_path, neon.max_cluster_size=-1) 临时强写成 -1，注释是 to avoid the possibility of hitting the limit, while we are reconfiguring: creating new extensions, roles, etc.；实现见 config.rs:380（include_if_exists = 'compute_ctl_temp_override.conf' 放在文件末尾、优先级最高）与 :385-396（写文件 → 执行闭包 → set_len(0) 清空）。所以扩角色 / 建扩展不会被配额挡住，但重配窗口内配额检查是失效的。（6）安全：RFC 001:76-82 明确把 compute 当不可信组件 —— 恶意用户可以自己 SET neon.max_cluster_size 绕过限制，所以 console 侧还要独立监控节点尺寸。呼应 s-bp（三层背压全景）与 s-numbers（关键参数一览）。")
 
 
 # ─────── Slide 13: WAL Redo 沙箱 ───────
@@ -7178,7 +7271,7 @@ DECKS = [
      "sections": [
         {"title": "接入层 Proxy & TLS", "desc": "连接代理 · 路由认证 · Serverless 网关 · 两跳 TLS 与证书",
          "pick": {"chapter": 5, "kickers": ["PROXY", "PROXY · TLS", "COMPUTE · TLS"]}},
-        {"title": "Compute", "desc": "patched PostgreSQL · compute_ctl · 状态机 · 崩溃恢复 · spec 必填 · bootstrap · LFC · DDL 转发",
+        {"title": "Compute", "desc": "patched PostgreSQL · compute_ctl · 状态机 · 崩溃恢复 · 三种模式 · spec 必填 · bootstrap · LFC · DDL 转发",
          "pick": {"chapter": 5, "kickers": ["COMPUTE", "COMPUTE · 本地改造"]}},
         {"title": "Safekeeper", "desc": "WAL 服务 · Paxos-like 复制 · 关键 LSN · 成员迁移 · interpreted WAL",
          "pick": {"chapter": 5, "kickers": ["SAFEKEEPER"]}},
